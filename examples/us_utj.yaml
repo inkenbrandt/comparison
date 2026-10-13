@@ -1,0 +1,70 @@
+# US-UTJ declarations from docs/input_contract.md and docs/decisions.md.
+# Data paths are local inputs that are not distributed (D-014).
+# Relative paths resolve against this file's directory.
+
+stations:
+  US-UTJ:
+    name: UFLUX Bluff
+    timezone: "UTC-07:00"            # user-provided (D-002)
+    day_definition: local_standard_time
+    interval_label: start            # provisional; from .ini TIMESTAMP_START (D-015 q1)
+    latitude: 37.2818
+    longitude: -109.5348
+    elevation_m: 1281
+    land_cover: CRO
+
+# OpenET products: mm/day by API request (D-003); interpolated daily (D-011).
+# Day boundary of the OpenET daily product is unresolved -> unknown.
+products:
+  disalexi: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
+  eemetric: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
+  ensemble: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, is_ensemble: true}
+  geesebal: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
+  ptjpl:    {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
+  sims:     {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
+  ssebop:   {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
+
+site_aliases: {}
+model_aliases: {}
+
+station_tables:
+  - path: ../US-UTJ_daily.csv
+    site_id: US-UTJ
+    date_column: date
+    date_format: "%Y-%m-%d"
+    reference_columns: {et_raw: ET, et_corrected: ET_corr}
+    gap_flag_column: ET_gap
+    closure_factor_column: ebc_cf
+    units: {ET: mm/day, ET_corr: mm/day}   # provisional for station (D-003)
+
+extracted_tables:
+  - name: us_utj_set_a
+    path: ../station_oet_US-UTJ.parquet
+    site_column: station_id
+    model_column: model
+    date_column: footprint_date
+    value_columns:
+      ET_fp: upstream_footprint_weighted   # D-006
+      ET_mean: source_region_mean          # D-007; region changes daily
+    units: {ET_fp: mm/day, ET_mean: mm/day}
+    footprint_set_id: US-UTJ_set_A_20261005
+    footprint_method: et_weighted_unverified   # D-009
+    weight_sum_column: unity_check
+    retained_weight_column: valid_weight_fraction
+    retained_weight_denominator: normalized_truncated_footprint   # D-008
+    model_asset_column: openet_file
+    footprint_asset_column: footprint_file
+    source_path_column: openet_path
+
+openet_rasters:
+  - root: "M:/My Drive/OpenET_Daily_Tiffs/US-UTJ_US-CdM"
+
+footprint_sets:
+  - set_id: US-UTJ_set_A_20261005
+    root: "M:/My Drive/footprints/US-UTJ"
+    recursive: false                   # set B lives in weighted/ (D-016)
+    layers: [etw]
+    weighting_method: et_weighted_unverified
+    value_semantics: normalized_cell_weight
+
+output_dir: ../outputs
