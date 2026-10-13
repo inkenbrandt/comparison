@@ -269,13 +269,52 @@ def discover_footprints(
     if other_layers:
         report.info("layers_not_selected", f"{other_layers} file(s) with layers outside "
                     f"{list(spec.layers or [])} ignored", n_rows=other_layers)
-    report.info("capture_unknown", "original domain capture and temporal coverage are not "
-                "available from filenames; columns are null")
     frame = pd.DataFrame(rows, columns=FOOTPRINT_MANIFEST.names)
+    if spec.domain_capture_csv is not None:
+        frame = _attach_domain_capture(frame, spec, report)
+    else:
+        report.info("capture_unknown", "no domain-capture table declared; "
+                    "domain_capture_frac is null")
+    report.info("temporal_coverage_unknown", "temporal coverage per period is not available; "
+                "temporal_coverage_frac is null")
     return _finish(frame, schema=FOOTPRINT_MANIFEST, id_cols=["footprint_set_id", "asset_id"],
                    key_cols=["period", "date", "layer_token"], on_conflict=on_conflict,
                    report=report, exclusions=exclusions,
                    attributes={"footprint_set": to_plain(spec)}, with_associations=False)
+
+
+def _attach_domain_capture(
+    frame: pd.DataFrame, spec: FootprintSetSpec, report: ValidationReport
+) -> pd.DataFrame:
+    """Join daily original-domain capture onto daily footprints by date label."""
+    path = spec.domain_capture_csv
+    col, dcol = spec.domain_capture_column, spec.domain_capture_date_column
+    table = read_any(path)  # type: ignore[arg-type]
+    missing = [c for c in (dcol, col) if c not in table.columns]
+    if missing:
+        raise SchemaError(f"{path}: column(s) {missing} not found")
+    dates = pd.to_datetime(table[dcol], errors="coerce")
+    if dates.isna().any() or (dates != dates.dt.normalize()).any():
+        raise SchemaError(f"{path}: {dcol} must hold daily date labels")
+    if dates.duplicated().any():
+        raise SchemaError(f"{path}: duplicated dates in {dcol}")
+    values = pd.to_numeric(table[col], errors="raise")
+    if spec.domain_capture_units == "percent":
+        values = values / 100.0
+    capture = pd.Series(values.to_numpy(), index=dates.astype("datetime64[ns]").to_numpy())
+    daily = frame["period"] == "day"
+    out = frame.copy()
+    out["domain_capture_frac"] = out["domain_capture_frac"].astype("float64")
+    out.loc[daily, "domain_capture_frac"] = out.loc[daily, "date"].map(capture).to_numpy()
+    source = f"{path.name}:{col}"  # type: ignore[union-attr]
+    out["domain_capture_source"] = None
+    out.loc[daily & out["domain_capture_frac"].notna(), "domain_capture_source"] = source
+    n_attached = int(out["domain_capture_frac"].notna().sum())
+    over = int((out["domain_capture_frac"] > 1).sum())
+    report.info("domain_capture_attached", f"{source}: attached to {n_attached} of "
+                f"{int(daily.sum())} daily footprints; {over} value(s) > 1 retained as "
+                "reported (discretization)", n_rows=n_attached)
+    return out
 
 
 def select_assets(result: DiscoveryResult, keep_paths: Iterable[str | os.PathLike[str]]

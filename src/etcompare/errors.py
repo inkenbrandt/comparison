@@ -62,5 +62,9 @@ class DuplicateAssetError(EtcompareError):
     """Two assets claim the same identity; an explicit selection policy is required."""
 
 
+class GridError(EtcompareError, ValueError):
+    """A raster grid is missing a CRS, is degenerate, or needs an unsupported transfer."""
+
+
 class OptionalDependencyError(EtcompareError, ImportError):
     """An optional dependency needed for this operation is not installed."""

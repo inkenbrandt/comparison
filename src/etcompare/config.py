@@ -26,6 +26,10 @@ INTERVAL_LABELS: Final = ("start", "end")
 TEMPORAL_SUPPORTS: Final = ("interpolated_daily", "overpass_only", "unknown")
 FOOTPRINT_VALUE_SEMANTICS: Final = ("normalized_cell_weight", "cell_contribution", "density_per_m2")
 REFERENCE_VARIANT_SOURCES: Final = ("et_raw", "et_corrected")
+RASTER_SCALING: Final = ("declared", "from_header")
+EXTRACTION_METHODS: Final = (
+    "footprint", "footprint_common_support", "pixel_window", "nearest_tower_pixel",
+)
 
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
@@ -162,6 +166,14 @@ class ProductSpec:
     temporal_support: str
     version: str = "unknown"
     is_ensemble: bool = False
+    #: Raster scaling, needed only for raster extraction: ``"declared"`` (use
+    #: ``scale_factor``/``add_offset``/``nodata`` below) or ``"from_header"``
+    #: (GDAL band scale/offset/nodata; GDAL reports 1/0 when the header has no
+    #: scale tags). ``None`` means unknown, and raster extraction refuses to run.
+    raster_scaling: str | None = None
+    scale_factor: float | None = None
+    add_offset: float | None = None
+    nodata: float | None = None
 
     def __post_init__(self) -> None:
         who = f"product {self.model}"
@@ -175,6 +187,21 @@ class ProductSpec:
                 field="day_definition", config_key=f"{key}.day_definition")
         _choice(self.temporal_support, TEMPORAL_SUPPORTS, input=who,
                 field="temporal_support", config_key=f"{key}.temporal_support")
+        if self.raster_scaling is not None:
+            _choice(self.raster_scaling, RASTER_SCALING, input=who, field="raster_scaling",
+                    config_key=f"{key}.raster_scaling")
+        if self.raster_scaling == "declared":
+            for f in ("scale_factor", "add_offset"):
+                _require(getattr(self, f), input=who, field=f, config_key=f"{key}.{f}")
+
+    def require_scaling(self) -> None:
+        """Raise :class:`ContractError` unless raster scaling is declared."""
+        if self.raster_scaling is None:
+            raise ContractError(
+                f"product {self.model}: raster scaling unknown; declare raster_scaling "
+                "('declared' with scale_factor/add_offset/nodata, or 'from_header')",
+                field="raster_scaling", config_key=f"products.{self.model}.raster_scaling",
+            )
 
 
 @dataclass(frozen=True)
@@ -319,6 +346,13 @@ class FootprintSetSpec:
     value_semantics: str
     recursive: bool = False
     layers: tuple[str, ...] | None = None
+    #: Optional table of original (pre-renormalization) domain capture per day,
+    #: e.g. fluxfootprints ``<site>_daily_domain_results.csv``. ``domain_capture_column``
+    #: names the column and ``domain_capture_units`` is ``percent`` or ``fraction``.
+    domain_capture_csv: Path | None = None
+    domain_capture_column: str | None = None
+    domain_capture_units: str = "percent"
+    domain_capture_date_column: str = "time"
 
     def __post_init__(self) -> None:
         key = f"footprint_sets.{self.set_id}"
@@ -334,6 +368,64 @@ class FootprintSetSpec:
                  config_key=f"{key}.weighting_method")
         if self.layers is not None:
             object.__setattr__(self, "layers", tuple(self.layers))
+        if self.domain_capture_csv is not None:
+            _require(self.domain_capture_column, input=who, field="domain_capture_column",
+                     config_key=f"{key}.domain_capture_column")
+            _choice(self.domain_capture_units, ("percent", "fraction"), input=who,
+                    field="domain_capture_units", config_key=f"{key}.domain_capture_units")
+
+
+@dataclass(frozen=True)
+class RasterExtractionSpec:
+    """Raster extraction run for one station (guide step 5).
+
+    ``methods`` is a subset of :data:`EXTRACTION_METHODS`:
+
+    - ``footprint``: footprint contribution transferred conservatively onto the
+      native model grid; each model uses its own valid cells.
+    - ``footprint_common_support``: as above, restricted to cells valid in
+      every model available that day.
+    - ``pixel_window``: unweighted mean of an odd ``n x n`` block of whole model
+      pixels centred on the pixel containing the tower (``window_sizes``).
+    - ``nearest_tower_pixel``: the model pixel containing the tower (diagnostic).
+
+    ``negative_weight_tolerance`` is the largest negative-to-positive footprint
+    mass ratio treated as round-off: those negatives are zeroed and reported.
+    Anything larger rejects the footprint for that day.
+    """
+
+    name: str
+    site_id: str
+    methods: tuple[str, ...]
+    footprint_set_id: str | None = None
+    window_sizes: tuple[int, ...] = (3,)
+    negative_weight_tolerance: float = 1e-9
+    models: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        key = f"raster_extractions.{self.name}"
+        object.__setattr__(self, "methods", tuple(self.methods))
+        object.__setattr__(self, "window_sizes", tuple(self.window_sizes))
+        if self.models is not None:
+            object.__setattr__(self, "models", tuple(self.models))
+        _require(self.site_id, input=key, field="site_id", config_key=f"{key}.site_id")
+        if not self.methods:
+            raise ContractError(f"{key}: no extraction methods declared",
+                                config_key=f"{key}.methods")
+        bad = set(self.methods) - set(EXTRACTION_METHODS)
+        if bad:
+            raise ContractError(f"{key}: unknown method(s) {sorted(bad)}; expected "
+                                f"{list(EXTRACTION_METHODS)}", config_key=f"{key}.methods")
+        if {"footprint", "footprint_common_support"} & set(self.methods) and \
+                not self.footprint_set_id:
+            raise ContractError(f"{key}: footprint methods need footprint_set_id",
+                                config_key=f"{key}.footprint_set_id")
+        if any(n < 1 or n % 2 == 0 for n in self.window_sizes):
+            raise ContractError(f"{key}: window sizes must be odd and positive",
+                                config_key=f"{key}.window_sizes")
+        if not 0 <= self.negative_weight_tolerance < 1:
+            raise ContractError(f"{key}: negative_weight_tolerance must be in [0, 1)",
+                                config_key=f"{key}.negative_weight_tolerance")
 
 
 @dataclass(frozen=True)
@@ -348,6 +440,7 @@ class Config:
     extracted_tables: tuple[ExtractedTableSpec, ...] = ()
     openet_rasters: tuple[OpenETRasterSource, ...] = ()
     footprint_sets: tuple[FootprintSetSpec, ...] = ()
+    raster_extractions: tuple[RasterExtractionSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -364,6 +457,24 @@ class Config:
         if len(set(ids)) != len(ids):
             raise ContractError(f"duplicate footprint set_id in {ids}",
                                 config_key="footprint_sets")
+        for x in self.raster_extractions:
+            key = f"raster_extractions.{x.name}"
+            if x.site_id not in self.stations:
+                raise ContractError(f"{key}: station {x.site_id} not declared",
+                                    config_key=f"stations.{x.site_id}")
+            if x.footprint_set_id and x.footprint_set_id not in ids:
+                raise ContractError(f"{key}: footprint set {x.footprint_set_id} not declared",
+                                    config_key="footprint_sets")
+            unknown = set(x.models or ()) - set(self.products)
+            if unknown:
+                raise ContractError(f"{key}: models {sorted(unknown)} not declared",
+                                    config_key="products")
+
+    def footprint_set(self, set_id: str) -> FootprintSetSpec:
+        for f in self.footprint_sets:
+            if f.set_id == set_id:
+                return f
+        raise KeyError(set_id)
 
     def model_registry(self):  # -> ModelRegistry (import deferred to avoid a cycle)
         from etcompare.registry import ModelRegistry
@@ -411,7 +522,8 @@ def _path(value: Any, base: Path | None) -> Path | None:
 def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -> Config:
     """Build a :class:`Config` from plain data (e.g. parsed YAML)."""
     top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
-           "extracted_tables", "openet_rasters", "footprint_sets", "output_dir"}
+           "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
+           "output_dir"}
     _check_keys(data, top, "<root>")
 
     stations = {}
@@ -473,11 +585,22 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
                  config_key=f"footprint_sets[{i}].root")
         kw = dict(body)
         kw["root"] = _path(kw["root"], base_dir)
+        kw["domain_capture_csv"] = _path(kw.get("domain_capture_csv"), base_dir)
         for req in ("set_id", "weighting_method", "value_semantics"):
             kw.setdefault(req, None)
         if kw.get("layers") is not None:
             kw["layers"] = tuple(kw["layers"])
         footprints.append(FootprintSetSpec(**kw))
+
+    extractions = []
+    for i, body in enumerate(data.get("raster_extractions") or []):
+        _check_keys(body, set(RasterExtractionSpec.__dataclass_fields__),
+                    f"raster_extractions[{i}]")
+        kw = dict(body)
+        kw.setdefault("name", f"raster_extraction_{i}")
+        kw.setdefault("site_id", None)
+        kw.setdefault("methods", ())
+        extractions.append(RasterExtractionSpec(**kw))
 
     return Config(
         stations=stations,
@@ -488,6 +611,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         extracted_tables=tuple(extracted),
         openet_rasters=tuple(rasters),
         footprint_sets=tuple(footprints),
+        raster_extractions=tuple(extractions),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 
