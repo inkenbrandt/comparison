@@ -11,6 +11,7 @@ submodules:
 - :mod:`etcompare.registry` -- model and site alias registries
 - :mod:`etcompare.io` -- table reading, Parquet round trips, file discovery
 - :mod:`etcompare.adapters` -- upstream product mappings
+- :mod:`etcompare.cohorts` -- explicit comparison cohorts (paired rows plus membership)
 """
 
 from etcompare.errors import (

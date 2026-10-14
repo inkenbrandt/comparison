@@ -163,4 +163,61 @@ raster_extractions:
     start: "2024-06-05"
     end: "2025-10-09"
 
+# Comparison cohorts (guide step 7; D-039). Each fixes its sample before any scoring.
+# No quality threshold is adopted yet (D-008): min_retained_frac is left unset.
+x-nldas-fp: &nldas_fp {extraction_method: footprint_conservative, footprint_set_id: US-UTJ_nldas_eto_20261014}
+x-all-models: &all_models [disalexi, eemetric, ensemble, geesebal, ptjpl, sims, ssebop]
+comparisons:
+  # All-model rankings on the primary footprints, one cohort per reference variant.
+  - comparison_id: utj_rank_corrected_inclusive
+    kind: common_date
+    models: *all_models
+    reference_variants: [et_corrected_inclusive]
+    sides: [*nldas_fp]
+    sources: [us_utj_nldas_eto]
+  - comparison_id: utj_rank_corrected_measured
+    kind: common_date
+    models: *all_models
+    reference_variants: [et_corrected_measured]
+    sides: [*nldas_fp]
+    sources: [us_utj_nldas_eto]
+  # Closure sensitivity: raw vs corrected on the same measured days and models (D-004).
+  - comparison_id: utj_closure_all_models
+    kind: paired_reference
+    common_models: true
+    models: *all_models
+    reference_variants: [et_raw, et_corrected_measured]
+    sides: [*nldas_fp]
+    sources: [us_utj_nldas_eto]
+  # Coverage summaries only (unequal days per model; never a ranking).
+  - comparison_id: utj_coverage
+    kind: model_available
+    models: *all_models
+    reference_variants: [et_corrected_inclusive]
+    sides: [*nldas_fp]
+    sources: [us_utj_nldas_eto]
+  # Extraction-method comparison: footprint vs fixed 3x3 window, frozen per model.
+  - comparison_id: utj_footprint_vs_window
+    kind: paired_method
+    models: *all_models
+    reference_variants: [et_corrected_measured]
+    sides:
+      - *nldas_fp
+      - {extraction_method: pixel_window_3x3, footprint_set_id: none}
+    sources: [us_utj_nldas_eto]
+  # Pairwise example on the two long-record single models (2024-2025).
+  - comparison_id: utj_pair_eemetric_ssebop
+    kind: pairwise_model
+    models: [eemetric, ssebop]
+    reference_variants: [et_corrected_measured]
+    sides: [*nldas_fp]
+    sources: [us_utj_nldas_eto]
+  # Pre-extracted producer table (set A): regression check of the 260 common dates.
+  - comparison_id: utj_set_a_common
+    kind: common_date
+    models: *all_models
+    reference_variants: [et_corrected_inclusive]
+    sides: [{extraction_method: upstream_footprint_weighted, footprint_set_id: US-UTJ_set_A_20261005}]
+    sources: [us_utj_set_a]
+
 output_dir: ../outputs

@@ -96,6 +96,17 @@ def test_cross_table_regression_counts(station, extracted):
     assert prov == {"corrected_from_raw": 172, "corrected_filled": 88}
 
 
+def test_set_a_common_date_cohort(cfg, station, extracted):
+    from etcompare.cohorts import build_cohort
+
+    c = build_cohort(station.table, extracted.table, cfg.comparison("utj_set_a_common"),
+                     footprint_sets=cfg.footprint_sets)
+    s = c.summary()
+    assert set(s["n_days"]) == {260} and set(s["n_days_reference_filled"]) == {88}
+    assert len(c.paired) == 7 * 260 and c.report.ok
+    assert c.membership.frame.shape[0] == 7 * 492
+
+
 def test_round_trip_real_tables(station, extracted, tmp_path):
     for result, name in ((station, "station.parquet"), (extracted, "extractions.parquet")):
         back = read_table(write_table(result.table, tmp_path / name))

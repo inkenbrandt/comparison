@@ -26,6 +26,8 @@ INTERVAL_LABELS: Final = ("start", "end")
 TEMPORAL_SUPPORTS: Final = ("interpolated_daily", "overpass_only", "unknown")
 FOOTPRINT_VALUE_SEMANTICS: Final = ("normalized_cell_weight", "cell_contribution", "density_per_m2")
 REFERENCE_VARIANT_SOURCES: Final = ("et_raw", "et_corrected")
+#: Reference variants built from those sources (decisions.md D-004; :mod:`etcompare.references`).
+REFERENCE_VARIANTS: Final = ("et_raw", "et_corrected_measured", "et_corrected_inclusive")
 RASTER_SCALING: Final = ("declared", "from_header")
 EXTRACTION_METHODS: Final = (
     "footprint", "footprint_common_support", "pixel_window", "nearest_tower_pixel",
@@ -42,6 +44,10 @@ AGGREGATION_BASES: Final = ("original_contribution", "renormalized_per_timestep"
 NEGATIVE_WEIGHT_POLICIES: Final = ("exclude_timestep", "reject_period", "keep")
 GAP_POLICIES: Final = ("exclude_timestep", "reject_period")
 NIGHT_POLICIES: Final = ("include", "exclude")
+#: Cohort rules of a comparison (guide step 7; see :class:`ComparisonSpec`).
+COHORT_KINDS: Final = (
+    "common_date", "pairwise_model", "model_available", "paired_method", "paired_reference",
+)
 
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
@@ -537,6 +543,135 @@ class TemporalAggregationSpec:
 
 
 @dataclass(frozen=True)
+class ExtractionSide:
+    """One extraction product in a comparison: method plus footprint set (``none`` if unused)."""
+
+    extraction_method: str
+    footprint_set_id: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.extraction_method}@{self.footprint_set_id}"
+
+
+def _iso_date(value: object, *, key: str, field: str) -> str | None:
+    if value is None:
+        return None
+    import datetime as _dt
+
+    try:
+        return _dt.date.fromisoformat(str(value)).isoformat()
+    except ValueError as exc:
+        raise ContractError(f"{key}: {field}={value!r} is not an ISO date",
+                            config_key=f"{key}.{field}") from exc
+
+
+@dataclass(frozen=True)
+class ComparisonSpec:
+    """A declared comparison and the cohort rule that fixes its sample (guide step 7).
+
+    A candidate unit is a site/date/model. It is eligible when **every** declared
+    side has a usable modeled value there (non-null, and passing
+    ``min_retained_frac`` for footprint sides) and **every** declared reference
+    variant has an observation that day. ``kind`` decides what else is frozen:
+
+    - ``common_date``: all ``models`` on the same days (all-model rankings).
+    - ``pairwise_model``: exactly two models on their common days (pairwise
+      rankings; may use different days from the all-model cohort).
+    - ``model_available``: each model on its own eligible days (coverage
+      summaries only; one side and one variant).
+    - ``paired_method``: two or more sides on the same days, per model, or
+      across all models with ``common_models``.
+    - ``paired_reference``: two or more reference variants on the same days, per
+      model, or across all models with ``common_models``.
+
+    ``min_retained_frac`` is a quality rule declared before scoring and applied
+    identically to every model and footprint side; it never applies to sides
+    whose footprint set is ``none``. ``sources`` names the configured inputs
+    (``raster_extractions`` or ``extracted_tables``) that runners load.
+    """
+
+    comparison_id: str
+    kind: str
+    models: tuple[str, ...]
+    reference_variants: tuple[str, ...]
+    sides: tuple[ExtractionSide, ...]
+    sources: tuple[str, ...] = ()
+    common_models: bool = False
+    min_retained_frac: float | None = None
+    sites: tuple[str, ...] | None = None
+    start: str | None = None
+    end: str | None = None
+    description: str | None = None
+
+    @property
+    def freeze_models(self) -> bool:
+        """True when one set of days is shared by every model."""
+        return self.kind in ("common_date", "pairwise_model") or self.common_models
+
+    @property
+    def ranking_scope(self) -> str:
+        """``all_models``, ``pairwise`` or ``none``: which rankings this cohort can support."""
+        return {"common_date": "all_models", "pairwise_model": "pairwise"}.get(self.kind, "none")
+
+    def __post_init__(self) -> None:
+        cid = self.comparison_id
+        _require(cid, input="comparison", field="comparison_id",
+                 config_key="comparisons[].comparison_id")
+        key = f"comparisons.{cid}"
+        if not _METHOD_ID.match(str(cid)):
+            raise ContractError(f"{key}: comparison_id must be snake_case", config_key=key)
+        _choice(self.kind, COHORT_KINDS, input=key, field="kind", config_key=f"{key}.kind")
+        sides = tuple(s if isinstance(s, ExtractionSide) else ExtractionSide(
+            s.get("extraction_method"), s.get("footprint_set_id")) for s in self.sides)
+        object.__setattr__(self, "sides", sides)
+        for f in ("models", "reference_variants", "sources"):
+            object.__setattr__(self, f, tuple(getattr(self, f)))
+        if self.sites is not None:
+            object.__setattr__(self, "sites", tuple(self.sites))
+        for f, values in (("models", self.models), ("reference_variants",
+                          self.reference_variants), ("sides", sides)):
+            if not values:
+                raise ContractError(f"{key}: no {f} declared", config_key=f"{key}.{f}")
+            if len(set(values)) != len(values):
+                raise ContractError(f"{key}: duplicate {f}", config_key=f"{key}.{f}")
+        for s in sides:
+            for f in ("extraction_method", "footprint_set_id"):
+                _require(getattr(s, f), input=key, field=f, config_key=f"{key}.sides[].{f}")
+        bad = set(self.reference_variants) - set(REFERENCE_VARIANTS)
+        if bad:
+            raise ContractError(f"{key}: unknown reference variant(s) {sorted(bad)}; expected "
+                                f"{list(REFERENCE_VARIANTS)}",
+                                config_key=f"{key}.reference_variants")
+        k, n_models, n_sides, n_vars = (self.kind, len(self.models), len(sides),
+                                        len(self.reference_variants))
+        rules = {
+            "common_date": (n_models >= 2, "needs at least two models"),
+            "pairwise_model": (n_models == 2, "needs exactly two models"),
+            "model_available": (n_sides == 1 and n_vars == 1,
+                                "takes exactly one side and one reference variant"),
+            "paired_method": (n_sides >= 2, "needs at least two sides"),
+            "paired_reference": (n_vars >= 2, "needs at least two reference variants"),
+        }
+        ok, why = rules[k]
+        if not ok:
+            raise ContractError(f"{key}: kind {k} {why}", config_key=key)
+        if self.common_models and k not in ("paired_method", "paired_reference"):
+            raise ContractError(f"{key}: common_models applies only to paired_method and "
+                                f"paired_reference (kind {k} fixes it)",
+                                config_key=f"{key}.common_models")
+        m = self.min_retained_frac
+        if m is not None and not 0 <= m <= 1:
+            raise ContractError(f"{key}: min_retained_frac must be in [0, 1]",
+                                config_key=f"{key}.min_retained_frac")
+        object.__setattr__(self, "start", _iso_date(self.start, key=key, field="start"))
+        object.__setattr__(self, "end", _iso_date(self.end, key=key, field="end"))
+        if self.start and self.end and self.start > self.end:
+            raise ContractError(f"{key}: start {self.start} is after end {self.end}",
+                                config_key=f"{key}.start")
+
+
+@dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
 
@@ -550,6 +685,7 @@ class Config:
     footprint_sets: tuple[FootprintSetSpec, ...] = ()
     raster_extractions: tuple[RasterExtractionSpec, ...] = ()
     footprint_aggregations: tuple[TemporalAggregationSpec, ...] = ()
+    comparisons: tuple[ComparisonSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -578,12 +714,40 @@ class Config:
             if unknown:
                 raise ContractError(f"{key}: models {sorted(unknown)} not declared",
                                     config_key="products")
+        self._check_comparisons(ids)
+
+    def _check_comparisons(self, footprint_set_ids: list[str]) -> None:
+        cids = [c.comparison_id for c in self.comparisons]
+        if len(set(cids)) != len(cids):
+            raise ContractError(f"duplicate comparison_id in {cids}", config_key="comparisons")
+        sources = {x.name for x in self.raster_extractions} | {
+            t.name for t in self.extracted_tables}
+        known_sets = set(footprint_set_ids) | {t.footprint_set_id for t in
+                                               self.extracted_tables} | {"none"}
+        for c in self.comparisons:
+            key = f"comparisons.{c.comparison_id}"
+            checks = (("models", set(c.models) - set(self.products), "products"),
+                      ("sources", set(c.sources) - sources,
+                       "raster_extractions / extracted_tables"),
+                      ("sites", set(c.sites or ()) - set(self.stations), "stations"),
+                      ("sides", {s.footprint_set_id for s in c.sides} - known_sets,
+                       "footprint_sets"))
+            for f, unknown, where in checks:
+                if unknown:
+                    raise ContractError(f"{key}: {f} {sorted(unknown)} not declared in {where}",
+                                        config_key=f"{key}.{f}")
 
     def footprint_set(self, set_id: str) -> FootprintSetSpec:
         for f in self.footprint_sets:
             if f.set_id == set_id:
                 return f
         raise KeyError(set_id)
+
+    def comparison(self, comparison_id: str) -> ComparisonSpec:
+        for c in self.comparisons:
+            if c.comparison_id == comparison_id:
+                return c
+        raise KeyError(comparison_id)
 
     def model_registry(self):  # -> ModelRegistry (import deferred to avoid a cycle)
         from etcompare.registry import ModelRegistry
@@ -632,7 +796,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
     """Build a :class:`Config` from plain data (e.g. parsed YAML)."""
     top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
            "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
-           "footprint_aggregations", "output_dir"}
+           "footprint_aggregations", "comparisons", "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -727,6 +891,18 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         raise ContractError(f"duplicate footprint aggregation method_id in {agg_ids}",
                             config_key="footprint_aggregations")
 
+    comparisons = []
+    cmp_fields = set(ComparisonSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("comparisons") or []):
+        _check_keys(body, cmp_fields, f"comparisons[{i}]")
+        kw = {f: body.get(f) for f in ("comparison_id", "kind")}
+        kw.update({f: body.get(f) or () for f in ("models", "reference_variants", "sides")})
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        for j, side in enumerate(kw["sides"]):
+            _check_keys(side, set(ExtractionSide.__dataclass_fields__),
+                        f"comparisons[{i}].sides[{j}]")
+        comparisons.append(ComparisonSpec(**kw))
+
     return Config(
         stations=stations,
         products=products,
@@ -738,6 +914,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         footprint_sets=tuple(footprints),
         raster_extractions=tuple(extractions),
         footprint_aggregations=tuple(aggregations),
+        comparisons=tuple(comparisons),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 

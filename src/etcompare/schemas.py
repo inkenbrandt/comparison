@@ -33,6 +33,7 @@ from etcompare.config import (
     STATION_DAY_DEFINITIONS,
     TEMPORAL_SUPPORTS,
 )
+from etcompare.config import REFERENCE_VARIANTS as REFERENCE_VARIANTS
 from etcompare.errors import DuplicateKeyError, SchemaError
 
 Kind = Literal["string", "date", "float", "int", "bool"]
@@ -53,7 +54,6 @@ FRACTION: Final = "1"
 REFERENCE_PROVENANCE: Final = (
     "corrected_from_raw", "corrected_filled", "reference_missing", "inconsistent_flags",
 )
-REFERENCE_VARIANTS: Final = ("et_raw", "et_corrected_measured", "et_corrected_inclusive")
 DAY_ALIGNMENT: Final = ("declared", "unverified")
 PERIODS: Final = ("day", "month")
 SEVERITY: Final = ("error", "warning", "info")
@@ -293,6 +293,22 @@ PAIRED = TableSchema(
                  "extraction_method", "footprint_set_id"),
 )
 
+COHORT_MEMBERSHIP = TableSchema(
+    "cohort_membership", "1",
+    "Every candidate site/date/model of a cohort with its inclusion decision and reason.",
+    (
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("site_id", "string", "Station"),
+        _key("date", "date", "Station-day label"),
+        _key("model", "string", "Canonical model name"),
+        _c("included", "bool", "Unit belongs to the cohort", nullable=False),
+        _c("reason_code", "string", "Stable reason for exclusion; null when included"),
+        _c("detail", "string", "Every failing side/reference, or the models that failed"),
+    ),
+    primary_key=("comparison_id", "cohort_id", "site_id", "date", "model"),
+)
+
 METRICS = TableSchema(
     "metrics", "1", "Metric values with explicit sample counts and validity.",
     (
@@ -353,7 +369,8 @@ EXCLUSIONS = TableSchema(
 
 SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
     s.name: s for s in (STATIONS, STATION_DAILY, MODEL_MANIFEST, ASSET_SITES,
-                        FOOTPRINT_MANIFEST, EXTRACTIONS, PAIRED, METRICS, INTERVALS, EXCLUSIONS)
+                        FOOTPRINT_MANIFEST, EXTRACTIONS, PAIRED, COHORT_MEMBERSHIP, METRICS,
+                        INTERVALS, EXCLUSIONS)
 })
 
 

@@ -10,8 +10,64 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 4 — File discovery and upstream adapters | **Done** 2026-10-13 (exported-file adapters; see limitations) |
 | 5 — Spatial extraction | **Done** 2026-10-13 (footprint set B; polygon area-weighted mode not implemented: no field polygons) |
 | 6 — Footprint aggregation sensitivity | **Done** 2026-10-14 (NLDAS-ETo primary and measured-LE sensitivity footprints built from one per-timestep stack) |
-| 7 — Comparison cohorts | Not started (next) |
-| 8–18 | Not started |
+| 7 — Comparison cohorts | **Done** 2026-10-14 |
+| 8 — Temporal aggregation and completeness | Not started (next) |
+| 9–18 | Not started |
+
+## Step 7 — Comparison cohorts (2026-10-14)
+
+**Run it**
+```bash
+uv run pytest                                     # 176 passed, 3 skipped (opt-in)
+uv run ruff check src tests && uv run mypy        # clean
+uv run python tools/run_cohorts.py examples/us_utj.yaml   # all 7 declared cohorts, ≈5 s
+```
+
+### Delivered
+- **[src/etcompare/cohorts.py](src/etcompare/cohorts.py):** `build_cohort(observations, extractions, spec, footprint_sets=)` returns an immutable `Cohort`. It holds:
+  - `paired` rows (`paired` schema) for every kept unit × side × reference variant, with no missing values;
+  - `membership`: one row per candidate site/date/model, with `included`, `reason_code` and `detail`;
+  - exclusions, a validation report, `summary()` (days per cohort and model, with gap-filled reference days counted apart), `units()`, and a `fingerprint` (SHA-256 of the included units).
+- **Config:** `ComparisonSpec` and `ExtractionSide`, in a new `comparisons:` YAML section. Kinds: `common_date`, `pairwise_model`, `model_available`, `paired_method` and `paired_reference`, with an optional `common_models`, `min_retained_frac`, `sites` and `start`/`end`. The loader checks that models, footprint sets, sources and sites are declared. Rules are in D-039.
+- **Schema:** new `cohort_membership` v1. `REFERENCE_VARIANTS` moved to `config` (re-exported by `schemas`).
+- **Example config:** 7 US-UTJ comparisons: two all-model rankings, closure sensitivity, coverage, footprint vs 3×3 window, one pairwise cohort, and a set-A regression cohort.
+- **[tools/run_cohorts.py](tools/run_cohorts.py):** writes paired rows, membership, summary, exclusions and a report into `outputs/cohorts/`. It is a stand-in until the step-17 CLI.
+
+### Gate checks (guide step 7), in [tests/test_cohorts.py](tests/test_cohorts.py)
+- **Difficult days:** a model missing them gains no advantage. Per-model cohorts give MAE 0.66 vs 0.10. The common-date cohort scores both models on the same 8 days (MAE 0.10 each), and the other model's difficult days are recorded as `not_all_models`. (MAE is computed in the test; metrics are step 9.)
+- **Paired methods:** a date missing from one method is removed from both sides of that model. With `common_models` it is removed from every model.
+- **Export:** every candidate has a decision; excluded units have a reason code and detail. Membership and paired tables round-trip through Parquet, and the fingerprint travels in the attributes.
+- **Also tested:**
+  - `paired_reference` uses measured days only.
+  - A pairwise cohort has more days than the all-model cohort and a different `ranking_scope`.
+  - `model_available` gives per-model cohorts.
+  - The retained-weight threshold applies uniformly and never to `none` sides; an unknown fraction is a failure.
+  - Duplicated extraction or station keys raise before joins.
+  - Flags: unverified day alignment, and target dependence (`yes` / `unknown` / absent).
+  - Immutability (copies, frozen dataclass, read-only attributes) and fingerprint stability.
+  - Period filtering and the empty-cohort status.
+  - Spec validation errors.
+  - Equivalence with `compare_footprint_sets` paired rows.
+- **Pandas versions:** tested on the oldest dependency stack with `FutureWarning` as an error.
+- **Integration:** the set-A pre-extracted cohort reproduces 260 common dates with 88 gap-filled (PROJECT_CONTEXT §5).
+
+### US-UTJ cohorts (local outputs, git-ignored; details in D-040)
+- **All-model rankings:** 281 days with `et_corrected_inclusive` (93 of them gap-filled); 188 with `et_corrected_measured`. These are all in 2025.
+- **Closure sensitivity:** 188 days.
+- **Footprint vs 3×3 window:** 303 measured days for the long-record models, 188 for the 2025-only models.
+- **Coverage:** 472, 282 and 281 days.
+- No target-dependence warnings: both primary sets are reference-ET weighted.
+
+### Open (user decisions before scoring)
+- **Quality threshold:** no `min_retained_frac` is adopted (D-008). SIMS retained weight falls to 0.19 on the cropland mask. Any threshold must be declared before step 9 and applies to every model.
+- **Measured-LE coverage minimum:** still undecided (D-038).
+
+### Limitations
+- **Daily rows only:** monthly cohorts belong to step 8 (aggregation from daily cohorts).
+- **No acquisition-based eligibility:** none is available (D-011).
+- **Separate code paths:** `compare_footprint_sets` still has its own frozen-key code. It is shown equivalent by test but not refactored onto `build_cohort`.
+
+**Next:** step 8, temporal aggregation and completeness built on cohorts.
 
 ## Step 6 addendum — NLDAS-ETo primary, measured-LE sensitivity (2026-10-14)
 

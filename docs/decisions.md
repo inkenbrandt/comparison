@@ -279,3 +279,46 @@ Both comparisons use `footprint_conservative` on frozen days.
 - No minimum temporal coverage is applied. Choosing one is a scientific decision that must be made before scoring, not tuned on agreement.
 
 Both are descriptive differences of modeled ET; station agreement is step 9.
+
+---
+
+**Revision 2026-10-14 (g):** Step 7 implemented. D-039 and D-040 added.
+
+### D-039 — Cohort rules (Adopted)
+Every comparison is declared as a `ComparisonSpec` (`comparisons:` in the config) and built by `etcompare.cohorts.build_cohort` before any scoring.
+- **Candidate unit:** a site/date/model. Candidates are every site/date in the selected extractions or in the station table, crossed with every declared model, so a model with no row on a day is recorded as failing, never silently absent.
+- **Own eligibility:** a usable modeled value on every declared side (extraction method + footprint set) and an observation for every declared reference variant (D-004).
+- **Kinds:**
+
+  | Kind | Days frozen across | Ranking scope |
+  |---|---|---|
+  | `common_date` | all declared models (≥ 2) | `all_models` |
+  | `pairwise_model` | exactly two models | `pairwise` |
+  | `model_available` | nothing; one cohort per model; one side and one variant | `none` (coverage only) |
+  | `paired_method` | ≥ 2 sides, per model (all models with `common_models`) | `none` |
+  | `paired_reference` | ≥ 2 reference variants, per model (all models with `common_models`) | `none` |
+
+  Every kind also freezes across all of its declared sides and variants. A pairwise cohort may use different days from the all-model cohort; `ranking_scope` records which rankings a cohort can support, so step 11 cannot pool them.
+- **Quality rule:** `min_retained_frac` is applied before scoring, identically to every model and footprint side. It does not apply to sides with footprint set `none`. A footprint row with an unknown retained fraction fails as `retained_frac_unknown`. No threshold is adopted for US-UTJ (D-008).
+- **Reasons** (`cohort_membership.reason_code`): `extraction_missing`, `modeled_value_null`, `below_min_retained_frac`, `retained_frac_unknown`, `reference_unavailable`, `not_all_models`. The first failing cell gives the code; `detail` lists every failing side or variant, or the ineligible models.
+- **Joins:** primary keys are checked on the selected rows before joining, and every merge is validated (`one_to_one` / `many_to_one`).
+- **Paired rows** contain no missing values; metrics must use the cohort as the common mask and never drop values per metric.
+- **Flags:** `day_alignment=unverified` and `footprint_target_dependence=yes|unknown`. A footprint set whose weighting is not supplied counts as `unknown`.
+- **Immutability:** a `Cohort` is a frozen object whose accessors return copies. `membership_sha256` (the fingerprint) hashes the included units, so later stages can check they share a cohort.
+
+`compare_footprint_sets` (step 6) keeps its own implementation. A test shows that `build_cohort` with `paired_method` over two footprint sets gives identical paired rows.
+
+### D-040 — US-UTJ cohort sizes (Information)
+From `tools/run_cohorts.py examples/us_utj.yaml`. Primary sides are `footprint_conservative` on `US-UTJ_nldas_eto_20261014`.
+
+| Comparison | Kind | Days |
+|---|---|---|
+| `utj_rank_corrected_inclusive` | common_date, 7 models | 281 (93 gap-filled reference) |
+| `utj_rank_corrected_measured` | common_date, 7 models | 188 |
+| `utj_closure_all_models` | paired_reference raw/corrected_measured, all models | 188 |
+| `utj_coverage` | model_available | eemetric/ensemble/ssebop 472; disalexi/geesebal/ptjpl 282; sims 281 |
+| `utj_footprint_vs_window` | paired_method vs `pixel_window_3x3`, per model | 303 long-record models; 188 for 2025-only models |
+| `utj_pair_eemetric_ssebop` | pairwise_model | 303 |
+| `utj_set_a_common` | common_date, pre-extracted set A | 260 (88 gap-filled): matches PROJECT_CONTEXT |
+
+The primary common cohort contains all 260 set-A days plus 21 more (281). On every one of those 21 days the producer rejected the set-A footprint. Set B `etw` also lacks 19 of them; the other 2 (2025-04-03, 2025-05-05) are set-B round-off days (D-027). The NLDAS footprints exist on all 21 (D-038). The all-model cohorts are limited to 2025 by the four 2025-only models (D-012). Every cohort that spans both years is single-model or pairwise.
