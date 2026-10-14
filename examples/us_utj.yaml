@@ -15,14 +15,17 @@ stations:
 
 # OpenET products: mm/day by API request (D-003); interpolated daily (D-011).
 # Day boundary of the OpenET daily product is unresolved -> unknown.
+# Raster scaling is declared (D-026): the GeoTIFFs carry no scale/offset tags, and
+# their header nodata is -9999 (checked against the declaration on every read).
+x-scaling: &scaling {raster_scaling: declared, scale_factor: 1.0, add_offset: 0.0, nodata: -9999.0}
 products:
-  disalexi: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
-  eemetric: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
-  ensemble: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, is_ensemble: true}
-  geesebal: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
-  ptjpl:    {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
-  sims:     {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
-  ssebop:   {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded}
+  disalexi: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  eemetric: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  ensemble: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling, is_ensemble: true}
+  geesebal: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  ptjpl:    {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  sims:     {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  ssebop:   {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
 
 site_aliases: {}
 model_aliases: {}
@@ -66,5 +69,31 @@ footprint_sets:
     layers: [etw]
     weighting_method: et_weighted_unverified
     value_semantics: normalized_cell_weight
+
+  # Set B (2026-10-12) is the set used for raster re-extraction (D-016).
+  - set_id: US-UTJ_set_B_etw_20261012
+    root: "M:/My Drive/footprints/US-UTJ/weighted"
+    layers: [etw]
+    weighting_method: et_weighted_unverified       # negative weights present (D-027)
+    value_semantics: normalized_cell_weight
+    domain_capture_csv: "M:/My Drive/footprints/domain_outputs/US-UTJ_daily_domain_results.csv"
+    domain_capture_column: et_weighted_coverage_pct
+  - set_id: US-UTJ_set_B_mean_20261012
+    root: "M:/My Drive/footprints/US-UTJ/non_weighted"
+    layers: [mean]
+    weighting_method: time_mean_unverified
+    value_semantics: normalized_cell_weight
+    domain_capture_csv: "M:/My Drive/footprints/domain_outputs/US-UTJ_daily_domain_results.csv"
+    domain_capture_column: mean_coverage_pct
+
+raster_extractions:
+  - name: us_utj_set_b_etw
+    site_id: US-UTJ
+    footprint_set_id: US-UTJ_set_B_etw_20261012
+    methods: [footprint, footprint_common_support, pixel_window, nearest_tower_pixel]
+    window_sizes: [3]
+    negative_weight_tolerance: 1.0e-9   # round-off only (D-027)
+    start: "2024-06-05"                 # station record (contract 4.1)
+    end: "2025-10-09"
 
 output_dir: ../outputs

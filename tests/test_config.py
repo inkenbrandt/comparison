@@ -131,3 +131,45 @@ def test_station_table_requires_station_declaration():
             "site_id": "US-UTJ", "date_column": "date", "gap_flag_column": "ET_gap",
             "reference_columns": {"et_raw": "ET", "et_corrected": "ET_corr"},
             "units": {"ET": "mm/day", "ET_corr": "mm/day"}}]})
+
+
+def test_raster_scaling_contract():
+    from etcompare.config import ProductSpec
+
+    p = ProductSpec("ssebop", units="mm/day", day_definition="unknown",
+                    temporal_support="interpolated_daily")
+    with pytest.raises(ContractError, match="raster scaling unknown"):
+        p.require_scaling()
+    with pytest.raises(ContractError, match="scale_factor not declared"):
+        ProductSpec("ssebop", units="mm/day", day_definition="unknown",
+                    temporal_support="interpolated_daily", raster_scaling="declared")
+    with pytest.raises(ContractError, match="not one of"):
+        ProductSpec("ssebop", units="mm/day", day_definition="unknown",
+                    temporal_support="interpolated_daily", raster_scaling="guess")
+
+
+def test_raster_extraction_spec():
+    from etcompare.config import RasterExtractionSpec
+
+    ok = RasterExtractionSpec("x", "US-UTJ", methods=["pixel_window"], window_sizes=[3, 5],
+                              start="2024-06-05", end="2025-10-09")
+    assert ok.window_sizes == (3, 5) and ok.start == "2024-06-05"
+    for kw, match in [
+        (dict(methods=["footprint"]), "footprint_set_id"),
+        (dict(methods=["bilinear"]), "unknown method"),
+        (dict(methods=["pixel_window"], window_sizes=[2]), "odd"),
+        (dict(methods=["pixel_window"], start="2025-13-01"), "ISO"),
+        (dict(methods=["pixel_window"], start="2025-02-01", end="2025-01-01"), "after"),
+        (dict(methods=[]), "no extraction methods"),
+    ]:
+        with pytest.raises(ContractError, match=match):
+            RasterExtractionSpec("x", "US-UTJ", **kw)
+
+
+def test_example_raster_extraction_declared():
+    cfg = load_config(EXAMPLE)
+    (x,) = cfg.raster_extractions
+    assert x.footprint_set_id == "US-UTJ_set_B_etw_20261012"
+    fs = cfg.footprint_set(x.footprint_set_id)
+    assert fs.domain_capture_column == "et_weighted_coverage_pct"
+    assert cfg.products["sims"].nodata == -9999.0

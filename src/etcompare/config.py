@@ -401,6 +401,9 @@ class RasterExtractionSpec:
     window_sizes: tuple[int, ...] = (3,)
     negative_weight_tolerance: float = 1e-9
     models: tuple[str, ...] | None = None
+    #: Inclusive date-label period to extract (ISO dates); ``None`` means unbounded.
+    start: str | None = None
+    end: str | None = None
 
     def __post_init__(self) -> None:
         key = f"raster_extractions.{self.name}"
@@ -423,6 +426,19 @@ class RasterExtractionSpec:
         if any(n < 1 or n % 2 == 0 for n in self.window_sizes):
             raise ContractError(f"{key}: window sizes must be odd and positive",
                                 config_key=f"{key}.window_sizes")
+        for f in ("start", "end"):
+            v = getattr(self, f)
+            if v is not None:
+                import datetime as _dt
+
+                try:
+                    object.__setattr__(self, f, _dt.date.fromisoformat(str(v)).isoformat())
+                except ValueError as exc:
+                    raise ContractError(f"{key}: {f}={v!r} is not an ISO date",
+                                        config_key=f"{key}.{f}") from exc
+        if self.start and self.end and self.start > self.end:
+            raise ContractError(f"{key}: start {self.start} is after end {self.end}",
+                                config_key=f"{key}.start")
         if not 0 <= self.negative_weight_tolerance < 1:
             raise ContractError(f"{key}: negative_weight_tolerance must be in [0, 1)",
                                 config_key=f"{key}.negative_weight_tolerance")
@@ -524,6 +540,8 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
     top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
            "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
            "output_dir"}
+    # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
+    data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
 
     stations = {}

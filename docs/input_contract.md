@@ -180,20 +180,21 @@ The endpoint is `https://utah.openet-api.org/raster/export/stack`.
 
 ## 7. Footprint rasters (US-UTJ)
 
-| Property | Set A (top level; used) | Set B (`weighted/`, `non_weighted/`) |
+| Property | Set A (top level; produced the Parquet) | Set B (`weighted/`, `non_weighted/`; **adopted for re-extraction**, D-016) |
 |---|---|---|
 | Written | 2026-10-05 | 2026-10-12 |
 | CRS / cell | EPSG:32612, 10 m | EPSG:32612, 10 m |
 | Shape / origin | 121 × 121; (629275.97, 4127739.12) | 125 × 125; (629255.97, 4127759.12) |
 | Declared nodata | 0.0 | 0.0 |
-| Values | Normalised cell weights; usable files sum to 1 | Normalised cell weights; sum to 1 on sampled dates |
-| Problem files | 18 all-nodata; 43 with negative weights | Not yet profiled |
+| Values | Normalised cell weights; usable files sum to 1 | Normalised cell weights; usable files sum to 1 ± 1.1e-8 (all 984 daily files profiled) |
+| Problem files | 18 all-nodata; 43 with negative weights | `etw`: 18 all-NaN, 43 with negative weights (same dates as set A; 28–5,879 negative cells; negative/positive mass up to 1.4e-3) → 431 usable. `mean`: 18 all-NaN, 0 negative → 474 usable |
 | Layers | `daily_etw`, `monthly_etw` | `daily_etw`, `daily_mean`, `monthly_etw`, `monthly_mean` |
-| Domain coverage CSV | None | `US-UTJ_daily_domain_results.csv`: ET-weighted capture 85.9–101.4 % (474 days; 11 > 100 % from discretisation) |
+| Domain coverage CSV | None | `US-UTJ_daily_domain_results.csv` (474 days): `et_weighted_coverage_pct` 85.9–101.4 % (11 > 100 % from discretisation) and `mean_coverage_pct` 87.3–104.2 %. Code-inferred meaning (fluxfootprints `summarize_periods`): per-timestep footprint mass inside the domain before renormalisation, averaged over the day (plain or ET-weighted mean). Attached to the `etw` and `mean` layers respectively |
 
 Semantics:
 - **Value type:** normalised cell weights, not density per m². Each timestep is renormalised over the grid, so set A carries **no original-capture information**. The domain-coverage CSV describes set B and must not be attached to set-A extractions.
-- **Weighting variable:** the current `footprint_workflow.py` weights by `nldas_et` and drops negative ET. Set A contains negative weights, so it was written by an **earlier workflow version** whose weighting variable and negative-value handling are **unresolved**.
+- **Weighting variable:** the current `footprint_workflow.py` weights by `nldas_et` clipped at 0, refuses to export negative weights and writes NaN as nodata. Sets A **and B** contain negative-weight `etw` files and nodata 0, so both were written by **earlier workflow versions**. Their weighting variable and negative-value handling are **unresolved** (D-009, D-027).
+- **OpenET scaling (raster workflow):** the GeoTIFFs carry no scale/offset tags (GDAL reports defaults 1/0) and header nodata −9999. Scaling is therefore declared in configuration: scale 1, offset 0, nodata −9999 (D-026).
 - **Day grouping:** naive-index calendar day (§3).
 
 ## 8. Optional inputs

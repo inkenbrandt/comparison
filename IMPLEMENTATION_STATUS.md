@@ -8,8 +8,78 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 2 — Package skeleton | **Done** 2026-10-13 |
 | 3 — Canonical tables and result objects | **Done** 2026-10-13 |
 | 4 — File discovery and upstream adapters | **Done** 2026-10-13 (exported-file adapters; see limitations) |
-| 5 — Spatial extraction | Not started (next; needs D-016 footprint-set choice) |
-| 6–18 | Not started |
+| 5 — Spatial extraction | **Done** 2026-10-13 (footprint set B; polygon area-weighted mode not implemented: no field polygons) |
+| 6 — Footprint aggregation sensitivity | Not started (next) |
+| 7–18 | Not started |
+
+## Step 5 — 2026-10-13
+
+**D-016 decided by the user: footprint set B.** Its `etw` layer is the primary footprint; its `mean` layer is declared for step 6.
+
+**Run the checks**
+```bash
+uv sync --extra geo && uv run pytest                    # 128 passed, 1 skipped
+ETCOMPARE_RASTER_TESTS=1 uv run pytest tests/integration # real Drive rasters (≈20 s)
+uv run python tools/run_raster_extraction.py examples/us_utj.yaml us_utj_set_b_etw
+```
+
+### Delivered
+- [src/etcompare/spatial.py](src/etcompare/spatial.py) — the transfer core:
+  - `Grid`/`Window` types and conservative contribution transfer onto the native model grid (D-028). The exact path for aligned grids in the same CRS needs only numpy and scipy; other grid pairs use a shapely polygon-overlap path.
+  - Weighted extraction, which tracks the retained, in-extent and valid-given-extent fractions with named denominators, and support IDs.
+  - Pixel-block means.
+- [src/etcompare/footprints.py](src/etcompare/footprints.py) prepares footprints:
+  - NaN or nodata cells get zero weight.
+  - `density_per_m2` values are converted to contributions using cell area (projected metre CRS required).
+  - Negative weights are rejected beyond a round-off tolerance (D-027); zero-total footprints are rejected.
+- [src/etcompare/io/rasters.py](src/etcompare/io/rasters.py) reads rasters in bounded windows with declared scaling. A header nodata that differs from the declaration is an error (D-026).
+- [src/etcompare/extraction.py](src/etcompare/extraction.py) runs the per-station workflow:
+  - Methods: `footprint_conservative`, `footprint_conservative_common_support`, `pixel_window_<n>x<n>` and `nearest_tower_pixel` (D-029).
+  - Each footprint is read once per day and each raster once. Transfer matrices are cached per grid pair.
+  - Unreadable files become counted exclusions (or raise in strict mode). Contract violations always raise.
+- **Config:**
+  - `ProductSpec.raster_scaling`/`scale_factor`/`add_offset`/`nodata`.
+  - `FootprintSetSpec.domain_capture_*`.
+  - `RasterExtractionSpec`, including a declared `start`/`end` period.
+  - Top-level `x-` anchor keys are allowed.
+- **Schema:** optional extraction columns `fp_frac_in_model_extent`, `fp_domain_capture_frac`, `n_cells_valid`, `model_grid_id`, plus footprint-manifest `domain_capture_source`. The set-B domain-capture CSV is attached by layer (D-030).
+- **Tools:** [tools/profile_footprints.py](tools/profile_footprints.py) profiles footprint sets. [tools/run_raster_extraction.py](tools/run_raster_extraction.py) is a stand-in runner until the step-17 CLI.
+
+### Gate checks (guide step 5)
+- **Synthetic** ([tests/test_spatial.py](tests/test_spatial.py), [tests/test_extraction.py](tests/test_extraction.py)):
+  - Uniform ET is unchanged under any weights.
+  - ET `[2, 6]` with weights `[0.75, 0.25]` gives 3. Masking the second cell gives 2 with retained 0.75.
+  - Transfer conserves total contribution.
+  - Analytic cases pass: non-overlap, partial and shifted cells, a rotated grid.
+  - The polygon path equals the exact path to 1e-12. UTM → EPSG:4326 agrees with point sampling.
+  - Density conversion, differing model masks and the common support behave as specified.
+  - Rejected for: negative weights, zero total, missing CRS, undeclared scaling, mismatched nodata.
+  - Zero ET is valid, and nodata is never zero-filled.
+  - The end-to-end GeoTIFF workflow matches independent 3×3 block sums to 1e-12.
+- **Real data:** the set-A conservative method differs from the producer's bilinear `ET_fp` by ≤ 0.023 mm/day on 28 model-days (D-031).
+
+### Full US-UTJ run (set B `etw`, 2024-06-05 to 2025-10-09, 34 min over the Drive mount)
+- **Outputs:** `outputs/us_utj_set_b_etw_{extractions.parquet, exclusions.csv, report.txt, run.log}`. They are local and git-ignored.
+- **Rows and errors:** 9,912 rows, 0 null values, 0 errors or warnings. The transfer is polygon overlap: all 15,625 footprint cells lie inside the model window, and row sums equal 1 to 12 decimals.
+- **Footprint days:** 434 = 492 − 18 with no weight − 40 with negative weights. A further 3 round-off days were zeroed and reported.
+- **Per-model footprint coverage:** 434 days for eemetric, ensemble and ssebop; 263 for disalexi, geesebal and ptjpl; 262 for SIMS.
+- **Pixel methods:** 2,603 model-days.
+- **Retained weight:** 1.000 for every model except SIMS (mean 0.782, minimum 0.206; cropland mask).
+- **Domain capture** (from the CSV): minimum 0.859.
+- **Compared with the Parquet (set A, bilinear; descriptive only):**
+  - All 2,336 Parquet model-days are present.
+  - Median per-model difference ≤ 0.014 mm/day; 95th percentile ≤ 0.043; maximum 0.105.
+  - The 3 round-off dates exist only in set B.
+
+### Limitations
+- **Polygon area-weighted mode:** not implemented. No field polygons exist (contract §8), and it was left out rather than shipped untested. It is a planned step-5 extension.
+- **Weighting method:** set B's is still unverified. Set B was not written by the current footprint code, since its `etw` files have negative weights and nodata 0 (D-009, D-027).
+- **Domain-capture mapping:** code-inferred (D-030).
+- **No retries or staging:** there are no I/O retries and no local staging of Drive files yet (step 18). A run reads about 2,600 rasters in about 34 min.
+- **Common support varies by year:** it covers the models present each day (3 in 2024, 7 in 2025), and the `commonN:` support ID records N. Cross-model rankings must use step-7 cohorts.
+- **Step 6 inputs:** the set-B `mean` layer is declared but not yet extracted.
+
+**Next:** step 6 (footprint aggregation sensitivity). Extract the set-B `mean` layer and compare it with `etw` on frozen dates.
 
 ## Steps 2–4 — 2026-10-13
 
@@ -82,7 +152,7 @@ uv run --isolated --resolution lowest-direct --python 3.11 pytest   # oldest sup
 - **Site tokens** must match the AmeriFlux pattern or an explicit alias, so region-named folders such as `castledale` need a separate mapping that has not been designed.
 - **License and authors** are not set in `pyproject.toml`; this is the user's decision. The repository is not a git repo, so no commit was made.
 
-**Next:** step 5 (raster extraction). It needs the D-016 choice of footprint set and the `geo` extra.
+**Next (at the time):** step 5. Superseded by the Step 5 entry above.
 
 ## Step 1 revision — 2026-10-13 (b)
 

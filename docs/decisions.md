@@ -68,13 +68,13 @@ Station data, Parquet files, notebooks and rasters are local integration inputs.
 ### D-015 — Remaining questions (Open)
 1. Is the half-hourly station timestamp the start or the end of the interval? (Assumed start.)
 2. What were the settings of the 2026-10-05 footprint run (set A): weighting variable, negative-ET handling?
-3. Which footprint set should re-extraction use? (D-016)
+3. ~~Which footprint set should re-extraction use?~~ Set B (D-016).
 4. OpenET model versions and download dates, if recorded anywhere.
 
 None of these block steps 2–4.
 
-### D-016 — Footprint set for re-extraction (Open)
-Set A (121×121, 2026-10-05) produced the Parquet. Set B (`weighted/`, 125×125, 2026-10-12) is newer, has a matching domain-coverage file and a `daily_mean` companion. Pre-extracted comparisons stay tied to set A. Raster re-extraction (step 5) needs the user to choose a set; results from the two sets are never mixed in one cohort.
+### D-016 — Footprint set for re-extraction: set B (Adopted 2026-10-13, user decision)
+Set A (121×121, 2026-10-05) produced the Parquet. Set B (`weighted/` and `non_weighted/`, 125×125, 2026-10-12) is used for raster re-extraction. Its `etw` layer is the primary footprint; its `mean` layer is available for step-6 sensitivity. Pre-extracted comparisons stay tied to set A. Results from different sets are never mixed in one cohort; the `footprint_set_id` column keeps them apart.
 
 ### D-017 — Existing comparison outputs are not reused (Adopted)
 The `comparison_results*` files from `OpenET_Comparison.ipynb` cell 22 are not inputs or baselines:
@@ -119,3 +119,56 @@ Following contract §4.3 strictly, a row with raw ET, no corrected ET and `ET_ga
 
 ### D-025 — Footprint manifests are keyed by set (Adopted)
 Footprint discovery does not recurse by default. Its key is `(footprint_set_id, asset_id)`, because sets A and B share filename stems (D-016). The filename layer token (`etw`, `mean`) is stored as text and is never taken as the weighting method (D-009).
+
+---
+
+**Revision 2026-10-13 (d):** Step 5 implemented with footprint set B. D-026 to D-031 added.
+
+### D-026 — OpenET raster scaling is declared (Adopted)
+The GeoTIFFs have no scale or offset tags; GDAL reports defaults of 1 and 0, which are not metadata. Products therefore declare `raster_scaling: declared` with scale 1, offset 0 and nodata −9999. This rests on the API request (`units: "mm"`, daily), float32 values of daily-ET magnitude, and the header nodata.
+On every read, a header nodata that differs from the declared value is an error, so −9999 can never be read as ET. A product without a scaling declaration cannot be extracted from rasters.
+
+### D-027 — Negative footprint weights: reject beyond round-off (Adopted; threshold configurable)
+Set B `etw` has negative weights on the same 43 dates as set A, in 28–5,879 cells per file. The negative mass is up to 0.14 % of the positive mass: real negative contributions, not round-off.
+Following the guide, a footprint is rejected for the day when its negative-to-positive mass ratio exceeds `negative_weight_tolerance` (default 1e-9). Smaller negatives are zeroed and reported. In the full set-B `etw` run:
+- 40 days were rejected.
+- 3 days (2024-12-22, 2025-04-03, 2025-05-05) had ratios of 5e-14 to 7e-11; they were zeroed and are listed in the exclusions file.
+- 18 days had no weight.
+
+That leaves **434 footprint days**. The producer, which rejected any negative value, kept 431 set-A days.
+Raising the tolerance is a scientific choice: it must be set in configuration before scoring and is reported as an adjustment. The `mean` layer has no negative weights (474 usable days).
+
+### D-028 — Conservative transfer onto the native model grid (Adopted)
+Footprint contribution is moved onto the native OpenET pixels using exact area fractions; model ET is never resampled.
+- Same-CRS, north-up grids use exact 1-D interval overlaps (numpy and scipy only).
+- Other grid pairs project the model cell corners into the footprint CRS and intersect polygons with shapely. The only approximation is treating projected cell edges as straight.
+
+Validation:
+- The polygon path equals the exact path on aligned grids to 1e-12.
+- A UTM → EPSG:4326 transfer agrees with 40×40 point sampling within the sampling error.
+- On the real grids, every row sum equals 1 to 12 decimals.
+
+This replaces the producer's bilinear WarpedVRT (D-006) for new extractions, under the method ID `footprint_conservative`.
+
+### D-029 — Extraction method IDs and supports (Adopted)
+| ID | Weights | Valid cells | Footprint set |
+|---|---|---|---|
+| `footprint_conservative` | footprint contribution per model cell | that model's finite cells | declared set |
+| `footprint_conservative_common_support` | same | cells finite in **every model present that day** (support ID `commonN:…`; N varies because 2024 has 3 models) | declared set |
+| `pixel_window_<n>x<n>` | equal, whole pixels | finite cells in the block; cells outside the raster count as missing | `none` |
+| `nearest_tower_pixel` | the tower's pixel | — | `none` |
+
+Retained fractions keep separate denominators:
+- `fp_weight_retained_frac`: valid / footprint-grid total; for normalized weights the denominator is `normalized_truncated_footprint`.
+- `fp_frac_in_model_extent`: inside the model raster / footprint-grid total.
+- `fp_domain_capture_frac`: original domain capture, from the domain-coverage CSV.
+
+They are never multiplied together, because their conditioning differs.
+
+### D-030 — Domain-capture CSV attached to set B by layer (Provisional)
+`et_weighted_coverage_pct` is attached to `etw` and `mean_coverage_pct` to `mean`, divided by 100. Values above 1 (11 days for `etw`) are kept as reported.
+The mapping is code-inferred from the current fluxfootprints `summarize_periods`. Like the set-B rasters, the CSV may come from an earlier code version.
+*Revisit when:* the 2026-10-12 run configuration is known.
+
+### D-031 — Set-A conservative versus producer bilinear (Information)
+On 2025-09-10 to 2025-09-14 (28 model-days; 2025-09-13 rejected for negative weights), conservative extraction on the same set-A footprints differs from the Parquet `ET_fp` by at most 0.023 mm/day (≤ 0.9 %). SIMS retained weight is 0.608 vs 0.611. This is the expected size of a method difference, with no sign of a unit or alignment error. It is not a reason to prefer either method.

@@ -21,8 +21,8 @@ import rasterio
 def profile(path: Path) -> dict:
     with rasterio.open(path) as ds:
         a = ds.read(1).astype("float64")
-        grid = (ds.crs.to_string() if ds.crs else None, tuple(round(v, 6) for v in ds.transform)[:6],
-                ds.width, ds.height)
+        transform = tuple(round(v, 6) for v in ds.transform)[:6]
+        grid = (ds.crs.to_string() if ds.crs else None, transform, ds.width, ds.height)
         nodata = ds.nodata
     finite = np.isfinite(a)
     declared = finite & (a == nodata) if nodata is not None else np.zeros_like(finite)
