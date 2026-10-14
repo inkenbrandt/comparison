@@ -201,8 +201,8 @@ Semantics:
   - `etw` = `Σ f_t·ET_t / Σ ET_t`, with ET = `LE/680.6` by default and negative ET not clipped. The current workflow passes clipped `nldas_et` instead.
   - Neither layer has a duration factor. The exported rasters are renormalized to sum 1.
   - The domain CSV's `valid_timesteps` counts timesteps with positive mass (7–26 per day); the timestep length is not recorded.
-  - Controlled `temporal_weighting`: set B `mean` = `time_mean`; the `etw` sets = `unknown` (D-032).
-- **Per-timestep footprints:** none exist on the Drive, so alternative daily weightings are `not_available` (D-033).
+  - Controlled `temporal_weighting`: set B `mean` = `time_mean`; the `etw` sets = `reference_et_weighted`: NLDAS grass ETo with negative values kept, verified by reproduction (D-036).
+- **Per-timestep footprints:** none were on the Drive. A US-UTJ stack was rebuilt from the production inputs (D-037). It is the source of the primary NLDAS-ETo set and the measured-LE sensitivity set.
 
 ## 8. Optional inputs
 

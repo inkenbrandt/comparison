@@ -500,10 +500,19 @@ class TemporalAggregationSpec:
     gap_policy: str
     night_policy: str
     min_temporal_coverage: float | None = None
+    #: Name of the weight series ``s_t`` in the per-timestep input (required unless
+    #: ``time_mean``), e.g. ``nldas_eto_mm_h`` or ``le_w_m2``.
+    weight_column: str | None = None
 
     def __post_init__(self) -> None:
         key = f"footprint_aggregations.{self.method_id}"
         who = f"footprint aggregation {self.method_id}"
+        if self.temporal_weighting != "time_mean" and not self.weight_column:
+            raise ContractError(f"{who}: {self.temporal_weighting} needs weight_column",
+                                config_key=f"{key}.weight_column")
+        if self.temporal_weighting == "time_mean" and self.weight_column:
+            raise ContractError(f"{who}: time_mean takes no weight_column",
+                                config_key=f"{key}.weight_column")
         _require(self.method_id, input="footprint aggregation", field="method_id",
                  config_key="footprint_aggregations[].method_id")
         if not _METHOD_ID.match(str(self.method_id)):
@@ -540,6 +549,7 @@ class Config:
     openet_rasters: tuple[OpenETRasterSource, ...] = ()
     footprint_sets: tuple[FootprintSetSpec, ...] = ()
     raster_extractions: tuple[RasterExtractionSpec, ...] = ()
+    footprint_aggregations: tuple[TemporalAggregationSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -622,7 +632,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
     """Build a :class:`Config` from plain data (e.g. parsed YAML)."""
     top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
            "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
-           "output_dir"}
+           "footprint_aggregations", "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -703,6 +713,20 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         kw.setdefault("methods", ())
         extractions.append(RasterExtractionSpec(**kw))
 
+    aggregations = []
+    agg_fields = set(TemporalAggregationSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("footprint_aggregations") or []):
+        _check_keys(body, agg_fields, f"footprint_aggregations[{i}]")
+        kw = {f: body.get(f) for f in ("method_id", "temporal_weighting", "include_duration",
+                                       "basis", "negative_weight_policy", "gap_policy",
+                                       "night_policy")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        aggregations.append(TemporalAggregationSpec(**kw))
+    agg_ids = [a.method_id for a in aggregations]
+    if len(set(agg_ids)) != len(agg_ids):
+        raise ContractError(f"duplicate footprint aggregation method_id in {agg_ids}",
+                            config_key="footprint_aggregations")
+
     return Config(
         stations=stations,
         products=products,
@@ -713,6 +737,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         openet_rasters=tuple(rasters),
         footprint_sets=tuple(footprints),
         raster_extractions=tuple(extractions),
+        footprint_aggregations=tuple(aggregations),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 

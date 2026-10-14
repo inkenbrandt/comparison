@@ -168,15 +168,25 @@ def test_raster_extraction_spec():
 
 def test_example_raster_extraction_declared():
     cfg = load_config(EXAMPLE)
-    x, m = cfg.raster_extractions
+    x, m, nldas, le = cfg.raster_extractions
     assert x.footprint_set_id == "US-UTJ_set_B_etw_20261012"
     fs = cfg.footprint_set(x.footprint_set_id)
     assert fs.domain_capture_column == "et_weighted_coverage_pct"
-    assert fs.temporal_weighting == "unknown" and fs.target_dependence == "unknown"
+    assert fs.temporal_weighting == "reference_et_weighted" and fs.target_dependence == "no"
     assert cfg.products["sims"].nodata == -9999.0
     mean = cfg.footprint_set(m.footprint_set_id)
     assert mean.temporal_weighting == "time_mean" and mean.target_dependence == "no"
-    assert m.negative_weight_tolerance == x.negative_weight_tolerance  # same rules (step 6)
+    # Primary NLDAS-ETo set and measured-LE sensitivity set, same rules (D-036, D-037).
+    assert cfg.footprint_set(nldas.footprint_set_id).target_dependence == "no"
+    assert cfg.footprint_set(le.footprint_set_id).target_dependence == "yes"
+    assert len({e.negative_weight_tolerance for e in (x, m, nldas, le)}) == 1
+    aggs = {a.method_id: a for a in cfg.footprint_aggregations}
+    assert aggs["nldas_eto_weighted"].weight_column == "nldas_eto_mm_h"
+    assert aggs["measured_le_weighted"].target_dependence == "yes"
+    shared = ("include_duration", "basis", "negative_weight_policy", "gap_policy",
+              "night_policy")
+    assert all(getattr(aggs["nldas_eto_weighted"], f) == getattr(aggs["measured_le_weighted"], f)
+               for f in shared)
 
 
 def test_footprint_set_temporal_weighting_vocabulary():

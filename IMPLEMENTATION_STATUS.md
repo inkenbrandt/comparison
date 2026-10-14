@@ -9,9 +9,65 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 3 — Canonical tables and result objects | **Done** 2026-10-13 |
 | 4 — File discovery and upstream adapters | **Done** 2026-10-13 (exported-file adapters; see limitations) |
 | 5 — Spatial extraction | **Done** 2026-10-13 (footprint set B; polygon area-weighted mode not implemented: no field polygons) |
-| 6 — Footprint aggregation sensitivity | **Done** 2026-10-14 (per-timestep aggregation synthetic-only: no per-timestep footprints exist) |
+| 6 — Footprint aggregation sensitivity | **Done** 2026-10-14 (NLDAS-ETo primary and measured-LE sensitivity footprints built from one per-timestep stack) |
 | 7 — Comparison cohorts | Not started (next) |
 | 8–18 | Not started |
+
+## Step 6 addendum — NLDAS-ETo primary, measured-LE sensitivity (2026-10-14)
+
+**User decision:** rely on NLDAS weights and also provide measured-LE weights. The user also chose the inputs: database heights (read-only), the production 08–20 h window, and per-timestep renormalization.
+
+**Run it**
+```bash
+F=../footprints/.venv/Scripts/python.exe        # footprints repo environment (upstream)
+Q="M:/Shared drives/UGS_Flux/Data_Processing"
+$F tools/upstream/fetch_footprint_parameters.py US-UTJ outputs/footprint_inputs      # read-only SELECTs
+$F tools/upstream/run_timestep_footprints.py --site US-UTJ --lat 37.281746 --lon -109.53489 \
+   --metflux "$Q/final_database_tables/database_exports_20260825/US-UTJ_metflux_qc.parquet" \
+   --params outputs/footprint_inputs/US-UTJ_daily_footprint_parameters.parquet \
+   --nldas "$Q/final_processing_workflow/footprints/nldas/nldas_results/US-UTJ_nldas.csv" \
+   --out outputs/footprint_timesteps/US-UTJ                                          # ≈1 min
+uv run python tools/run_footprint_aggregation.py examples/us_utj.yaml US-UTJ \
+   outputs/footprint_timesteps/US-UTJ --compare-sets US-UTJ_set_A_20261005 US-UTJ_set_B_etw_20261012
+uv run python tools/run_raster_extraction.py examples/us_utj.yaml us_utj_nldas_eto       # ≈3.5 min
+uv run python tools/run_raster_extraction.py examples/us_utj.yaml us_utj_measured_le     # ≈3 min
+uv run python tools/run_footprint_sensitivity.py examples/us_utj.yaml us_utj_nldas_eto \
+   us_utj_measured_le --out us_utj_nldas_vs_measured_le
+```
+
+### Delivered
+- **[tools/upstream/](tools/upstream/):** these scripts run with the footprints repo environment, outside the etcompare core.
+  - `fetch_footprint_parameters.py`: read-only queries of the heights and the tower location.
+  - `run_timestep_footprints.py`: saves every half-hour footprint from fluxfootprints `ffp_xr`, using the production inputs, as monthly `.npz` stacks with full provenance (input SHA-256 and fluxfootprints file hashes).
+- **[src/etcompare/adapters/fluxfootprints.py](src/etcompare/adapters/fluxfootprints.py):** `load_timestep_stack`.
+- **Aggregation:** `combine_results` in [footprint_aggregation.py](src/etcompare/footprint_aggregation.py).
+- **Config:**
+  - New `footprint_aggregations` YAML section, so aggregation specs are now declared in config.
+  - `TemporalAggregationSpec.weight_column`.
+  - New footprint sets `US-UTJ_nldas_eto_20261014` (primary) and `US-UTJ_measured_le_20261014`.
+  - New raster extractions `us_utj_nldas_eto` (all methods) and `us_utj_measured_le`.
+  - Station coordinates now come from the database (37.281746, −109.53489).
+- **[tools/run_footprint_aggregation.py](tools/run_footprint_aggregation.py):** writes the declared sets, checks the written semantics against the config, and measures distance to existing sets.
+- **Fix:** `compare_footprint_sets` now checks keys on the compared rows only, so footprint-free pixel rows repeated across runs no longer collide.
+
+### Findings
+- **The existing `etw` sets are NLDAS-grass-ETo weighted with negative ETo kept** (D-036). The reproduction matches set A to a median 0.2 % (maximum 0.7 %) relative L1. Negative weights reappear on all 43 days, and on set B's 3 round-off days. This resolves D-009 and D-015 q2.
+- **"NLDAS ET"** in fluxfootprints means FAO-56 grass ETo computed from NLDAS-2 forcing, not land-model ET.
+- **Station time** is fixed UTC−7: the SW_IN centroid falls at 12.1–12.6 h. NLDAS radiation sits a steady ≈0.5 h later; its hour-labelling convention is unconfirmed.
+- **Coverage:** NLDAS 474 days; measured LE 391 days (83 days have no LE).
+- **Comparisons** (D-038):
+  - NLDAS − set B `etw`: ≤ 0.005 mm/day.
+  - Measured LE − NLDAS: per-model mean +0.002 to +0.015 mm/day, 95th-percentile |difference| ≤ 0.15. The largest differences fall on days with few LE half-hours.
+
+### Checks
+- 151 tests pass (3 opt-in skipped), including synthetic tests of `combine_results`, the stack loader and the `weight_column` rules.
+- ruff and mypy are clean.
+- The opt-in Drive raster tests pass.
+
+### Open
+- **Minimum temporal coverage for the LE set:** none is declared. The user needs to choose one before scoring (D-038).
+- **NLDAS hour-label convention:** a ≈0.5 h ambiguity.
+- **Other stations:** the per-timestep stacks (455 MB) are local outputs; they are not generated for other stations.
 
 ## Step 6 — 2026-10-14
 

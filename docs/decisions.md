@@ -44,7 +44,7 @@ It is the unweighted mean over the footprint-positive cells of the daily footpri
 ### D-008 — `valid_weight_fraction` is post-truncation retained weight (Adopted; verified)
 It is stored as `fp_weight_retained_frac` with denominator `normalized_truncated_footprint` and never reported as capture. No support threshold is adopted. All 180 rows below 0.90 are SIMS (cropland-only mask); any threshold must be set in configuration and applied to every model.
 
-### D-009 — Footprint weighting method is unknown for set A (Provisional)
+### D-009 — Footprint weighting method is unknown for set A (Superseded by D-036)
 The current `footprint_workflow.py` weights by `nldas_et` and excludes negative ET. Set A contains 43 files with negative weights, so an earlier version produced it. Set A therefore gets `weighting_method: et_weighted_unverified`. It is not labelled measured-ET-weighted or NLDAS-weighted until that run's configuration is known.
 *Revisit when:* the 2026-10-05 run's settings are known, or set B is adopted (D-016).
 
@@ -67,13 +67,13 @@ Station data, Parquet files, notebooks and rasters are local integration inputs.
 
 ### D-015 — Remaining questions (Open)
 1. Is the half-hourly station timestamp the start or the end of the interval? (Assumed start.)
-2. What were the settings of the 2026-10-05 footprint run (set A): weighting variable, negative-ET handling?
+2. ~~What were the settings of the 2026-10-05 footprint run (set A): weighting variable, negative-ET handling?~~ NLDAS grass ETo, negatives kept (D-036).
 3. ~~Which footprint set should re-extraction use?~~ Set B (D-016).
 4. OpenET model versions and download dates, if recorded anywhere.
 
 None of these block steps 2–4.
 
-### D-016 — Footprint set for re-extraction: set B (Adopted 2026-10-13, user decision)
+### D-016 — Footprint set for re-extraction: set B (Adopted 2026-10-13, user decision; primary replaced by D-037)
 Set A (121×121, 2026-10-05) produced the Parquet. Set B (`weighted/` and `non_weighted/`, 125×125, 2026-10-12) is used for raster re-extraction. Its `etw` layer is the primary footprint; its `mean` layer is available for step-6 sensitivity. Pre-extracted comparisons stay tied to set A. Results from different sets are never mixed in one cohort; the `footprint_set_id` column keeps them apart.
 
 ### D-017 — Existing comparison outputs are not reused (Adopted)
@@ -177,7 +177,7 @@ On 2025-09-10 to 2025-09-14 (28 model-days; 2025-09-13 rejected for negative wei
 
 **Revision 2026-10-14 (e):** Step 6 implemented. D-032 to D-035 added.
 
-### D-032 — Temporal weighting is a controlled field, separate from the label (Adopted)
+### D-032 — Temporal weighting is a controlled field, separate from the label (Adopted; US-UTJ `etw` assignment superseded by D-036)
 `FootprintSetSpec.temporal_weighting` takes one of `time_mean`, `reference_et_weighted`, `modeled_et_weighted` (e.g. NLDAS), `measured_et_weighted` or `unknown` (the default). The free-text `weighting_method` label stays as written, so an unverified label never becomes a claim. Target dependence follows from the field: `measured_et_weighted` → `yes`, `unknown` → `unknown`, anything else → `no`.
 
 US-UTJ assignments:
@@ -221,3 +221,61 @@ The comparison uses `footprint_conservative` on 434 frozen days. These are the `
 The time-mean footprint gives slightly lower ET for every model except geeSEBAL and PT-JPL on common support. Two possible causes: night and low-ET footprints extend over different surfaces, or the cell masks differ. Model–station agreement has not been computed yet (step 9), so the size of this effect relative to model error is not yet known.
 
 This is a sensitivity result, not evidence for either weighting (D-032).
+
+---
+
+**Revision 2026-10-14 (f):** NLDAS-ETo weighting adopted as primary, with measured-LE weighting as a sensitivity set (user decision). D-036 to D-038 added. D-009, D-016, D-027 and D-032 are partly superseded, and D-015 q2 is resolved.
+
+### D-036 — The existing `etw` sets are NLDAS-grass-ETo weighted (Adopted; verified by reproduction)
+A per-timestep footprint stack was rebuilt for US-UTJ with the production inputs and settings (D-037). Aggregating it reproduces both footprint sets A and B `etw`:
+- NLDAS-ETo weighting vs set A: median relative L1 difference 0.2 %, maximum 0.7 %. Total-variation distance: median 0.0011 (90th percentile 0.0026) to both sets A and B `etw`.
+- Measured-LE weighting is about 40× farther (median 0.045) and is never the closer of the two on any day.
+- Keeping negative ETo, as `summarize_periods` in footprint_workflow_v2-1.ipynb does, produces negative weights on all 43 negative-weight days of set A. It also produces tiny negatives on 3 more days, which match set B's 3 round-off days (D-027).
+
+Consequences:
+- **Weighting:** the `etw` sets are `temporal_weighting: reference_et_weighted`, with target dependence `no`. This supersedes D-009 and D-032 for those sets.
+- **"NLDAS ET":** in fluxfootprints this means hourly FAO-56 grass ETo from NLDAS-2 forcing (`eto_grass`), not land-model ET.
+- **Negative weights:** their cause is negative hourly ETo (negative net radiation) left unclipped. They do not come from measured LE.
+- D-015 question 2 is resolved.
+
+### D-037 — Primary and sensitivity footprints from one stack (Adopted 2026-10-14, user decision)
+**Primary** is `US-UTJ_nldas_eto_20261014`, NLDAS-ETo weighted. **Sensitivity** is `US-UTJ_measured_le_20261014`, measured-LE weighted. Both are aggregated by etcompare from the same half-hourly fluxfootprints stack, so they differ only in the temporal weight `s_t`. This replaces set B `etw` as the primary footprint (D-016).
+
+The stack was built upstream by `tools/upstream/run_timestep_footprints.py`, with inputs and settings matching footprint_workflow_v2-1.ipynb:
+- **Half-hourly data:** `database_exports_20260825/US-UTJ_metflux_qc.parquet`. Interval start = `DATETIME_END − 30 min`, in UTC−7.
+- **Heights:** `groundwater.daily_footprint_parameters` (primary zone E, alfalfa), fetched read-only on 2026-10-14. zm is `effective_measurement_height` and z0 is `roughness_length`, forward-filled. They match `compute_aerodynamic_params(veg_type='alfalfa')` to 5e-4 m.
+- **Tower location:** from `station_attribute_view`, 37.281746 / −109.53489. The resulting grid is identical to set A's. The station's coordinates in the config now use these values; AmeriFlux's 4-decimal values are about 9 m off.
+- **Model settings:**
+  - ffp_xr, h = 2000 m, 10 m cells, domain ±600 m, `rslayer=False`, smoothing on.
+  - Only half-hours starting 08:00–20:30 are used (Volk 2023).
+  - The model drops some timesteps itself; 11,295 remain.
+- **NLDAS:** `eto_grass` interpolated linearly from hourly start labels to 30 min. The radiation timing differs from station SW_IN by a steady ≈0.5 h with no seasonal shift. Neither series uses daylight time, but NLDAS's start-versus-end labelling of hourly averages is unconfirmed.
+- **Aggregation, identical for both sets** (`footprint_aggregations` in the config):
+  - Durations included (all 30 min).
+  - Each timestep renormalized, as production does.
+  - Negative weights and missing weights: timestep excluded.
+  - Night handling: `include`, because the 08–20 h window already excludes night.
+
+  Production kept negative ETo. The exclusion here is a declared change that removes negative footprint weights.
+- **LE:** QC'd `LE_1_1_1` in W m⁻² is used unchanged. It is proportional to ET up to the small variation of λ with temperature.
+
+Coverage:
+- **NLDAS:** all 474 days with footprints (median 23 eligible half-hours).
+- **Measured LE:** 391 days (median 21). On 83 days every LE half-hour is missing.
+
+The measured-LE set uses the target measurements, so comparisons with it are sensitivity experiments (D-032).
+
+### D-038 — US-UTJ: NLDAS primary vs measured-LE and vs set B `etw` (Information)
+Both comparisons use `footprint_conservative` on frozen days.
+
+**NLDAS minus set B `etw`** (434 frozen days):
+- Per-model mean differences −0.001 to 0.000 mm/day; maximum |difference| 0.005 mm/day.
+- The new primary set therefore reproduces the production footprints. It also adds the 40 days that set B lost to negative weights, giving 474 footprint days and 2,549 rows per method.
+
+**Measured LE minus NLDAS** (391 frozen days):
+- Per-model mean differences +0.002 to +0.015 mm/day (≤ 0.7 % of the NLDAS mean). For `et_corrected_measured` (303 days) they are +0.002 to +0.020 mm/day.
+- 95th-percentile |difference| ≤ 0.15 mm/day.
+- The largest differences fall on days with few usable LE half-hours: 1.12 mm/day on 2024-08-06, which has 2 LE half-hours against 25 for NLDAS. 7 LE days have fewer than 6.
+- No minimum temporal coverage is applied. Choosing one is a scientific decision that must be made before scoring, not tuned on agreement.
+
+Both are descriptive differences of modeled ET; station agreement is step 9.

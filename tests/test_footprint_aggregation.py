@@ -21,6 +21,8 @@ def spec(**kw):
                 basis="original_contribution", negative_weight_policy="exclude_timestep",
                 gap_policy="exclude_timestep", night_policy="include")
     base.update(kw)
+    if base["temporal_weighting"] != "time_mean":
+        base.setdefault("weight_column", "s")
     return TemporalAggregationSpec(**base)
 
 
@@ -231,3 +233,33 @@ def test_write_footprint_set_round_trip(tmp_path):
         assert grid == GRID and nodata is None
         np.testing.assert_array_equal(values, by_date[row.date].contribution)
         assert row.domain_capture_frac == pytest.approx(by_date[row.date].domain_capture_frac)
+
+
+def test_combine_results_and_weight_column_rule():
+    from etcompare.footprint_aggregation import combine_results
+
+    a = aggregate_footprints(stack(start="2024-06-05 06:00"), spec())
+    b = aggregate_footprints(stack(start="2024-06-07 06:00"), spec())
+    c = combine_results([b, a])
+    assert [p.date for p in c.periods] == [pd.Timestamp("2024-06-05"), pd.Timestamp("2024-06-07")]
+    with pytest.raises(ContractError, match="share a period"):
+        combine_results([a, a])
+    with pytest.raises(ContractError, match="weight_column"):
+        TemporalAggregationSpec("x", "measured_et_weighted", True, "original_contribution",
+                                "keep", "exclude_timestep", "include")
+
+
+def test_load_timestep_stack(tmp_path):
+    from etcompare.adapters.fluxfootprints import load_timestep_stack
+
+    st = stack()
+    path = tmp_path / "US-XXX_202406_timesteps.npz"
+    np.savez_compressed(path, f=st.values.astype("float32"),
+                        time=st.times.values.astype("datetime64[s]"), duration_s=st.durations_s,
+                        transform=np.array(GRID.transform), crs=np.array(GRID.crs),
+                        nldas_eto_mm_h=np.arange(6.0))
+    loaded, weights = load_timestep_stack(path, site_id="US-XXX",
+                                          value_semantics="cell_contribution")
+    assert loaded.grid == GRID and list(weights.columns) == ["nldas_eto_mm_h"]
+    assert (weights.index == st.times).all()
+    np.testing.assert_allclose(loaded.values, st.values, rtol=1e-6)

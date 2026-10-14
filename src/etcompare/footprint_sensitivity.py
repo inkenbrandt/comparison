@@ -105,12 +105,14 @@ def compare_footprint_sets(
         raise ContractError(f"unknown reference variant(s) {sorted(bad)}")
     parts = extractions if isinstance(extractions, Sequence) else [extractions]
     ext = pd.concat([_frame(p) for p in parts], ignore_index=True)
-    check_primary_key(ext, EXTRACTIONS.primary_key, table="extractions (combined)")
+    # Only compared rows must be unique: footprint-free methods (set 'none') may repeat
+    # across runs and are never compared here.
+    sel = ext[ext["footprint_set_id"].isin(ids) & ext["extraction_method"].isin(
+        extraction_methods) & (ext["period"] == "day")].copy()
+    check_primary_key(sel, EXTRACTIONS.primary_key, table="extractions (combined)")
 
     report = ValidationReport(f"footprint sensitivity {comparison_id}")
     exclusions = ExclusionLog()
-    sel = ext[ext["footprint_set_id"].isin(ids) & ext["extraction_method"].isin(
-        extraction_methods) & (ext["period"] == "day")].copy()
     sel["usable"] = sel["et_mm"].notna()
     if min_retained_frac is not None:
         low = sel["usable"] & ~(sel["fp_weight_retained_frac"] >= min_retained_frac)

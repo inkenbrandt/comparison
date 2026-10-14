@@ -8,8 +8,8 @@ stations:
     timezone: "UTC-07:00"            # user-provided (D-002)
     day_definition: local_standard_time
     interval_label: start            # provisional; from .ini TIMESTAMP_START (D-015 q1)
-    latitude: 37.2818
-    longitude: -109.5348
+    latitude: 37.281746              # UGS station_attribute_view; also places the footprint grid (D-036)
+    longitude: -109.53489            # AmeriFlux lists 37.2818, -109.5348 (4 decimals, ~9 m)
     elevation_m: 1281
     land_cover: CRO
 
@@ -68,7 +68,7 @@ footprint_sets:
     recursive: false                   # set B lives in weighted/ (D-016)
     layers: [etw]
     weighting_method: et_weighted_unverified
-    temporal_weighting: unknown          # ET variable (measured LE vs NLDAS) unverified (D-009, D-032)
+    temporal_weighting: reference_et_weighted   # reproduced: NLDAS grass ETo, negatives kept (D-036)
     value_semantics: normalized_cell_weight
 
   # Set B (2026-10-12) is the set used for raster re-extraction (D-016).
@@ -76,7 +76,7 @@ footprint_sets:
     root: "M:/My Drive/footprints/US-UTJ/weighted"
     layers: [etw]
     weighting_method: et_weighted_unverified       # negative weights present (D-027)
-    temporal_weighting: unknown                    # may be measured-ET weighted (D-032)
+    temporal_weighting: reference_et_weighted      # reproduced: NLDAS grass ETo, negatives kept (D-036)
     value_semantics: normalized_cell_weight
     domain_capture_csv: "M:/My Drive/footprints/domain_outputs/US-UTJ_daily_domain_results.csv"
     domain_capture_column: et_weighted_coverage_pct
@@ -88,6 +88,44 @@ footprint_sets:
     value_semantics: normalized_cell_weight
     domain_capture_csv: "M:/My Drive/footprints/domain_outputs/US-UTJ_daily_domain_results.csv"
     domain_capture_column: mean_coverage_pct
+
+  # Footprints aggregated by etcompare from one per-timestep fluxfootprints stack
+  # (tools/upstream/run_timestep_footprints.py; D-036, D-037). The two sets differ only
+  # in the temporal weight. NLDAS ETo is primary (user decision 2026-10-14); measured LE
+  # is the sensitivity set.
+  - set_id: US-UTJ_nldas_eto_20261014
+    root: ../outputs/footprints/US-UTJ/nldas_eto_weighted
+    layers: [nldaseto]
+    weighting_method: "etcompare_aggregation:nldas_eto_weighted"
+    temporal_weighting: reference_et_weighted     # NLDAS-forcing grass ETo, not land-model ET
+    value_semantics: normalized_cell_weight
+  - set_id: US-UTJ_measured_le_20261014
+    root: ../outputs/footprints/US-UTJ/measured_le_weighted
+    layers: [measle]
+    weighting_method: "etcompare_aggregation:measured_le_weighted"
+    temporal_weighting: measured_et_weighted      # target measurements: sensitivity only
+    value_semantics: normalized_cell_weight
+
+# Temporal aggregation of the per-timestep stack. Shared choices follow production
+# (footprint_workflow_v2-1.ipynb): 08-20 h half-hours only (applied upstream), each
+# timestep renormalized, equal 30-min durations.
+footprint_aggregations:
+  - method_id: nldas_eto_weighted
+    temporal_weighting: reference_et_weighted
+    weight_column: nldas_eto_mm_h
+    include_duration: true
+    basis: renormalized_per_timestep
+    negative_weight_policy: exclude_timestep   # hourly ETo can be < 0; production kept it (D-036)
+    gap_policy: exclude_timestep
+    night_policy: include                      # night already outside the 08-20 h window
+  - method_id: measured_le_weighted
+    temporal_weighting: measured_et_weighted
+    weight_column: le_w_m2                     # LE_1_1_1 (QC'd), proportional to ET
+    include_duration: true
+    basis: renormalized_per_timestep
+    negative_weight_policy: exclude_timestep   # as footprint_workflow.py; avoids negative weights
+    gap_policy: exclude_timestep               # missing LE half-hours are left out
+    night_policy: include
 
 raster_extractions:
   - name: us_utj_set_b_etw
@@ -103,6 +141,23 @@ raster_extractions:
   - name: us_utj_set_b_mean
     site_id: US-UTJ
     footprint_set_id: US-UTJ_set_B_mean_20261012
+    methods: [footprint, footprint_common_support]
+    negative_weight_tolerance: 1.0e-9
+    start: "2024-06-05"
+    end: "2025-10-09"
+  # Primary extraction (user decision 2026-10-14): NLDAS-ETo-weighted footprints.
+  - name: us_utj_nldas_eto
+    site_id: US-UTJ
+    footprint_set_id: US-UTJ_nldas_eto_20261014
+    methods: [footprint, footprint_common_support, pixel_window, nearest_tower_pixel]
+    window_sizes: [3]
+    negative_weight_tolerance: 1.0e-9
+    start: "2024-06-05"
+    end: "2025-10-09"
+  # Sensitivity: measured-LE-weighted footprints, same stack, methods and tolerance.
+  - name: us_utj_measured_le
+    site_id: US-UTJ
+    footprint_set_id: US-UTJ_measured_le_20261014
     methods: [footprint, footprint_common_support]
     negative_weight_tolerance: 1.0e-9
     start: "2024-06-05"

@@ -173,6 +173,34 @@ class FootprintAggregationResult:
         return pd.DataFrame(rows, columns=cols)
 
 
+def combine_results(results: Sequence[FootprintAggregationResult]
+                    ) -> FootprintAggregationResult:
+    """Join results of one spec computed on separate chunks (e.g. monthly stacks).
+
+    Chunks must not share a period label; a period split across chunks would be
+    aggregated twice instead of once.
+    """
+    if not results:
+        raise ValueError("no results to combine")
+    spec = results[0].spec
+    if any(r.spec != spec for r in results):
+        raise ContractError("cannot combine results of different aggregation specs")
+    usable = [r for r in results if r.available]
+    if not usable:
+        return results[0]
+    periods = [p for r in usable for p in r.periods]
+    keys = [(p.site_id, p.period, p.date) for p in periods]
+    if len(set(keys)) != len(keys):
+        raise ContractError("chunks share a period; aggregate each period from one chunk")
+    report = ValidationReport(f"footprint aggregation {spec.method_id}")
+    exclusions = ExclusionLog()
+    for r in usable:
+        report.extend(r.report)
+        exclusions.extend(r.exclusions)
+    return FootprintAggregationResult(spec, "ok", "", tuple(sorted(
+        periods, key=lambda p: (p.site_id, p.date))), report, exclusions)
+
+
 def not_available(spec: TemporalAggregationSpec, reason: str) -> FootprintAggregationResult:
     """A skipped aggregation: nothing is invented in place of missing inputs."""
     report = ValidationReport(f"footprint aggregation {spec.method_id}")
