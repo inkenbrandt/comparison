@@ -172,3 +172,52 @@ The mapping is code-inferred from the current fluxfootprints `summarize_periods`
 
 ### D-031 — Set-A conservative versus producer bilinear (Information)
 On 2025-09-10 to 2025-09-14 (28 model-days; 2025-09-13 rejected for negative weights), conservative extraction on the same set-A footprints differs from the Parquet `ET_fp` by at most 0.023 mm/day (≤ 0.9 %). SIMS retained weight is 0.608 vs 0.611. This is the expected size of a method difference, with no sign of a unit or alignment error. It is not a reason to prefer either method.
+
+---
+
+**Revision 2026-10-14 (e):** Step 6 implemented. D-032 to D-035 added.
+
+### D-032 — Temporal weighting is a controlled field, separate from the label (Adopted)
+`FootprintSetSpec.temporal_weighting` takes one of `time_mean`, `reference_et_weighted`, `modeled_et_weighted` (e.g. NLDAS), `measured_et_weighted` or `unknown` (the default). The free-text `weighting_method` label stays as written, so an unverified label never becomes a claim. Target dependence follows from the field: `measured_et_weighted` → `yes`, `unknown` → `unknown`, anything else → `no`.
+
+US-UTJ assignments:
+- **Set B `mean`: `time_mean`.** fluxfootprints `summarize_periods` (424ec20, code-inferred for the 2026-10-12 run) builds it as the plain mean over timesteps with positive mass. It uses no ET, so it is target-independent whichever code version wrote it.
+- **Sets A and B `etw`: `unknown`.** The same function weights by `LE/680.6` (measured LE) by default, without clipping negative values, which is consistent with the negative weights found in both sets (D-027). The current `footprint_workflow.py`, by contrast, passes clipped `nldas_et`. Which ET variable the 2026-10-05 and 2026-10-12 runs used is not recorded. These sets may therefore be measured-ET weighted, so every comparison that uses them carries the flag `footprint_target_dependence=unknown` and is a sensitivity experiment.
+
+*Revisit when:* the run configurations are known (D-015 q2).
+
+### D-033 — Per-timestep aggregation is declared in full (Adopted)
+`W_i = Σ_t a_t f_it / Σ_t a_t` over the eligible timesteps, with `a_t = s_t·d_t` if `include_duration` is set and `s_t` otherwise. `TemporalAggregationSpec` has no defaults for these choices:
+- the temporal weighting;
+- `include_duration`;
+- the basis: `original_contribution`, which keeps capture, or `renormalized_per_timestep`, which divides each timestep by its own total;
+- the negative-weight policy: `exclude_timestep`, `reject_period` or `keep`;
+- the gap policy: missing weight, no footprint mass or negative cells;
+- the night policy: excluding night requires a daytime flag;
+- an optional minimum temporal coverage.
+
+Stated rules:
+- Timesteps are assigned to days by interval: an end-labelled stamp belongs to the day of `stamp − d_t`.
+- `temporal_coverage_frac` = eligible duration / period duration.
+- Original-basis domain capture = `Σ a_t cap_t / Σ a_t`.
+- Per-timestep `normalized_cell_weight` input cannot use the original basis.
+
+Upstream `mean` corresponds to `time_mean`, no duration, original basis, gaps excluded. Upstream `etw` corresponds to `measured_et_weighted`, `keep`, no duration. Both reproduce the upstream formulas to 1e-13 (test). The exported upstream rasters are then renormalized, so neither those rasters nor the domain CSV can be recovered from a daily file.
+
+No per-timestep footprints exist for US-UTJ, so no aggregation was run on real data. Without inputs the result is `not_available`.
+
+### D-034 — Weighting comparisons use frozen keys and per-variant cohorts (Adopted)
+`compare_footprint_sets` keeps a site/date/model/method key only when every compared set has a usable value there. An optional `min_retained_frac` is applied identically to every set. Each reference variant then gets its own cohort, restricted to days with that reference value, plus a model-only `none` cohort. Each modeled value stays in a row with its observation (`paired` schema v2, which adds the key `footprint_set_id`). `common_models` optionally also requires every model present.
+
+The outputs are descriptive set-minus-baseline differences of modeled ET only. Station agreement is scored in step 9, and no set is preferred because it agrees better.
+
+### D-035 — US-UTJ set B: `mean` minus `etw` (Information)
+The comparison uses `footprint_conservative` on 434 frozen days. These are the `etw` days: the 40 days where `etw` was rejected for negative weights exist only in `mean` and were dropped from both sides.
+- **Per-model mean difference:** −0.046 to −0.001 mm/day (−1.8 % to −0.03 % of the `etw` mean).
+- **95th-percentile |difference|:** ≤ 0.24 mm/day.
+- **Maximum |difference|:** 0.48 mm/day (eemetric).
+- **Under `footprint_conservative_common_support`:** mean differences are −0.019 to +0.002 mm/day, and the 95th percentile is ≤ 0.16 mm/day.
+
+The time-mean footprint gives slightly lower ET for every model except geeSEBAL and PT-JPL on common support. Two possible causes: night and low-ET footprints extend over different surfaces, or the cell masks differ. Model–station agreement has not been computed yet (step 9), so the size of this effect relative to model error is not yet known.
+
+This is a sensitivity result, not evidence for either weighting (D-032).

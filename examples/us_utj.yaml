@@ -68,6 +68,7 @@ footprint_sets:
     recursive: false                   # set B lives in weighted/ (D-016)
     layers: [etw]
     weighting_method: et_weighted_unverified
+    temporal_weighting: unknown          # ET variable (measured LE vs NLDAS) unverified (D-009, D-032)
     value_semantics: normalized_cell_weight
 
   # Set B (2026-10-12) is the set used for raster re-extraction (D-016).
@@ -75,6 +76,7 @@ footprint_sets:
     root: "M:/My Drive/footprints/US-UTJ/weighted"
     layers: [etw]
     weighting_method: et_weighted_unverified       # negative weights present (D-027)
+    temporal_weighting: unknown                    # may be measured-ET weighted (D-032)
     value_semantics: normalized_cell_weight
     domain_capture_csv: "M:/My Drive/footprints/domain_outputs/US-UTJ_daily_domain_results.csv"
     domain_capture_column: et_weighted_coverage_pct
@@ -82,6 +84,7 @@ footprint_sets:
     root: "M:/My Drive/footprints/US-UTJ/non_weighted"
     layers: [mean]
     weighting_method: time_mean_unverified
+    temporal_weighting: time_mean                  # uses no ET, so target-independent (D-032)
     value_semantics: normalized_cell_weight
     domain_capture_csv: "M:/My Drive/footprints/domain_outputs/US-UTJ_daily_domain_results.csv"
     domain_capture_column: mean_coverage_pct
@@ -94,6 +97,15 @@ raster_extractions:
     window_sizes: [3]
     negative_weight_tolerance: 1.0e-9   # round-off only (D-027)
     start: "2024-06-05"                 # station record (contract 4.1)
+    end: "2025-10-09"
+  # Step 6: the set-B time-mean layer, extracted with the same footprint methods and
+  # tolerance so it can be compared with etw on frozen dates.
+  - name: us_utj_set_b_mean
+    site_id: US-UTJ
+    footprint_set_id: US-UTJ_set_B_mean_20261012
+    methods: [footprint, footprint_common_support]
+    negative_weight_tolerance: 1.0e-9
+    start: "2024-06-05"
     end: "2025-10-09"
 
 output_dir: ../outputs

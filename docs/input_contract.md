@@ -196,6 +196,13 @@ Semantics:
 - **Weighting variable:** the current `footprint_workflow.py` weights by `nldas_et` clipped at 0, refuses to export negative weights and writes NaN as nodata. Sets A **and B** contain negative-weight `etw` files and nodata 0, so both were written by **earlier workflow versions**. Their weighting variable and negative-value handling are **unresolved** (D-009, D-027).
 - **OpenET scaling (raster workflow):** the GeoTIFFs carry no scale/offset tags (GDAL reports defaults 1/0) and header nodata −9999. Scaling is therefore declared in configuration: scale 1, offset 0, nodata −9999 (D-026).
 - **Day grouping:** naive-index calendar day (§3).
+- **Layer construction (code-inferred, fluxfootprints `summarize_periods` at 424ec20):**
+  - `mean` = plain mean over timesteps with positive mass.
+  - `etw` = `Σ f_t·ET_t / Σ ET_t`, with ET = `LE/680.6` by default and negative ET not clipped. The current workflow passes clipped `nldas_et` instead.
+  - Neither layer has a duration factor. The exported rasters are renormalized to sum 1.
+  - The domain CSV's `valid_timesteps` counts timesteps with positive mass (7–26 per day); the timestep length is not recorded.
+  - Controlled `temporal_weighting`: set B `mean` = `time_mean`; the `etw` sets = `unknown` (D-032).
+- **Per-timestep footprints:** none exist on the Drive, so alternative daily weightings are `not_available` (D-033).
 
 ## 8. Optional inputs
 

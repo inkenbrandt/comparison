@@ -168,8 +168,18 @@ def test_raster_extraction_spec():
 
 def test_example_raster_extraction_declared():
     cfg = load_config(EXAMPLE)
-    (x,) = cfg.raster_extractions
+    x, m = cfg.raster_extractions
     assert x.footprint_set_id == "US-UTJ_set_B_etw_20261012"
     fs = cfg.footprint_set(x.footprint_set_id)
     assert fs.domain_capture_column == "et_weighted_coverage_pct"
+    assert fs.temporal_weighting == "unknown" and fs.target_dependence == "unknown"
     assert cfg.products["sims"].nodata == -9999.0
+    mean = cfg.footprint_set(m.footprint_set_id)
+    assert mean.temporal_weighting == "time_mean" and mean.target_dependence == "no"
+    assert m.negative_weight_tolerance == x.negative_weight_tolerance  # same rules (step 6)
+
+
+def test_footprint_set_temporal_weighting_vocabulary():
+    with pytest.raises(ContractError, match="temporal_weighting"):
+        FootprintSetSpec("S", "x", weighting_method="m", value_semantics="cell_contribution",
+                         temporal_weighting="nldas")

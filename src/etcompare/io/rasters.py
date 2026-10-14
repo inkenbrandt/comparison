@@ -104,6 +104,28 @@ def read_model_window(
     return values, header
 
 
+def write_footprint(path: str | os.PathLike[str], values: np.ndarray, grid: Grid) -> str:
+    """Write a footprint as a float64 single-band GeoTIFF without a nodata value.
+
+    float64 keeps the weights exactly; zero cells are zero contribution.
+    """
+    rasterio = require("rasterio", "Writing rasters")
+    from affine import Affine
+
+    arr = np.asarray(values, dtype="float64")
+    if arr.shape != grid.shape:
+        raise GridError(f"footprint array {arr.shape} != grid {grid.shape}")
+    if grid.crs is None:
+        raise GridError("cannot write a footprint without a CRS")
+    tmp = f"{os.fspath(path)}.part"
+    with rasterio.open(tmp, "w", driver="GTiff", height=grid.height, width=grid.width,
+                       count=1, dtype="float64", crs=grid.crs,
+                       transform=Affine(*grid.transform)) as ds:
+        ds.write(arr, 1)
+    os.replace(tmp, path)
+    return os.fspath(path)
+
+
 def read_footprint(path: str | os.PathLike[str]) -> tuple[np.ndarray, Grid, float | None]:
     """Read band 1 of a footprint raster: (raw values, grid, header nodata)."""
     with _open(path) as ds:

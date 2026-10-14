@@ -273,7 +273,7 @@ EXTRACTIONS = TableSchema(
 )
 
 PAIRED = TableSchema(
-    "paired", "1", "Observation-model pairs belonging to one cohort of one comparison.",
+    "paired", "2", "Observation-model pairs belonging to one cohort of one comparison.",
     (
         _key("comparison_id", "string", "Comparison identifier"),
         _key("cohort_id", "string", "Cohort identifier"),
@@ -282,6 +282,7 @@ PAIRED = TableSchema(
         _key("model", "string", "Canonical model name"),
         _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
         _key("extraction_method", "string", "Extraction method"),
+        _key("footprint_set_id", "string", "Footprint set of the extraction (or 'none')"),
         _c("observed_mm", "float", "Station reference ET", unit=ET_UNIT),
         _c("modeled_mm", "float", "Model ET", unit=ET_UNIT),
         _c("reference_provenance", "string", "Reference provenance", nullable=False,
@@ -289,7 +290,7 @@ PAIRED = TableSchema(
         _c("flags", "string", "';'-joined row flags"),
     ),
     primary_key=("comparison_id", "cohort_id", "site_id", "date", "model", "reference_variant",
-                 "extraction_method"),
+                 "extraction_method", "footprint_set_id"),
 )
 
 METRICS = TableSchema(

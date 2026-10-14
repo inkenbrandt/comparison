@@ -30,6 +30,18 @@ RASTER_SCALING: Final = ("declared", "from_header")
 EXTRACTION_METHODS: Final = (
     "footprint", "footprint_common_support", "pixel_window", "nearest_tower_pixel",
 )
+#: Kind of temporal weight used to aggregate per-timestep footprints (guide step 6).
+#: ``measured_et_weighted`` uses the target station measurements, so comparisons with
+#: it are sensitivity experiments. ``modeled_et_weighted`` covers reanalysis/land-model
+#: ET (e.g. NLDAS); ``reference_et_weighted`` covers ETo/ETr.
+TEMPORAL_WEIGHTINGS: Final = (
+    "time_mean", "reference_et_weighted", "modeled_et_weighted", "measured_et_weighted",
+    "unknown",
+)
+AGGREGATION_BASES: Final = ("original_contribution", "renormalized_per_timestep")
+NEGATIVE_WEIGHT_POLICIES: Final = ("exclude_timestep", "reject_period", "keep")
+GAP_POLICIES: Final = ("exclude_timestep", "reject_period")
+NIGHT_POLICIES: Final = ("include", "exclude")
 
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
@@ -353,12 +365,24 @@ class FootprintSetSpec:
     domain_capture_column: str | None = None
     domain_capture_units: str = "percent"
     domain_capture_date_column: str = "time"
+    #: Controlled kind of temporal weight (:data:`TEMPORAL_WEIGHTINGS`). Kept apart
+    #: from the free-text ``weighting_method`` so that an unverified label never
+    #: becomes a claim. ``unknown`` is the default.
+    temporal_weighting: str = "unknown"
+
+    @property
+    def target_dependence(self) -> str:
+        """``yes`` when the weights use the target measurements, ``no``, or ``unknown``."""
+        return {"measured_et_weighted": "yes", "unknown": "unknown"}.get(
+            self.temporal_weighting, "no")
 
     def __post_init__(self) -> None:
         key = f"footprint_sets.{self.set_id}"
         _require(self.set_id, input="footprint set", field="set_id",
                  config_key="footprint_sets[].set_id")
         who = f"footprint set {self.set_id}"
+        _choice(self.temporal_weighting, TEMPORAL_WEIGHTINGS, input=who,
+                field="temporal_weighting", config_key=f"{key}.temporal_weighting")
         if not self.value_semantics:
             raise ContractError("footprint value semantics not declared", input=who,
                                 field="value_semantics", config_key=f"{key}.value_semantics")
@@ -442,6 +466,65 @@ class RasterExtractionSpec:
         if not 0 <= self.negative_weight_tolerance < 1:
             raise ContractError(f"{key}: negative_weight_tolerance must be in [0, 1)",
                                 config_key=f"{key}.negative_weight_tolerance")
+
+
+@dataclass(frozen=True)
+class TemporalAggregationSpec:
+    """How per-timestep footprints become one period footprint (guide step 6).
+
+    ``W_i = sum_t a_t f_it / sum_t a_t`` over eligible timesteps, with
+    ``a_t = s_t * d_t`` when ``include_duration`` (``d_t`` the interval length)
+    and ``a_t = s_t`` otherwise. ``s_t`` is the temporal weight series (1 for
+    ``time_mean``). Every choice is declared; none has a default:
+
+    - ``basis``: ``original_contribution`` aggregates the cell contributions as
+      modeled, so the aggregate keeps the original domain capture;
+      ``renormalized_per_timestep`` divides each timestep by its own total
+      first. The two need not agree.
+    - ``negative_weight_policy``: what a negative ``s_t`` (e.g. negative ET at
+      night) does: ``exclude_timestep``, ``reject_period`` or ``keep`` (which
+      can produce negative cells, later rejected beyond round-off).
+    - ``gap_policy``: a missing ``s_t`` or an unusable footprint timestep
+      (no positive mass, negative cells): ``exclude_timestep`` or ``reject_period``.
+    - ``night_policy``: ``include`` or ``exclude`` (needs a daytime flag).
+
+    ``min_temporal_coverage`` is the smallest eligible duration / period
+    duration accepted; ``None`` accepts any coverage (it is still reported).
+    """
+
+    method_id: str
+    temporal_weighting: str
+    include_duration: bool
+    basis: str
+    negative_weight_policy: str
+    gap_policy: str
+    night_policy: str
+    min_temporal_coverage: float | None = None
+
+    def __post_init__(self) -> None:
+        key = f"footprint_aggregations.{self.method_id}"
+        who = f"footprint aggregation {self.method_id}"
+        _require(self.method_id, input="footprint aggregation", field="method_id",
+                 config_key="footprint_aggregations[].method_id")
+        if not _METHOD_ID.match(str(self.method_id)):
+            raise ContractError(f"{who}: method_id must be snake_case", config_key=key)
+        _choice(self.temporal_weighting, TEMPORAL_WEIGHTINGS[:-1], input=who,
+                field="temporal_weighting", config_key=f"{key}.temporal_weighting")
+        if not isinstance(self.include_duration, bool):
+            raise ContractError(f"{who}: include_duration must be declared true or false",
+                                config_key=f"{key}.include_duration")
+        for f, allowed in (("basis", AGGREGATION_BASES),
+                           ("negative_weight_policy", NEGATIVE_WEIGHT_POLICIES),
+                           ("gap_policy", GAP_POLICIES), ("night_policy", NIGHT_POLICIES)):
+            _choice(getattr(self, f), allowed, input=who, field=f, config_key=f"{key}.{f}")
+        m = self.min_temporal_coverage
+        if m is not None and not 0 <= m <= 1:
+            raise ContractError(f"{who}: min_temporal_coverage must be in [0, 1]",
+                                config_key=f"{key}.min_temporal_coverage")
+
+    @property
+    def target_dependence(self) -> str:
+        return "yes" if self.temporal_weighting == "measured_et_weighted" else "no"
 
 
 @dataclass(frozen=True)

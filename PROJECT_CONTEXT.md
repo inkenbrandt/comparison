@@ -260,4 +260,4 @@ Keep context stable. Update it when verified input semantics or scope changes, i
 
 Do not claim the source raster paths are accessible until checked in the user's runtime. Do not expose or package private station data publicly without permission. Use small synthetic fixtures for distributable tests and keep user-supplied examples as local integration inputs unless authorized otherwise.
 
-**Current handoff (updated 2026-10-13):** Guide steps 1–5 are implemented: contracts, package skeleton, canonical schemas, discovery and adapters, and conservative raster extraction with footprint set B. `IMPLEMENTATION_STATUS.md` holds the details. No model-performance evaluation exists yet.
+**Current handoff (updated 2026-10-14):** Guide steps 1–6 are implemented: contracts, package skeleton, canonical schemas, discovery and adapters, conservative raster extraction with footprint set B, and footprint-weighting sensitivity (set B `etw` vs `mean` on frozen dates; per-timestep aggregation is implemented but tested only on synthetic data). `IMPLEMENTATION_STATUS.md` holds the details. No model-performance evaluation exists yet.

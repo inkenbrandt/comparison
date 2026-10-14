@@ -9,8 +9,79 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 3 — Canonical tables and result objects | **Done** 2026-10-13 |
 | 4 — File discovery and upstream adapters | **Done** 2026-10-13 (exported-file adapters; see limitations) |
 | 5 — Spatial extraction | **Done** 2026-10-13 (footprint set B; polygon area-weighted mode not implemented: no field polygons) |
-| 6 — Footprint aggregation sensitivity | Not started (next) |
-| 7–18 | Not started |
+| 6 — Footprint aggregation sensitivity | **Done** 2026-10-14 (per-timestep aggregation synthetic-only: no per-timestep footprints exist) |
+| 7 — Comparison cohorts | Not started (next) |
+| 8–18 | Not started |
+
+## Step 6 — 2026-10-14
+
+**Run the checks**
+```bash
+uv sync --extra geo && uv run pytest                    # 149 passed, 3 skipped (opt-in Drive tests)
+uv run ruff check src tests && uv run mypy              # clean
+uv run python tools/run_raster_extraction.py examples/us_utj.yaml us_utj_set_b_mean   # ≈4 min
+uv run python tools/run_footprint_sensitivity.py examples/us_utj.yaml \
+    us_utj_set_b_etw us_utj_set_b_mean --out us_utj_set_b_etw_vs_mean
+```
+
+### Delivered
+- **[src/etcompare/footprint_aggregation.py](src/etcompare/footprint_aggregation.py)** builds period footprints from per-timestep footprints with `W_i = Σ a_t f_it / Σ a_t` (D-033).
+  - Every choice is declared in `TemporalAggregationSpec` (in `config`): the weighting, `include_duration`, the original-contribution or per-timestep-renormalized basis, and the negative-weight, gap and night policies, plus an optional minimum coverage.
+  - Each period reports eligible counts, exclusions by reason, `temporal_coverage_frac` (denominator: period duration) and, on the original basis, domain capture.
+  - Missing stacks or weights return `not_available`.
+  - `write_footprint_set` writes the aggregates as a regular footprint set (GeoTIFFs, a capture CSV and a JSON provenance file), so step-5 discovery and extraction consume them unchanged.
+- **[src/etcompare/footprint_sensitivity.py](src/etcompare/footprint_sensitivity.py)**: `compare_footprint_sets` builds the frozen-key comparison (D-034).
+  - Per-variant cohorts plus a model-only cohort.
+  - An optional uniform `min_retained_frac` and `common_models`.
+  - Outputs: `paired` rows, set-minus-baseline differences, pre-freeze availability, and an exclusion for every dropped key.
+  - Measured- or unknown-weighted sets give a warning and the row flag `footprint_target_dependence=`.
+- **[src/etcompare/references.py](src/etcompare/references.py)**: `reference_values` applies the D-004 variant rules. Step 7 will reuse it.
+- **Config:** `FootprintSetSpec.temporal_weighting` is a controlled field with derived `target_dependence` (D-032). The example declares set B `mean` = `time_mean`, the `etw` sets = `unknown`, and a second raster extraction `us_utj_set_b_mean`.
+- **Schema:** `paired` v2 adds the key `footprint_set_id`; nothing used v1.
+- **I/O:** `io.rasters.write_footprint` writes float64 GeoTIFFs atomically.
+- **Tools:** [tools/run_footprint_sensitivity.py](tools/run_footprint_sensitivity.py) is a stand-in until the step-17 CLI.
+
+### Gate checks (guide step 6)
+In [tests/test_footprint_aggregation.py](tests/test_footprint_aggregation.py) and [tests/test_footprint_sensitivity.py](tests/test_footprint_sensitivity.py); expected values come from direct numpy:
+- **Duration weighting:** equal temporal weights with unequal durations reproduce `Σ d_t f_t / Σ d_t` to 1e-14. Without durations the result is the plain mean.
+- **Scale invariance:** multiplying all weights by 7.3 leaves W unchanged (1e-14). Series weights are matched by stamp, not by position.
+- **Missing inputs:** no stack, or no weights for a weighted method, gives `not_available` with a reason, and nothing is built.
+- **Basis:** the renormalized basis differs from the original basis and drops capture. Original-basis capture equals `Σ a cap / Σ a`. Normalized per-timestep input with the original basis is rejected.
+- **Policies:**
+  - Negative weights are excluded, rejected, or kept with negative aggregate cells counted.
+  - Gap exclusion or rejection works as declared.
+  - Night exclusion needs a flag.
+  - End-labelled midnight stamps go to the previous day.
+  - Coverage thresholds apply, with monthly denominators.
+- **Upstream reproduction:** fluxfootprints `summarize_periods` `mean` and `etw` formulas are reproduced to 1e-13.
+- **Round trip:** the aggregates are written, rediscovered and read back bit-identical, with capture attached.
+- **Frozen dates:**
+  - A date missing in one set is removed from both.
+  - Cohorts per variant keep each observation paired; filled days appear only in the inclusive variant.
+  - The retained threshold drops a day on both sides.
+  - The `common_models` rule applies.
+  - Target-dependence flags are set.
+  - A set with no data is skipped as `not_available`.
+
+### US-UTJ results (set B, local outputs, git-ignored)
+- **`mean` extraction:**
+  - 474 footprint days (18 with no weight, 0 negative); 2,549 rows per footprint method; 0 errors.
+  - Retained weight is 1.000 except SIMS (minimum 0.192) and DisALEXI (minimum 0.997).
+  - Domain capture 0.873–1.042.
+- **Comparison with `etw`:**
+  - 4,706 of 5,098 keys are frozen. Every key is an `etw` key; the 40 days on which `etw` was rejected for negative weights are dropped from `mean` too.
+  - Cohorts: 434 days with no reference restriction, 276 for `et_raw` and `et_corrected_measured`, and 432 for `et_corrected_inclusive`.
+  - `mean` − `etw`: mean differences −0.046 to −0.001 mm/day; 95th-percentile |difference| ≤ 0.24; maximum 0.48 (D-035).
+  - Descriptive only, and flagged as possibly target-dependent (D-032).
+
+### Limitations
+- **Per-timestep aggregation is untested on real data:** no per-timestep footprints or weight series exist for US-UTJ. Re-weighting the daily rasters is refused by design.
+- **`etw` weighting is unknown:** which ET variable it used (measured LE or NLDAS) is unrecorded, so its target dependence is `unknown`.
+- **`temporal_coverage_frac` is still null in footprint manifests:** the domain CSV's `valid_timesteps` (7–26 per day) has no declared timestep length or expected count.
+- **No YAML block for aggregation specs yet:** they are Python objects until the step-17 CLI.
+- **No station-agreement metrics:** these are step 9. `paired` rows are ready for steps 7–10.
+
+**Next:** step 7 (explicit comparison cohorts). Generalize the frozen-key logic into `build_cohort` and an immutable cohort object.
 
 ## Step 5 — 2026-10-13
 
@@ -79,7 +150,7 @@ uv run python tools/run_raster_extraction.py examples/us_utj.yaml us_utj_set_b_e
 - **Common support varies by year:** it covers the models present each day (3 in 2024, 7 in 2025), and the `commonN:` support ID records N. Cross-model rankings must use step-7 cohorts.
 - **Step 6 inputs:** the set-B `mean` layer is declared but not yet extracted.
 
-**Next:** step 6 (footprint aggregation sensitivity). Extract the set-B `mean` layer and compare it with `etw` on frozen dates.
+**Next (at the time):** step 6. Superseded by the Step 6 entry above.
 
 ## Steps 2–4 — 2026-10-13
 
