@@ -1,4 +1,4 @@
-"""Build the comparison cohorts declared in a config (guide step 7).
+"""Build the comparison cohorts declared in a config and their period totals (steps 7-8).
 
 Stand-in until the step-17 CLI. For each comparison (all by default), loads its
 ``sources`` (raster extractions from <output_dir>/<name>_extractions.parquet,
@@ -11,14 +11,29 @@ involved, then writes into <output_dir>/cohorts/:
   <id>_exclusions.csv       excluded units and reasons
   <id>_report.txt           validation report and fingerprint
 
+and, for every declared period aggregation that applies to the comparison:
+
+  <id>__<agg>_periods.parquet   period_totals rows (partial, complete, estimated)
+  <id>__<agg>_periods.csv       the same, for inspection
+  <id>__<agg>_summary.csv       periods and days per cohort/model/variant/period type
+  <id>__<agg>_daily_estimates.parquet / .csv
+                                daily values with imputations in separate columns
+                                (imputation methods only)
+
+Growing seasons declared with ``growing_season_source`` are read from the named
+crop-height table; reference ET for ``reference_et_fraction`` comes from the
+station tables' ``reference_et_column``.
+
     uv run python tools/run_cohorts.py examples/us_utj.yaml [comparison_id ...]
 """
 from __future__ import annotations
 
 import argparse
 
+from etcompare.adapters.crop_height import adapt_crop_height, growing_season_windows
 from etcompare.adapters.extracted import adapt_extracted_table
 from etcompare.adapters.station import adapt_station_daily
+from etcompare.aggregation import aggregate_cohort
 from etcompare.cohorts import build_cohort
 from etcompare.config import load_config
 from etcompare.io.tables import read_table, write_table
@@ -54,6 +69,15 @@ def main() -> None:
     for t in cfg.station_tables:
         stations[t.site_id] = adapt_station_daily(t.path, t, cfg.stations[t.site_id]).table  # type: ignore[arg-type]
 
+    aggregations = []
+    for agg in cfg.period_aggregations:
+        if agg.growing_season_source and "growing_season" in agg.periods:
+            crop = cfg.crop_height_table(agg.growing_season_source)
+            r = adapt_crop_height(crop.path, crop)  # type: ignore[arg-type]
+            print(r.report.summary())
+            agg = agg.with_growing_seasons(growing_season_windows(r))
+        aggregations.append(agg)
+
     for spec in specs:
         if not spec.sources:
             raise SystemExit(f"comparison {spec.comparison_id} declares no sources")
@@ -73,6 +97,20 @@ def main() -> None:
                 f"status {c.status}; membership sha256 {c.fingerprint}\n\n"
                 f"{c.report.summary()}\n\n{summary.to_string(index=False)}\n\n"
                 f"exclusions by reason:\n{reasons.to_string()}")
+        for agg in aggregations:
+            if agg.comparisons is not None and cid not in agg.comparisons:
+                continue
+            t = aggregate_cohort(c, agg, products=cfg.products, reference_et=obs)
+            stem = f"{cid}__{agg.aggregation_id}"
+            write_table(t.table, out / f"{stem}_periods.parquet")
+            t.table.frame.to_csv(out / f"{stem}_periods.csv", index=False)
+            s = t.summary()
+            s.to_csv(out / f"{stem}_summary.csv", index=False)
+            if t.daily_estimates is not None:
+                write_table(t.daily_estimates, out / f"{stem}_daily_estimates.parquet")
+                t.daily_estimates.frame.to_csv(out / f"{stem}_daily_estimates.csv", index=False)
+            text += (f"\n\nperiod totals {agg.aggregation_id}:\n{t.report.summary()}\n"
+                     f"{s.to_string(index=False)}")
         (out / f"{cid}_report.txt").write_text(text + "\n", encoding="utf-8")
         print(text, "\n", "-" * 78)
 

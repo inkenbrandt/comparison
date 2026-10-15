@@ -1,5 +1,6 @@
 # Private user data stays local (decisions.md D-014)
 /US-UTJ_daily.csv
+/US-UTJ_20240101_20251230.csv
 *.parquet
 *.ipynb
 *.tif

@@ -322,3 +322,51 @@ From `tools/run_cohorts.py examples/us_utj.yaml`. Primary sides are `footprint_c
 | `utj_set_a_common` | common_date, pre-extracted set A | 260 (88 gap-filled): matches PROJECT_CONTEXT |
 
 The primary common cohort contains all 260 set-A days plus 21 more (281). On every one of those 21 days the producer rejected the set-A footprint. Set B `etw` also lacks 19 of them; the other 2 (2025-04-03, 2025-05-05) are set-B round-off days (D-027). The NLDAS footprints exist on all 21 (D-038). The all-model cohorts are limited to 2025 by the four 2025-only models (D-012). Every cohort that spans both years is single-model or pairwise.
+
+---
+
+**Revision 2026-10-15 (h):** Step 8 implemented. D-041 added.
+
+### D-041 — Period totals and completeness (Adopted)
+`etcompare.aggregation.aggregate_cohort(cohort, spec, products=)` sums a cohort's daily pairs into the periods of a `PeriodAggregationSpec` (`period_aggregations:` in the config). The output is a `period_totals` table.
+- **Sums, not means.** Daily ET is depth per station day (`mm d-1`); a period total is the sum of daily depths, in `mm`. Daily footprint-extracted values are summed. Extracting a monthly raster with a monthly footprint is a different method and is not produced (cohorts use daily rows only).
+- **Periods:** `day`, `month`, `year`, `water_year`, `growing_season`.
+  - Water years start in `water_year_start_month` (default 10, the USGS convention) and are labelled by the year they end in: `WY2025` = 2024-10-01 to 2025-09-30.
+  - Growing seasons have no default. They are either site/year windows (site metadata) or a month-day rule. A rule whose end precedes its start crosses the year boundary and is labelled `GS<y>-<y+1>`. `02-29` is refused in rules because it does not occur every year. Days outside every season are left out of the growing-season product.
+- **Calendar denominators.** `n_days_expected` counts every calendar day of the period, including leap days (February 2024 = 29, WY2024 = 366). Whole periods are listed even where they extend past the inputs, and those rows are flagged `period_outside_inputs`. A day missing from both station and model is still expected. A period with no matched days is reported with null totals and `validity_reason=no_matched_days`.
+- **Station-day boundaries.** Days are assigned to periods by their station-day label, and no date is shifted (D-002). Daily flags such as `day_alignment=unverified` carry into the period row, because a product with an unknown day boundary may be offset by part of a day at period edges.
+- **Three products, one row each:**
+
+  | Product | Value | Null when |
+  |---|---|---|
+  | `partial_sum` | sum over the cohort's matched days, labelled with `n_days_matched` | no matched days |
+  | `complete_total` | the same sum, only when `n_days_matched = n_days_expected` | any expected day is not a cohort day (`incomplete_period`), or support is not `interpolated_daily` |
+  | `estimated_total` | only if declared; `mean_daily_scaling` = partial × expected / matched, for both sides | completeness below the declared `estimation_min_completeness`, no matched days, or unsupported temporal support |
+
+  Partial sums are never scaled by default. An estimated total is labelled with its `estimation_method` and is never an observed total. No estimator is adopted for US-UTJ.
+- **Accepted days** are the cohort's days. A gap-filled reference day counts toward a complete total only in a variant that accepts it (`et_corrected_inclusive`), and such days are counted in `n_days_matched_reference_filled`. Because cohorts freeze days across models, sides and variants, every model in a frozen cohort has the same completeness.
+- **Temporal support.** Complete and estimated totals need `interpolated_daily`. `overpass_only` cannot support a full-period total, and `unknown` cannot show that it does, so both give `validity_reason=temporal_support_<value>`; partial sums remain. A model with no product declaration raises `ContractError`. Mixed support within a comparison gives a `mixed_temporal_support` warning, and every row carries `temporal_support`.
+- **Counts per row:** `n_days_expected`, `n_days_matched`, `n_days_matched_reference_filled`, `n_days_model_available` (non-null model value on that side, before cohort rules), `n_days_reference_measured` and `n_days_reference_filled` (reference values of that variant), and `period_completeness` = matched / expected. Availability counts come from the cohort (`Cohort.model_availability()` / `reference_availability()`), so they cover the comparison's sites and declared period.
+- **Provenance:** the table attributes carry the cohort fingerprint (`cohort_membership_sha256`), the aggregation spec and each model's temporal support.
+
+---
+
+**Revision 2026-10-15 (i):** User decisions: estimated totals are wanted, with missing values imputed into a new column, and the growing season comes from the crop-height model. D-042 added; D-041 extended.
+
+### D-042 — Imputed estimated totals and crop-height growing seasons (Adopted 2026-10-15, user decision; two parameters Provisional)
+**Growing season.** The season is the crop-height model's declared `season_start`..`season_end` (inclusive), read from `crop_height_tables` by `etcompare.adapters.crop_height`. US-UTJ uses `US-UTJ_20240101_20251230.csv` (zone E, alfalfa; SHA-256 `ab8c3cc2…d1a48`):
+- GS2024 = 2024-03-15..2024-12-06 and GS2025 = 2025-03-15..2025-12-06, 267 days each.
+- In this file, `active_k` (growth rate) is non-null exactly inside the season, and height is 5 cm (the base) on every day outside it. Height resets show three cuttings each year: 2024-06-11, 07-19 and 09-08; 2025-05-28, 07-05 and 09-07.
+- The adapter refuses a table whose active column disagrees with the season, whose season changes within a year, or whose season crosses a calendar year. No height threshold is applied: the crop model's own season is used.
+
+**Imputation into a new column.** The estimators `linear_interpolation` and `reference_et_fraction` write a `daily_estimates` table (`PeriodTotals.daily_estimates`):
+- `observed_mm` / `modeled_mm` keep the cohort values. Imputed values appear only in `observed_estimated_mm` / `modeled_estimated_mm`, and `value_source` = `cohort` / `imputed` / `not_imputed`.
+- `estimated_total` sums the estimated columns and is withheld (`imputation_incomplete`) unless every expected day has a value. It reports `n_days_imputed`.
+- **Paired imputation:** anchors are cohort days only. Every non-cohort day is imputed on both sides, even where one side has a real value. Every model of a frozen cohort therefore has the same real and imputed days, so imputation cannot hand an advantage to a model with missing difficult days (D-039). Real values outside the cohort are deliberately not used.
+- **Bounded:** a gap is filled only if it is bracketed by anchors (which may lie outside the period) and is at most `estimation_max_gap_days` long. Nothing is extrapolated.
+- **US-UTJ method: `reference_et_fraction`** with gridMET ETr (`station_tables[].reference_et_column: gridMET_ETr`). ET/ETr is interpolated linearly and multiplied by the day's ETr. This is the relation the station's own gap-filling uses (`ET_fill = gridMET_ETr · ETrF_filtered`, D-005), applied identically to the model. Anchors need ETr > 0; a day without ETr stays `not_imputed`.
+- **Caveats:** imputed observed and modeled values share the ETr driver and the interpolation, so imputed days are not independent evidence. Interpolating the fraction across a cutting misses the post-cut drop; the gap limit bounds this.
+- **Provisional parameters (confirm before scoring):** `estimation_max_gap_days: 14` and `estimation_min_completeness: 0.5`. They were not tuned on agreement.
+
+`mean_daily_scaling` remains available but is not used for US-UTJ.
+

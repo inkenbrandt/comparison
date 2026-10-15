@@ -11,8 +11,116 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 5 — Spatial extraction | **Done** 2026-10-13 (footprint set B; polygon area-weighted mode not implemented: no field polygons) |
 | 6 — Footprint aggregation sensitivity | **Done** 2026-10-14 (NLDAS-ETo primary and measured-LE sensitivity footprints built from one per-timestep stack) |
 | 7 — Comparison cohorts | **Done** 2026-10-14 |
-| 8 — Temporal aggregation and completeness | Not started (next) |
-| 9–18 | Not started |
+| 8 — Temporal aggregation and completeness | **Done** 2026-10-15; imputed estimated totals and crop-height growing season added the same day (US-UTJ daily/Parquet run pending: inputs not in this checkout) |
+| 9 — Performance metrics | Not started (next) |
+| 10–18 | Not started |
+
+## Step 8 addendum — imputed estimated totals, crop-height growing season (2026-10-15)
+
+**User decisions:** estimated totals are wanted; missing values are imputed into a new column; the growing season comes from the crop-height model (`US-UTJ_20240101_20251230.csv`, added by the user).
+
+**Run it**
+```bash
+uv run pytest                                     # 213 passed, 9 skipped (US-UTJ daily/Parquet absent, opt-in Drive)
+uv run ruff check src tests && uv run mypy        # clean
+uv run python tools/run_cohorts.py examples/us_utj.yaml   # also writes *_daily_estimates.{parquet,csv}
+```
+
+### Delivered
+- **[src/etcompare/adapters/crop_height.py](src/etcompare/adapters/crop_height.py):** `adapt_crop_height` produces the new `crop_height` schema, with height in cm, `season_start`/`season_end`, `in_season`, and source columns as `src_*`. It refuses inconsistent seasons. `growing_season_windows` gives `GS<year>` windows.
+- **Imputation** in [aggregation.py](src/etcompare/aggregation.py):
+  - Methods `linear_interpolation` and `reference_et_fraction`. Imputation is paired over cohort anchors, limited to gaps bracketed by anchors and no longer than `estimation_max_gap_days`, and never extrapolates.
+  - `PeriodTotals.daily_estimates` (new `daily_estimates` schema) keeps the original values and puts imputed values only in `*_estimated_mm`, with `value_source` and `gap_length_days`.
+  - `estimated_total` rows sum it and carry `n_days_imputed`. A total is withheld as `imputation_incomplete` when any day stays unfilled.
+- **Config:**
+  - `crop_height_tables:` section.
+  - `PeriodAggregationSpec.growing_season_source`, `estimation_max_gap_days`, and `with_growing_seasons()`.
+  - `StationTableSpec.reference_et_column`, whose unit must be declared. The station adapter now emits `reference_et_mm`.
+- **Example config:** growing season from `utj_zone_e_crop_height`; `reference_et_fraction` on gridMET ETr; max gap 14 days and min completeness 0.5 (both **provisional**, D-042).
+- **Runner:** reads the crop table, passes reference ET, and writes the daily estimates.
+- **`.gitignore`:** now ignores the crop-height CSV, which is private data (D-014).
+- **Docs:** D-042; two new rows in contract §9.
+
+### Checks
+- **Synthetic tests** ([tests/test_imputation.py](tests/test_imputation.py)):
+  - Linear imputation is exact on linear data; imputed values are in the new columns and the original columns stay null.
+  - Paired imputation ignores a real station value outside the cohort, and frozen models share imputed days.
+  - Gap limit: a 4-day gap is refused at max 3 and filled at max 4. Nothing is extrapolated before the first anchor.
+  - Anchors in the neighbouring month bracket an edge gap.
+  - Minimum completeness is checked before imputation.
+  - `reference_et_fraction` reproduces `0.5·ETr` and `0.8·ETr` exactly. An anchor with ETr = 0 is not used; a day without ETr stays unfilled.
+  - Daily estimates round-trip through Parquet.
+  - Spec validation, the station `reference_et_column` unit requirement, and crop-height season windows (the end-to-end GS2025 total is 256 days) are covered, along with the three rejection cases and the config section.
+- **Real crop file** ([tests/integration/test_us_utj_crop_height.py](tests/integration/test_us_utj_crop_height.py), runs here):
+  - SHA-256 is pinned; 730 rows.
+  - Windows are GS2024 and GS2025, both 03-15..12-06.
+  - 534 in-season days; height outside the season is always 5 cm.
+- **Runner smoke test** (synthetic station and model data plus the real crop file, scratch only):
+  - Two missing SIMS days are imputed in June for every model.
+  - A 30-day station hole is refused (`imputation_incomplete`), and August is below minimum completeness.
+  - GS2025 has 267 expected days.
+
+### Open (user decisions)
+- **Gap limit and minimum completeness:** confirm `estimation_max_gap_days` (14) and `estimation_min_completeness` (0.5) before scoring.
+- **Imputation driver:** gridMET ETr was chosen to match the station's own fill. Switch to `gridMET_ETo` or `linear_interpolation` if preferred.
+- **Cutting cycles:** these could become a period type (cutting dates are visible as height resets); not implemented.
+
+## Step 8 — Temporal aggregation and completeness (2026-10-15)
+
+**Run it**
+```bash
+uv sync --extra geo && uv run pytest              # 194 passed, 9 skipped (US-UTJ files absent, opt-in Drive)
+uv run ruff check src tests && uv run mypy        # clean
+uv run python tools/run_cohorts.py examples/us_utj.yaml   # cohorts + period totals into outputs/cohorts/
+```
+
+### Delivered
+- **[src/etcompare/aggregation.py](src/etcompare/aggregation.py):** `aggregate_cohort(cohort, spec, products=)` returns an immutable `PeriodTotals`. It holds a `period_totals` table, a validation report, `summary()` (periods, expected and matched days, complete periods), and attributes with the cohort fingerprint. `period_calendar` builds the calendar.
+- **Three products, one row each** (rules in D-041):
+  - `partial_sum`: matched days only, never scaled.
+  - `complete_total`: only when every calendar day of the period is a cohort day and support is `interpolated_daily`.
+  - `estimated_total`: opt-in `mean_daily_scaling`, which needs a declared minimum completeness.
+  - Null products carry a `validity_reason`: `incomplete_period`, `no_matched_days`, `below_min_completeness` or `temporal_support_<value>`.
+- **Periods:** `day`, `month`, `year`, `water_year` (start month configurable, labelled by end year) and `growing_season`. Growing seasons come from site/year windows or a month-day rule, can cross the year boundary, and have no default.
+- **Counts per row:** expected, matched, matched gap-filled, model-available (before cohort rules), reference measured and filled, plus completeness. Daily flags carry over, and `period_outside_inputs` marks periods that extend beyond the inputs.
+- **Cohort:** `Cohort.model_availability()` / `reference_availability()` record per-day availability before cohort rules. Aggregation needs only the cohort.
+- **Config:** `PeriodAggregationSpec` (with `GrowingSeasonRule` and `GrowingSeasonWindow`) in a new `period_aggregations:` YAML section. Constants: `PERIOD_TYPES`, `ESTIMATION_METHODS`, `ET_TOTAL_UNIT = "mm"`. The loader checks referenced comparisons and sites.
+- **Schema:** new `period_totals` v1, with totals in `mm` (not `mm d-1`). Named `observed_total_mm`/`modeled_total_mm` so they cannot be confused with daily columns.
+- **Example config:** `utj_periods` covers month, calendar year and water year for all comparisons. No growing season and no estimator are declared.
+- **[tools/run_cohorts.py](tools/run_cohorts.py):** now also writes `<id>__<agg>_periods.{parquet,csv}` and `_summary.csv`.
+- **Docs:** D-041. Contract §9 now states the temporal-support rule for period totals.
+
+### Gate checks (guide step 8), in [tests/test_aggregation.py](tests/test_aggregation.py)
+- **The gate:** a 31-day month with 30 valid days at 2 mm/day gives a partial sum of 60 mm, and the complete total is null (`incomplete_period`). A fully covered month gives 62 mm.
+- **A day missing from both station and model** still counts as expected (31 expected, 30 matched), so the month is not complete.
+- **Sums, not means:** random daily values sum to 1e-12. The unit is `mm`.
+- **Calendar:**
+  - Leap days: Feb 2024 has 29 days, 2024 has 366, WY2024 has 366.
+  - Water-year labels (09-30 → WY2024, 10-01 → WY2025); a January start equals the calendar year.
+  - A cross-year rule gives GS2023-2024 = 152 days and GS2024-2025 = 151.
+  - Days outside a site's growing-season window are excluded; a window for another site produces nothing.
+- **References:** an `et_corrected_inclusive` month with 3 gap-filled days is complete (62 mm, 3 filled counted). In the paired-reference cohort the same month is incomplete, with 28 measured days on both variants.
+- **Freezing:** in a common-date cohort, one model's missing day makes the month incomplete for every model, while availability is reported before freezing (31 vs 30). Paired methods aggregate over identical days.
+- **Temporal support:** `overpass_only` and `unknown` withhold complete and estimated totals and keep partial sums. An undeclared product raises; mixed support warns.
+- **Estimation:** scales both sides by 31/28 at ≥ 0.9 completeness, is null below its threshold, equals the complete total when the period is complete, and never appears unless declared.
+- **Export and immutability:** Parquet round trip with the fingerprint, flag propagation, `summary()`, copy-on-access, the zero-matched-day denominator, the identity at daily scale, and spec/config validation errors.
+- **Pandas versions:** passes on the oldest dependency stack (Python 3.11, lowest direct) with `FutureWarning` as an error.
+- **Runner smoke test** on synthetic US-UTJ-shaped inputs (scratch only): Dec–Mar gives 4 months. One missing SIMS day leaves 3 complete months for all 7 models; WY2025 has 120 of 365 days.
+
+### Not run here
+- **US-UTJ real-data run:** `US-UTJ_daily.csv`, `station_oet_US-UTJ.parquet` and the earlier `outputs/` are not in this git checkout, so the integration tests skip. A new integration test, `test_set_a_period_totals`, is ready. It checks that months, years and water years each partition the 260 common days (88 gap-filled), that yearly sums equal daily sums, and that neither calendar year is complete. Run it with `ETCOMPARE_DATA_DIR=<folder with both files> uv run pytest tests/integration`. Then run `tools/run_cohorts.py` where the step-5/6 extraction outputs exist.
+
+### Open (user decisions)
+- **US-UTJ growing season:** not declared. It needs site/year metadata (e.g. alfalfa green-up and cutting dates) or an explicit rule.
+- **Estimated totals:** no estimator is adopted. If one is wanted, the method and its minimum completeness must be declared before scoring.
+- Carried over: the quality threshold (D-008) and the measured-LE coverage minimum (D-038).
+
+### Limitations
+- **Monthly-raster extraction with monthly footprints** is not implemented. It would be a distinct extraction method; period totals here are sums of daily extractions only.
+- **`mean_daily_scaling` is the only estimator.** It assumes the missing days resemble the matched days, which gap patterns (cloudy, wet, or winter days) may violate. It is documented as an estimate.
+- **Availability counts are limited to the comparison.** They cover its sites and declared `start`/`end`, so days outside the window count as expected but unavailable, and those rows are flagged `period_outside_inputs`.
+
+**Next:** step 9, transparent performance metrics on cohort paired rows (daily) and on `period_totals` (by product, never mixing partial and complete).
 
 ## Step 7 — Comparison cohorts (2026-10-14)
 

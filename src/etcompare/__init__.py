@@ -12,6 +12,7 @@ submodules:
 - :mod:`etcompare.io` -- table reading, Parquet round trips, file discovery
 - :mod:`etcompare.adapters` -- upstream product mappings
 - :mod:`etcompare.cohorts` -- explicit comparison cohorts (paired rows plus membership)
+- :mod:`etcompare.aggregation` -- period totals and calendar completeness of a cohort
 """
 
 from etcompare.errors import (

@@ -227,11 +227,13 @@ Validation runs before any join or calculation. A missing mandatory item raises 
 | Reference-variant mapping (`et_raw`, `et_corrected`, gap flag) | Mandatory | `reference variant 'et_corrected' has no source column` |
 | Model ET units | Mandatory | as above |
 | Model `day_definition` | Mandatory, may be `unknown` | Outputs flagged |
-| Model `temporal_support` (`interpolated_daily` / `overpass_only` / `unknown`) | Mandatory, may be `unknown` | Monthly totals refuse `overpass_only` |
+| Model `temporal_support` (`interpolated_daily` / `overpass_only` / `unknown`) | Mandatory, may be `unknown` | Complete and estimated period totals are withheld for `overpass_only` and `unknown` (`validity_reason=temporal_support_<value>`); partial sums remain (D-041) |
 | Raster scale, offset, nodata (raster workflow) | Mandatory | Header values accepted only when declared `from_header`; NaN is always missing |
 | Raster CRS (raster workflow) | Mandatory | `raster <path> has no CRS` |
 | Footprint `value_semantics`, `weighting_method`, footprint set ID (raster workflow) | Mandatory | `footprint value semantics not declared` |
 | Extraction-method label for each pre-extracted column | Mandatory | `column 'ET_mean' needs an extraction_method label` |
+| Crop-height table (growing season): date, height and units, season start/end columns, site | Mandatory when `growing_season_source` is declared | `crop_height_tables.<name>: height_units=... is not one of ['cm', 'm']`; season inconsistencies raise `DataValidationError` (D-042) |
+| Station reference ET column and units (`reference_et_fraction` imputation) | Mandatory for that method | `ET units for column 'gridMET_ETr' not declared; magnitude is not evidence` |
 | Coordinates, land cover, product/model version, closure method, gap-fill method, original capture, acquisition flags | Optional | `unknown`; dependent analyses report `not_available` |
 
 A filename date gives a label, never temporal support. Pandas metadata in a Parquet file is serialisation metadata, not scientific provenance.

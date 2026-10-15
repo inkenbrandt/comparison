@@ -78,6 +78,8 @@ class Cohort:
     _membership: CanonicalTable = field(repr=False)
     _issues: tuple[Issue, ...] = field(repr=False)
     _exclusions: tuple[Mapping[str, Any], ...] = field(repr=False)
+    _model_availability: pd.DataFrame = field(repr=False)
+    _reference_availability: pd.DataFrame = field(repr=False)
     attributes: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -110,6 +112,22 @@ class Cohort:
     @property
     def cohort_ids(self) -> list[str]:
         return sorted(self._membership.frame["cohort_id"].unique())
+
+    def model_availability(self) -> pd.DataFrame:
+        """Every candidate site/date/model and side: is a non-null modeled value present?
+
+        Columns ``site_id``, ``date``, ``model``, ``extraction_method``,
+        ``footprint_set_id``, ``available``. Availability is before cohort rules
+        (quality thresholds and freezing), within the comparison's sites and period.
+        """
+        return self._model_availability.copy()
+
+    def reference_availability(self) -> pd.DataFrame:
+        """Every candidate site/date and reference variant with its provenance (null if absent).
+
+        Columns ``site_id``, ``date``, ``reference_variant``, ``reference_provenance``.
+        """
+        return self._reference_availability.copy()
 
     def units(self, cohort_id: str | None = None) -> pd.DataFrame:
         """Included ``cohort_id``/site/date/model units."""
@@ -244,6 +262,18 @@ def build_cohort(
                                  index=units.index))
         labels.append(v)
 
+    # ---- availability before cohort rules (for period completeness, step 8)
+    model_avail = pd.concat([
+        units[_UNIT].assign(extraction_method=side.extraction_method,
+                            footprint_set_id=side.footprint_set_id,
+                            available=units[f"_mod{i}"].notna())
+        for i, side in enumerate(spec.sides)], ignore_index=True)
+    first_model = units["model"] == spec.models[0]
+    reference_avail = pd.concat([
+        units.loc[first_model, ["site_id", "date"]].assign(
+            reference_variant=v, reference_provenance=units.loc[first_model, f"_prov:{v}"])
+        for v in spec.reference_variants], ignore_index=True)
+
     # ---- own eligibility, then freezing
     codes = np.column_stack([r.to_numpy(dtype=object) for r in reasons])
     failing = codes != ""
@@ -337,4 +367,4 @@ def build_cohort(
     if status == "empty":
         report.warning("empty_cohort", "no candidate unit satisfies the cohort rule")
     return Cohort(spec, status, paired, membership, tuple(report.issues),
-                  tuple(exclusions.records), attributes)
+                  tuple(exclusions.records), model_avail, reference_avail, attributes)

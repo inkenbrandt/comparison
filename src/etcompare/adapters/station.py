@@ -155,6 +155,10 @@ def adapt_station_daily(
     gap = parse_flag(df[spec.gap_flag_column], spec.gap_flag_column, report)
     cf = (parse_numeric(df[spec.closure_factor_column], spec.closure_factor_column, report)
           if spec.closure_factor_column else None)
+    if spec.reference_et_column and spec.reference_et_column not in df.columns:
+        raise SchemaError(f"{where}: reference ET column {spec.reference_et_column!r} not found")
+    ref_et = (parse_numeric(df[spec.reference_et_column], spec.reference_et_column, report)
+              if spec.reference_et_column else None)
     if not report.ok:
         raise DataValidationError(report.summary(), report=report)
 
@@ -203,6 +207,7 @@ def adapt_station_daily(
         "et_corrected_mm": corr,
         "gap_filled": gap,
         "closure_factor": cf if cf is not None else np.nan,
+        "reference_et_mm": ref_et if ref_et is not None else np.nan,
         "raw_available": raw.notna(),
         "reference_provenance": prov,
     })

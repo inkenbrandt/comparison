@@ -107,6 +107,40 @@ def test_set_a_common_date_cohort(cfg, station, extracted):
     assert c.membership.frame.shape[0] == 7 * 492
 
 
+def test_set_a_period_totals(cfg, station, extracted):
+    """Step 8 on real data: months partition the 260 common days; no year is complete."""
+    from etcompare.adapters.crop_height import adapt_crop_height, growing_season_windows
+    from etcompare.aggregation import aggregate_cohort
+    from etcompare.cohorts import build_cohort
+
+    c = build_cohort(station.table, extracted.table, cfg.comparison("utj_set_a_common"),
+                     footprint_sets=cfg.footprint_sets)
+    spec = cfg.period_aggregation("utj_periods")
+    crop = cfg.crop_height_table(spec.growing_season_source)
+    if not crop.path.exists():
+        pytest.skip("crop-height example file not present")
+    spec = spec.with_growing_seasons(growing_season_windows(adapt_crop_height(crop.path, crop)))
+    t = aggregate_cohort(c, spec, products=cfg.products, reference_et=station.table)
+    d = t.daily_estimates.frame
+    cohort_days = d[d.value_source == "cohort"]
+    assert (cohort_days.observed_estimated_mm == cohort_days.observed_mm).all()
+    assert d.loc[d.value_source != "cohort", "observed_mm"].isna().all()
+    f = t.table.frame
+    part = f[f["product"] == "partial_sum"]
+    for ptype in ("month", "year", "water_year"):
+        per_model = part[part.period_type == ptype].groupby("model")
+        assert set(per_model["n_days_matched"].sum()) == {260}
+        assert set(per_model["n_days_matched_reference_filled"].sum()) == {88}
+    p = c.paired.frame
+    for model, g in part[part.period_type == "year"].groupby("model"):
+        assert g["modeled_total_mm"].sum() == pytest.approx(
+            p.loc[p.model == model, "modeled_mm"].sum(), rel=1e-12)
+    years = f[(f["product"] == "complete_total") & (f.period_type == "year")]
+    assert years["observed_total_mm"].isna().all()       # neither calendar year is complete
+    assert set(part.loc[part.period_type == "year", "n_days_expected"]) == {366, 365}
+    assert t.report.ok
+
+
 def test_round_trip_real_tables(station, extracted, tmp_path):
     for result, name in ((station, "station.parquet"), (extracted, "extractions.parquet")):
         back = read_table(write_table(result.table, tmp_path / name))

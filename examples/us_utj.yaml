@@ -38,7 +38,8 @@ station_tables:
     reference_columns: {et_raw: ET, et_corrected: ET_corr}
     gap_flag_column: ET_gap
     closure_factor_column: ebc_cf
-    units: {ET: mm/day, ET_corr: mm/day}   # provisional for station (D-003)
+    reference_et_column: gridMET_ETr       # imputation driver (D-042); the station's own ET_fill uses it
+    units: {ET: mm/day, ET_corr: mm/day, gridMET_ETr: mm/day}   # provisional for station (D-003)
 
 extracted_tables:
   - name: us_utj_set_a
@@ -219,5 +220,30 @@ comparisons:
     reference_variants: [et_corrected_inclusive]
     sides: [{extraction_method: upstream_footprint_weighted, footprint_set_id: US-UTJ_set_A_20261005}]
     sources: [us_utj_set_a]
+
+# Crop-height model for footprint zone E (alfalfa). Its season columns define the growing
+# season (user decision 2026-10-15; D-042); active_k must be non-null exactly in season.
+crop_height_tables:
+  - name: utj_zone_e_crop_height
+    path: ../US-UTJ_20240101_20251230.csv
+    site_column: stationid
+    date_column: date
+    height_column: height_cm
+    height_units: cm
+    season_start_column: season_start
+    season_end_column: season_end
+    active_column: active_k
+
+# Period totals (guide step 8; D-041, D-042): sums of each cohort's daily depths, plus
+# estimated totals from imputed days (user decision 2026-10-15). Imputed values are kept
+# in separate columns of the daily-estimates table.
+period_aggregations:
+  - aggregation_id: utj_periods
+    periods: [month, growing_season, year, water_year]
+    water_year_start_month: 10        # USGS convention; WY2025 = 2024-10-01..2025-09-30
+    growing_season_source: utj_zone_e_crop_height
+    estimation_method: reference_et_fraction   # interpolate ET/gridMET ETr, as the station fill does
+    estimation_max_gap_days: 14                # provisional (D-042): confirm before scoring
+    estimation_min_completeness: 0.5           # provisional (D-042): confirm before scoring
 
 output_dir: ../outputs

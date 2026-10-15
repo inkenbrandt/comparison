@@ -49,8 +49,20 @@ COHORT_KINDS: Final = (
     "common_date", "pairwise_model", "model_available", "paired_method", "paired_reference",
 )
 
+#: Periods that daily cohorts can be summed into (guide step 8; see :class:`PeriodAggregationSpec`).
+PERIOD_TYPES: Final = ("day", "month", "growing_season", "year", "water_year")
+#: Optional full-period estimators; never presented as observed totals.
+ESTIMATION_METHODS: Final = ("mean_daily_scaling", "linear_interpolation",
+                              "reference_et_fraction")
+#: Estimators that impute daily values (and so need ``estimation_max_gap_days``).
+IMPUTATION_METHODS: Final = ("linear_interpolation", "reference_et_fraction")
+#: Supported crop-height units and their factor to centimetres.
+HEIGHT_UNITS: Final = {"cm": 1.0, "m": 100.0}
+
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
+#: Unit of a period total: depth summed over the period's station days.
+ET_TOTAL_UNIT: Final = "mm"
 _ET_UNIT_SYNONYMS: Final = frozenset(
     {"mm d-1", "mm/day", "mm/d", "mm day-1", "mm per day", "mm d^-1", "mm day^-1"}
 )
@@ -239,6 +251,9 @@ class StationTableSpec:
     path: Path | None = None
     date_format: str = "%Y-%m-%d"
     closure_factor_column: str | None = None
+    #: Daily reference ET (e.g. gridMET ETr) used by ``reference_et_fraction`` imputation;
+    #: its unit must be declared in ``units``.
+    reference_et_column: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reference_columns", _frozen_map(self.reference_columns))
@@ -267,7 +282,8 @@ class StationTableSpec:
         _require(self.gap_flag_column, input=where, field="gap_flag_column",
                  config_key=f"{key}.gap_flag_column")
         normalized = {}
-        for col in self.reference_columns.values():
+        for col in (*self.reference_columns.values(),
+                    *([self.reference_et_column] if self.reference_et_column else [])):
             normalized[col] = normalize_et_units(
                 self.units.get(col), input=where, field=col, config_key=f"{key}.units.{col}"
             )
@@ -671,6 +687,250 @@ class ComparisonSpec:
                                 config_key=f"{key}.start")
 
 
+_MONTH_DAY = re.compile(r"^(\d\d)-(\d\d)$")
+
+
+def _month_day(value: object, *, key: str) -> tuple[int, int]:
+    """Parse ``MM-DD``; 02-29 is refused because it does not exist every year."""
+    import datetime as _dt
+
+    m = _MONTH_DAY.match(str(value)) if value is not None else None
+    if m is None:
+        raise ContractError(f"{key}: {value!r} is not a month-day 'MM-DD'", config_key=key)
+    md = (int(m.group(1)), int(m.group(2)))
+    if md == (2, 29):
+        raise ContractError(f"{key}: 02-29 does not occur every year; use 02-28 or 03-01",
+                            config_key=key)
+    try:
+        _dt.date(2001, *md)
+    except ValueError as exc:
+        raise ContractError(f"{key}: {value!r} is not a valid month-day", config_key=key) from exc
+    return md
+
+
+@dataclass(frozen=True)
+class GrowingSeasonRule:
+    """A month-day rule applied to every year (and every site, unless ``sites``).
+
+    ``start`` and ``end`` are inclusive ``MM-DD``. When ``end`` falls before
+    ``start`` the season crosses the year boundary and is labelled
+    ``GS<start year>-<end year>``; otherwise ``GS<year>``.
+    """
+
+    start: str
+    end: str
+    sites: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        _month_day(self.start, key="growing_season_rule.start")
+        _month_day(self.end, key="growing_season_rule.end")
+        if self.sites is not None:
+            object.__setattr__(self, "sites", tuple(self.sites))
+
+    @property
+    def crosses_year(self) -> bool:
+        return _month_day(self.end, key="end") < _month_day(self.start, key="start")
+
+
+@dataclass(frozen=True)
+class GrowingSeasonWindow:
+    """One declared growing season of one site (site/year metadata), inclusive dates."""
+
+    site_id: str
+    label: str
+    start: str
+    end: str
+
+    def __post_init__(self) -> None:
+        key = f"growing_season_windows.{self.site_id}.{self.label}"
+        for f in ("site_id", "label"):
+            _require(getattr(self, f), input=key, field=f, config_key=key)
+        object.__setattr__(self, "start", _iso_date(self.start, key=key, field="start"))
+        object.__setattr__(self, "end", _iso_date(self.end, key=key, field="end"))
+        if self.start is None or self.end is None:
+            raise ContractError(f"{key}: start and end are required", config_key=key)
+        if self.start > self.end:
+            raise ContractError(f"{key}: start {self.start} is after end {self.end}",
+                                config_key=key)
+
+
+@dataclass(frozen=True)
+class CropHeightTableSpec:
+    """A daily crop-height table with the crop model's growing season.
+
+    ``season_start_column`` / ``season_end_column`` hold the season of each day's
+    year (inclusive dates); they define the growing season. ``active_column``,
+    when given, must be non-null exactly inside the season (checked on load).
+    """
+
+    name: str
+    path: Path | None
+    date_column: str
+    height_column: str
+    height_units: str
+    season_start_column: str
+    season_end_column: str
+    site_id: str | None = None
+    site_column: str | None = None
+    active_column: str | None = None
+    date_format: str = "%Y-%m-%d"
+
+    def __post_init__(self) -> None:
+        key = f"crop_height_tables.{self.name}"
+        _require(self.name, input="crop height table", field="name",
+                 config_key="crop_height_tables[].name")
+        for f in ("date_column", "height_column", "season_start_column", "season_end_column"):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        _choice(self.height_units, tuple(HEIGHT_UNITS), input=key, field="height_units",
+                config_key=f"{key}.height_units")
+        if (self.site_id is None) == (self.site_column is None):
+            raise ContractError(f"{key}: declare exactly one of site_id and site_column",
+                                config_key=f"{key}.site_id")
+
+
+@dataclass(frozen=True)
+class PeriodAggregationSpec:
+    """How daily cohorts are summed into periods (guide step 8).
+
+    Daily ET is depth per station day, so a period total is a **sum** of daily
+    depths. Three products are reported (``etcompare.aggregation``): matched-day
+    partial sums, complete-calendar totals (every calendar day of the period
+    accepted), and, only when ``estimation_method`` is declared, estimated
+    full-period totals. Partial sums are never scaled by default.
+
+    - ``water_year_start_month``: first month of the water year (default 10, the
+      USGS convention). The water year is labelled by the calendar year in which
+      it ends (``WY2025`` = 2024-10-01 to 2025-09-30).
+    - Growing seasons come from site/year metadata (``growing_season_windows``),
+      a crop-height table (``growing_season_source``, the name of a
+      ``crop_height_tables`` entry; its windows are attached at run time with
+      :meth:`with_growing_seasons`) or an explicit rule (``growing_season_rule``).
+      There is no default season.
+    - Estimation (``estimated_total`` rows) is opt-in:
+
+      - ``mean_daily_scaling`` scales each partial sum by expected/matched days.
+      - ``linear_interpolation`` imputes each missing day by linear interpolation
+        of daily ET between the nearest cohort days.
+      - ``reference_et_fraction`` interpolates ET / reference ET linearly and
+        multiplies by that day's reference ET (``reference_et_mm`` of the station
+        table).
+
+      Imputation fills only gaps of at most ``estimation_max_gap_days``
+      consecutive missing days bracketed by cohort days on both sides; it never
+      extrapolates. ``estimation_min_completeness`` is the minimum fraction of
+      real cohort days in a period.
+    - ``comparisons`` limits which declared comparisons runners aggregate (all
+      when omitted).
+    """
+
+    aggregation_id: str
+    periods: tuple[str, ...]
+    comparisons: tuple[str, ...] | None = None
+    water_year_start_month: int = 10
+    growing_season_rule: GrowingSeasonRule | None = None
+    growing_season_windows: tuple[GrowingSeasonWindow, ...] = ()
+    growing_season_source: str | None = None
+    estimation_method: str | None = None
+    estimation_min_completeness: float | None = None
+    estimation_max_gap_days: int | None = None
+    description: str | None = None
+
+    @property
+    def imputes(self) -> bool:
+        """True when estimated totals are built from imputed daily values."""
+        return self.estimation_method in IMPUTATION_METHODS
+
+    def with_growing_seasons(self, windows: tuple[GrowingSeasonWindow, ...] | list[
+            GrowingSeasonWindow]) -> PeriodAggregationSpec:
+        """A copy with the windows read from ``growing_season_source`` attached."""
+        from dataclasses import replace
+
+        if self.growing_season_source is None:
+            raise ContractError(f"period_aggregations.{self.aggregation_id}: no "
+                                "growing_season_source to attach windows to")
+        return replace(self, growing_season_windows=tuple(windows))
+
+    def __post_init__(self) -> None:
+        aid = self.aggregation_id
+        _require(aid, input="period aggregation", field="aggregation_id",
+                 config_key="period_aggregations[].aggregation_id")
+        key = f"period_aggregations.{aid}"
+        if not _METHOD_ID.match(str(aid)):
+            raise ContractError(f"{key}: aggregation_id must be snake_case", config_key=key)
+        object.__setattr__(self, "periods", tuple(self.periods or ()))
+        if not self.periods:
+            raise ContractError(f"{key}: no periods declared", config_key=f"{key}.periods")
+        if len(set(self.periods)) != len(self.periods):
+            raise ContractError(f"{key}: duplicate periods", config_key=f"{key}.periods")
+        for p in self.periods:
+            _choice(p, PERIOD_TYPES, input=key, field="periods", config_key=f"{key}.periods")
+        if self.comparisons is not None:
+            object.__setattr__(self, "comparisons", tuple(self.comparisons))
+        m = self.water_year_start_month
+        if isinstance(m, bool) or not isinstance(m, int) or not 1 <= m <= 12:
+            raise ContractError(f"{key}: water_year_start_month must be an integer 1-12",
+                                config_key=f"{key}.water_year_start_month")
+        rule = self.growing_season_rule
+        if isinstance(rule, Mapping):
+            _check_keys(rule, set(GrowingSeasonRule.__dataclass_fields__),
+                        f"{key}.growing_season_rule")
+            rule = GrowingSeasonRule(**rule)
+            object.__setattr__(self, "growing_season_rule", rule)
+        windows = []
+        for w in self.growing_season_windows or ():
+            if isinstance(w, Mapping):
+                _check_keys(w, set(GrowingSeasonWindow.__dataclass_fields__),
+                            f"{key}.growing_season_windows[]")
+                w = GrowingSeasonWindow(**w)
+            windows.append(w)
+        object.__setattr__(self, "growing_season_windows", tuple(windows))
+        source = self.growing_season_source
+        if rule is not None and (windows or source):
+            raise ContractError(f"{key}: declare one of growing_season_rule, "
+                                "growing_season_windows or growing_season_source", config_key=key)
+        if "growing_season" in self.periods and rule is None and not windows and not source:
+            raise ContractError(
+                f"{key}: growing_season requested but no season declared; give site/year "
+                "growing_season_windows, a growing_season_source (crop-height table) or a "
+                "growing_season_rule (there is no default season)",
+                config_key=f"{key}.growing_season_rule")
+        by_site: dict[str, list[GrowingSeasonWindow]] = {}
+        for w in windows:
+            by_site.setdefault(w.site_id, []).append(w)
+        for site, ws in by_site.items():
+            labels = [w.label for w in ws]
+            if len(set(labels)) != len(labels):
+                raise ContractError(f"{key}: duplicate growing-season label for {site}",
+                                    config_key=f"{key}.growing_season_windows")
+            ws = sorted(ws, key=lambda w: w.start)
+            for a, b in zip(ws, ws[1:], strict=False):
+                if b.start <= a.end:
+                    raise ContractError(
+                        f"{key}: growing seasons {a.label} and {b.label} of {site} overlap",
+                        config_key=f"{key}.growing_season_windows")
+        if self.estimation_method is not None:
+            _choice(self.estimation_method, ESTIMATION_METHODS, input=key,
+                    field="estimation_method", config_key=f"{key}.estimation_method")
+            c = self.estimation_min_completeness
+            if c is None or isinstance(c, bool) or not 0 < c <= 1:
+                raise ContractError(
+                    f"{key}: estimation_method needs estimation_min_completeness in (0, 1], "
+                    "declared before scoring", config_key=f"{key}.estimation_min_completeness")
+        elif self.estimation_min_completeness is not None:
+            raise ContractError(f"{key}: estimation_min_completeness without estimation_method",
+                                config_key=f"{key}.estimation_min_completeness")
+        g = self.estimation_max_gap_days
+        if self.imputes:
+            if g is None or isinstance(g, bool) or not isinstance(g, int) or g < 1:
+                raise ContractError(
+                    f"{key}: {self.estimation_method} needs estimation_max_gap_days, a positive "
+                    "integer declared before scoring", config_key=f"{key}.estimation_max_gap_days")
+        elif g is not None:
+            raise ContractError(f"{key}: estimation_max_gap_days applies only to "
+                                f"{list(IMPUTATION_METHODS)}",
+                                config_key=f"{key}.estimation_max_gap_days")
+
+
 @dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
@@ -686,6 +946,8 @@ class Config:
     raster_extractions: tuple[RasterExtractionSpec, ...] = ()
     footprint_aggregations: tuple[TemporalAggregationSpec, ...] = ()
     comparisons: tuple[ComparisonSpec, ...] = ()
+    period_aggregations: tuple[PeriodAggregationSpec, ...] = ()
+    crop_height_tables: tuple[CropHeightTableSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -715,6 +977,51 @@ class Config:
                 raise ContractError(f"{key}: models {sorted(unknown)} not declared",
                                     config_key="products")
         self._check_comparisons(ids)
+        self._check_period_aggregations()
+
+    def _check_period_aggregations(self) -> None:
+        aids = [a.aggregation_id for a in self.period_aggregations]
+        if len(set(aids)) != len(aids):
+            raise ContractError(f"duplicate aggregation_id in {aids}",
+                                config_key="period_aggregations")
+        cids = {c.comparison_id for c in self.comparisons}
+        crops = [t.name for t in self.crop_height_tables]
+        if len(set(crops)) != len(crops):
+            raise ContractError(f"duplicate crop height table name in {crops}",
+                                config_key="crop_height_tables")
+        for t in self.crop_height_tables:
+            if t.site_id is not None and t.site_id not in self.stations:
+                raise ContractError(f"crop_height_tables.{t.name}: station {t.site_id} not "
+                                    "declared", config_key=f"stations.{t.site_id}")
+        for a in self.period_aggregations:
+            if a.growing_season_source is not None and a.growing_season_source not in crops:
+                raise ContractError(
+                    f"period_aggregations.{a.aggregation_id}: growing_season_source "
+                    f"{a.growing_season_source!r} is not a declared crop_height_tables name",
+                    config_key=f"period_aggregations.{a.aggregation_id}.growing_season_source")
+            key = f"period_aggregations.{a.aggregation_id}"
+            unknown = set(a.comparisons or ()) - cids
+            if unknown:
+                raise ContractError(f"{key}: comparisons {sorted(unknown)} not declared",
+                                    config_key=f"{key}.comparisons")
+            sites = {w.site_id for w in a.growing_season_windows} | set(
+                (a.growing_season_rule.sites or ()) if a.growing_season_rule else ())
+            unknown = sites - set(self.stations)
+            if unknown:
+                raise ContractError(f"{key}: growing-season sites {sorted(unknown)} not declared",
+                                    config_key="stations")
+
+    def crop_height_table(self, name: str) -> CropHeightTableSpec:
+        for t in self.crop_height_tables:
+            if t.name == name:
+                return t
+        raise KeyError(name)
+
+    def period_aggregation(self, aggregation_id: str) -> PeriodAggregationSpec:
+        for a in self.period_aggregations:
+            if a.aggregation_id == aggregation_id:
+                return a
+        raise KeyError(aggregation_id)
 
     def _check_comparisons(self, footprint_set_ids: list[str]) -> None:
         cids = [c.comparison_id for c in self.comparisons]
@@ -796,7 +1103,8 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
     """Build a :class:`Config` from plain data (e.g. parsed YAML)."""
     top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
            "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
-           "footprint_aggregations", "comparisons", "output_dir"}
+           "footprint_aggregations", "comparisons", "period_aggregations",
+           "crop_height_tables", "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -903,6 +1211,25 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
                         f"comparisons[{i}].sides[{j}]")
         comparisons.append(ComparisonSpec(**kw))
 
+    period_aggs = []
+    pa_fields = set(PeriodAggregationSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("period_aggregations") or []):
+        _check_keys(body, pa_fields, f"period_aggregations[{i}]")
+        kw = {f: body.get(f) for f in ("aggregation_id", "periods")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        period_aggs.append(PeriodAggregationSpec(**kw))
+
+    crop_tables = []
+    ch_fields = set(CropHeightTableSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("crop_height_tables") or []):
+        _check_keys(body, ch_fields, f"crop_height_tables[{i}]")
+        kw = {f: body.get(f) for f in ("name", "path", "date_column", "height_column",
+                                       "height_units", "season_start_column",
+                                       "season_end_column")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        kw["path"] = _path(kw.get("path"), base_dir)
+        crop_tables.append(CropHeightTableSpec(**kw))
+
     return Config(
         stations=stations,
         products=products,
@@ -915,6 +1242,8 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         raster_extractions=tuple(extractions),
         footprint_aggregations=tuple(aggregations),
         comparisons=tuple(comparisons),
+        period_aggregations=tuple(period_aggs),
+        crop_height_tables=tuple(crop_tables),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 

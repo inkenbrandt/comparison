@@ -25,10 +25,12 @@ from typing import Any, Final, Literal
 import numpy as np
 import pandas as pd
 
+from etcompare.config import ET_TOTAL_UNIT as ET_TOTAL_UNIT
 from etcompare.config import ET_UNIT as ET_UNIT
 from etcompare.config import (
     FOOTPRINT_VALUE_SEMANTICS,
     INTERVAL_LABELS,
+    PERIOD_TYPES,
     PRODUCT_DAY_DEFINITIONS,
     STATION_DAY_DEFINITIONS,
     TEMPORAL_SUPPORTS,
@@ -58,6 +60,10 @@ DAY_ALIGNMENT: Final = ("declared", "unverified")
 PERIODS: Final = ("day", "month")
 SEVERITY: Final = ("error", "warning", "info")
 SCALING_SOURCES: Final = ("declared", "from_header", "not_read")
+#: The three period products of guide step 8 (``etcompare.aggregation``).
+TOTAL_PRODUCTS: Final = ("partial_sum", "complete_total", "estimated_total")
+#: Where a daily estimate comes from: a real cohort pair, an imputation, or nothing.
+VALUE_SOURCES: Final = ("cohort", "imputed", "not_imputed")
 
 
 @dataclass(frozen=True)
@@ -170,6 +176,23 @@ STATION_DAILY = TableSchema(
            nullable=False, allowed=REFERENCE_PROVENANCE),
         _c("subdaily_valid_fraction", "float", "Fraction of subdaily records observed",
            unit=FRACTION, required=False),
+        _c("reference_et_mm", "float",
+           "Daily reference ET (declared column, e.g. gridMET ETr); used only to impute",
+           unit=ET_UNIT, required=False),
+    ),
+    primary_key=("site_id", "date"),
+    allow_extra_columns=True,
+)
+
+CROP_HEIGHT = TableSchema(
+    "crop_height", "1", "Daily crop height and the crop model's growing season.",
+    (
+        _key("site_id", "string", "Station"),
+        _key("date", "date", "Station-day label"),
+        _c("height_cm", "float", "Crop height", unit="cm"),
+        _c("season_start", "date", "First day of this year's growing season", nullable=False),
+        _c("season_end", "date", "Last day of this year's growing season", nullable=False),
+        _c("in_season", "bool", "season_start <= date <= season_end", nullable=False),
     ),
     primary_key=("site_id", "date"),
     allow_extra_columns=True,
@@ -309,6 +332,84 @@ COHORT_MEMBERSHIP = TableSchema(
     primary_key=("comparison_id", "cohort_id", "site_id", "date", "model"),
 )
 
+PERIOD_TOTALS = TableSchema(
+    "period_totals", "1",
+    "Period sums of a cohort's daily depths: matched-day partial sums, complete-calendar "
+    "totals and optional estimated totals, with calendar completeness.",
+    (
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("site_id", "string", "Station"),
+        _key("model", "string", "Canonical model name"),
+        _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
+        _key("extraction_method", "string", "Extraction method (daily values summed)"),
+        _key("footprint_set_id", "string", "Footprint set of the extraction (or 'none')"),
+        _key("period_type", "string", "Kind of period", allowed=PERIOD_TYPES),
+        _key("period_label", "string", "e.g. 2025-06, 2025, WY2025, GS2025"),
+        _key("product", "string", "Which total this row is", allowed=TOTAL_PRODUCTS),
+        _c("period_start", "date", "First station day of the period", nullable=False),
+        _c("period_end", "date", "Last station day of the period (inclusive)", nullable=False),
+        _c("observed_total_mm", "float", "Station reference ET summed over the product's days; "
+           "null when the product is unavailable", unit=ET_TOTAL_UNIT),
+        _c("modeled_total_mm", "float", "Model ET summed over the same days", unit=ET_TOTAL_UNIT),
+        _c("n_days_expected", "int", "Calendar station days in the period", nullable=False),
+        _c("n_days_matched", "int", "Cohort days in the period (both sides accepted)",
+           nullable=False),
+        _c("n_days_matched_reference_filled", "int",
+           "Matched days whose reference is gap-filled (corrected_filled)", nullable=False),
+        _c("n_days_model_available", "int",
+           "Days with a non-null model value on this side, before cohort rules", nullable=False),
+        _c("n_days_reference_measured", "int",
+           "Days with a reference value of this variant that is not gap-filled", nullable=False),
+        _c("n_days_reference_filled", "int",
+           "Days with a gap-filled reference value of this variant", nullable=False),
+        _c("period_completeness", "float", "n_days_matched / n_days_expected", unit=FRACTION,
+           nullable=False),
+        _c("temporal_support", "string", "Declared temporal support of the model product",
+           nullable=False, allowed=TEMPORAL_SUPPORTS),
+        _c("estimation_method", "string", "Estimator of an estimated_total row"),
+        _c("n_days_imputed", "int", "Imputed days in an estimated_total row (null otherwise, "
+           "and for mean_daily_scaling)", required=False),
+        _c("validity_reason", "string", "Why the totals are null, if they are"),
+        _c("flags", "string", "';'-joined flags (daily flags of the period plus period flags)"),
+    ),
+    primary_key=("comparison_id", "cohort_id", "site_id", "model", "reference_variant",
+                 "extraction_method", "footprint_set_id", "period_type", "period_label",
+                 "product"),
+)
+
+DAILY_ESTIMATES = TableSchema(
+    "daily_estimates", "1",
+    "A cohort's daily pairs on every calendar day of the aggregated periods. Original "
+    "values are kept; imputed values appear only in the *_estimated_mm columns.",
+    (
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("site_id", "string", "Station"),
+        _key("date", "date", "Station-day label"),
+        _key("model", "string", "Canonical model name"),
+        _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
+        _key("extraction_method", "string", "Extraction method"),
+        _key("footprint_set_id", "string", "Footprint set of the extraction (or 'none')"),
+        _c("observed_mm", "float", "Cohort reference ET; null on days outside the cohort",
+           unit=ET_UNIT),
+        _c("modeled_mm", "float", "Cohort model ET; null on days outside the cohort",
+           unit=ET_UNIT),
+        _c("observed_estimated_mm", "float", "observed_mm, or the imputed value",
+           unit=ET_UNIT),
+        _c("modeled_estimated_mm", "float", "modeled_mm, or the imputed value", unit=ET_UNIT),
+        _c("value_source", "string", "cohort / imputed / not_imputed (both sides alike)",
+           nullable=False, allowed=VALUE_SOURCES),
+        _c("gap_length_days", "int", "Length of the run of non-cohort days containing this "
+           "day (null on cohort days)"),
+        _c("reference_et_mm", "float", "Reference ET used by reference_et_fraction",
+           unit=ET_UNIT),
+        _c("estimation_method", "string", "Imputation method", nullable=False),
+    ),
+    primary_key=("comparison_id", "cohort_id", "site_id", "date", "model", "reference_variant",
+                 "extraction_method", "footprint_set_id"),
+)
+
 METRICS = TableSchema(
     "metrics", "1", "Metric values with explicit sample counts and validity.",
     (
@@ -369,7 +470,8 @@ EXCLUSIONS = TableSchema(
 
 SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
     s.name: s for s in (STATIONS, STATION_DAILY, MODEL_MANIFEST, ASSET_SITES,
-                        FOOTPRINT_MANIFEST, EXTRACTIONS, PAIRED, COHORT_MEMBERSHIP, METRICS,
+                        FOOTPRINT_MANIFEST, EXTRACTIONS, PAIRED, COHORT_MEMBERSHIP,
+                        PERIOD_TOTALS, DAILY_ESTIMATES, CROP_HEIGHT, METRICS,
                         INTERVALS, EXCLUSIONS)
 })
 
