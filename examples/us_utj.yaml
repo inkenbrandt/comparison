@@ -243,7 +243,7 @@ period_aggregations:
     water_year_start_month: 10        # USGS convention; WY2025 = 2024-10-01..2025-09-30
     growing_season_source: utj_zone_e_crop_height
     estimation_method: reference_et_fraction   # interpolate ET/gridMET ETr, as the station fill does
-    estimation_max_gap_days: 14                # provisional (D-042): confirm before scoring
-    estimation_min_completeness: 0.5           # provisional (D-042): confirm before scoring
+    estimation_max_gap_days: 14                # adopted default (user, 2026-10-15; D-042)
+    estimation_min_completeness: 0.5           # adopted default (user, 2026-10-15; D-042)
 
 output_dir: ../outputs

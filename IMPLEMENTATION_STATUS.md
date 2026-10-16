@@ -15,6 +15,18 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 9 — Performance metrics | Not started (next) |
 | 10–18 | Not started |
 
+## Steps 5–6 outputs regenerated; all cohorts and period totals (2026-10-15)
+
+**Run:** the step 5–6 commands (footprint-parameter fetch, per-timestep footprints, aggregation, four raster extractions, two sensitivity comparisons), then `tools/run_cohorts.py examples/us_utj.yaml`. The rebuild took about 1 h, mostly the first set-B `etw` extraction (38 min over the Drive); re-extractions run in about 1 min once Drive files are cached.
+
+- **Environment:** the footprints environment lacked its declared `pyarrow`. Version 26.0.0 was installed with `--link-mode=copy` because OneDrive refuses uv's hard links. The footprints repository's code was not changed.
+- **Corrupted footprint files:** the first rebuild left 3 corrupted footprint GeoTIFFs in each etcompare-built set, with correct in-memory arrays. `write_footprint` now verifies every write by reading the file back (new test). The rewrite is clean, scanned 474 + 391 files. Details in D-043.
+- **Reproduction:** every figure in D-035 to D-040 is reproduced exactly. The D-037 timestep count was a typo and has been corrected to 10,795.
+- **Period totals:** all 7 comparisons produce period totals plus daily estimates (`outputs/cohorts/*__utj_periods_*`). Which months are complete or estimated is in D-043.
+  - The 7-model inclusive ranking has complete totals for 2025-01 to 07 and 09, and estimated totals for 2025-01 to 09.
+  - Measured-reference cohorts have no estimates for April–August 2025, because the raw station gaps are longer than 14 days.
+- **Tests:** 220 passed, 3 skipped (opt-in Drive and raster-indexing tests); ruff and mypy are clean.
+
 ## Step 8 addendum — imputed estimated totals, crop-height growing season (2026-10-15)
 
 **User decisions:** estimated totals are wanted; missing values are imputed into a new column; the growing season comes from the crop-height model (`US-UTJ_20240101_20251230.csv`, added by the user).
@@ -36,7 +48,7 @@ uv run python tools/run_cohorts.py examples/us_utj.yaml   # also writes *_daily_
   - `crop_height_tables:` section.
   - `PeriodAggregationSpec.growing_season_source`, `estimation_max_gap_days`, and `with_growing_seasons()`.
   - `StationTableSpec.reference_et_column`, whose unit must be declared. The station adapter now emits `reference_et_mm`.
-- **Example config:** growing season from `utj_zone_e_crop_height`; `reference_et_fraction` on gridMET ETr; max gap 14 days and min completeness 0.5 (both **provisional**, D-042).
+- **Example config:** growing season from `utj_zone_e_crop_height`; `reference_et_fraction` on gridMET ETr; max gap 14 days and min completeness 0.5 (adopted defaults, user 2026-10-15; D-042).
 - **Runner:** reads the crop table, passes reference ET, and writes the daily estimates.
 - **`.gitignore`:** now ignores the crop-height CSV, which is private data (D-014).
 - **Docs:** D-042; two new rows in contract §9.
@@ -60,8 +72,15 @@ uv run python tools/run_cohorts.py examples/us_utj.yaml   # also writes *_daily_
   - A 30-day station hole is refused (`imputation_incomplete`), and August is below minimum completeness.
   - GS2025 has 267 expected days.
 
+### US-UTJ real data (2026-10-15; set-A pre-extracted cohort, local outputs)
+The user added `US-UTJ_daily.csv` and `station_oet_US-UTJ.parquet`; both SHA-256 values match PROJECT_CONTEXT. The integration tests now run: 7 passed and 3 skipped (opt-in Drive and raster tests).
+- **Cohort:** `tools/run_cohorts.py examples/us_utj.yaml utj_set_a_common` gives 260 common days, 88 of them gap-filled (unchanged).
+- **Imputation:** within the 2025 record (Jan 1 – Oct 9) the cohort has 260 real days, and all 20 missing days fall in gaps of 1–3 days, so every one was imputed. The 14-day limit is not binding for this cohort. Jan 1–2 stay unfilled because no cohort day precedes them (the 2025-only models start Jan 3), and nothing is extrapolated.
+- **Estimated monthly totals exist for Feb–Sep 2025.** January is `imputation_incomplete` (Jan 1–2). October has 8 of 31 days, below the 0.5 minimum. 2024 has no matched days.
+- **No complete or estimated total for GS2025, 2025, or WY2025:** the record ends on 2025-10-09, before the season end (12-06) and the year end. These remain partial sums only, e.g. GS2025 has 196 of 267 days matched.
+- **Raster-extraction cohorts:** run after regenerating the step 5–6 outputs; see the entry below.
+
 ### Open (user decisions)
-- **Gap limit and minimum completeness:** confirm `estimation_max_gap_days` (14) and `estimation_min_completeness` (0.5) before scoring.
 - **Imputation driver:** gridMET ETr was chosen to match the station's own fill. Switch to `gridMET_ETo` or `linear_interpolation` if preferred.
 - **Cutting cycles:** these could become a period type (cutting dates are visible as height resets); not implemented.
 

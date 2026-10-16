@@ -248,7 +248,7 @@ The stack was built upstream by `tools/upstream/run_timestep_footprints.py`, wit
 - **Model settings:**
   - ffp_xr, h = 2000 m, 10 m cells, domain ±600 m, `rslayer=False`, smoothing on.
   - Only half-hours starting 08:00–20:30 are used (Volk 2023).
-  - The model drops some timesteps itself; 11,295 remain.
+  - The model drops some timesteps itself; 10,795 remain (of 12,260 in the window). *Corrected 2026-10-15: this line said 11,295; the rerun reproduced every other figure of D-036 to D-038 exactly (D-043).*
 - **NLDAS:** `eto_grass` interpolated linearly from hourly start labels to 30 min. The radiation timing differs from station SW_IN by a steady ≈0.5 h with no seasonal shift. Neither series uses daylight time, but NLDAS's start-versus-end labelling of hourly averages is unconfirmed.
 - **Aggregation, identical for both sets** (`footprint_aggregations` in the config):
   - Durations included (all 30 min).
@@ -353,7 +353,7 @@ The primary common cohort contains all 260 set-A days plus 21 more (281). On eve
 
 **Revision 2026-10-15 (i):** User decisions: estimated totals are wanted, with missing values imputed into a new column, and the growing season comes from the crop-height model. D-042 added; D-041 extended.
 
-### D-042 — Imputed estimated totals and crop-height growing seasons (Adopted 2026-10-15, user decision; two parameters Provisional)
+### D-042 — Imputed estimated totals and crop-height growing seasons (Adopted 2026-10-15, user decision)
 **Growing season.** The season is the crop-height model's declared `season_start`..`season_end` (inclusive), read from `crop_height_tables` by `etcompare.adapters.crop_height`. US-UTJ uses `US-UTJ_20240101_20251230.csv` (zone E, alfalfa; SHA-256 `ab8c3cc2…d1a48`):
 - GS2024 = 2024-03-15..2024-12-06 and GS2025 = 2025-03-15..2025-12-06, 267 days each.
 - In this file, `active_k` (growth rate) is non-null exactly inside the season, and height is 5 cm (the base) on every day outside it. Height resets show three cuttings each year: 2024-06-11, 07-19 and 09-08; 2025-05-28, 07-05 and 09-07.
@@ -366,7 +366,44 @@ The primary common cohort contains all 260 set-A days plus 21 more (281). On eve
 - **Bounded:** a gap is filled only if it is bracketed by anchors (which may lie outside the period) and is at most `estimation_max_gap_days` long. Nothing is extrapolated.
 - **US-UTJ method: `reference_et_fraction`** with gridMET ETr (`station_tables[].reference_et_column: gridMET_ETr`). ET/ETr is interpolated linearly and multiplied by the day's ETr. This is the relation the station's own gap-filling uses (`ET_fill = gridMET_ETr · ETrF_filtered`, D-005), applied identically to the model. Anchors need ETr > 0; a day without ETr stays `not_imputed`.
 - **Caveats:** imputed observed and modeled values share the ETr driver and the interpolation, so imputed days are not independent evidence. Interpolating the fraction across a cutting misses the post-cut drop; the gap limit bounds this.
-- **Provisional parameters (confirm before scoring):** `estimation_max_gap_days: 14` and `estimation_min_completeness: 0.5`. They were not tuned on agreement.
+- **Parameters:** `estimation_max_gap_days: 14` and `estimation_min_completeness: 0.5`, adopted as defaults by the user on 2026-10-15, before any scoring. They were not tuned on agreement.
 
 `mean_daily_scaling` remains available but is not used for US-UTJ.
+
+---
+
+**Revision 2026-10-15 (j):** Steps 5–6 outputs regenerated; D-043 added; D-037 timestep count corrected.
+
+### D-043 — Regenerated US-UTJ outputs and verified footprint writes (Information; one Adopted rule)
+The step 5–6 outputs were missing from this checkout and were rebuilt with the commands in `IMPLEMENTATION_STATUS.md`:
+- **Database fetch:** read-only, 731 parameter rows.
+- **Per-timestep footprints:** 10,795 timesteps.
+- **Aggregation, then four raster extractions and both footprint comparisons.**
+
+The footprints environment was missing its declared `pyarrow` dependency. Version 26.0.0 was installed with `--link-mode=copy` (OneDrive refuses uv's hard links). The footprints repository's code was not changed.
+
+**Corrupted writes (resolved):** in the first rebuild, the same three daily footprints in both etcompare-built sets were written with garbage values (around ±1e300): 2024-12-05, 2025-06-20 and 2025-06-21.
+- The in-memory aggregates were correct: finite, non-negative and summing to 1.
+- A single rewrite was correct, inside and outside OneDrive, so the damage happened between the array and the file in that run. A OneDrive-synced output folder is the likely cause, but this was not proven.
+- The extraction caught the files as negative-weight footprints; they were not used silently.
+- **Rule (Adopted):** `io.rasters.write_footprint` now reads every file back and requires it to be bit-identical to the array. Otherwise it removes the file and raises `OSError`. A test corrupts a file after the rename to check this.
+- The rewrite passed this check and an independent scan of all 474 + 391 files.
+
+**Reproduction:** after the rewrite every recorded figure is reproduced exactly.
+- NLDAS set: 474 days and 2,549 rows per footprint method. Total-variation distance to set A: median 0.0011 (90th percentile 0.0026). Measured-LE set: 391 days, distance 0.0452, never the closer set (D-036 to D-038).
+- Measured LE − NLDAS: +0.002 to +0.015 mm/day, maximum 1.12.
+- Set B `etw`: 9,912 rows and 434 footprint days. Set B `mean` − `etw`: 4,706 of 5,098 keys, −0.046 to −0.001 mm/day, maximum 0.48 (D-035).
+- All seven cohorts match D-040.
+
+**Period totals** (`utj_periods`; complete totals need every calendar day, estimated totals impute gaps of ≤ 14 days):
+
+| Comparison | Complete months | Estimated months | Longer periods |
+|---|---|---|---|
+| `utj_rank_corrected_inclusive` (7 models) | 2025-01 to 07, 2025-09 | 2025-01 to 09 (≤ 1 imputed day) | none |
+| `utj_rank_corrected_measured` / `utj_closure_all_models` | 2025-09 | 2025-01 to 03, 09 | none |
+| `utj_footprint_vs_window` / `utj_pair_eemetric_ssebop` | 2025-09 | 2024-11 to 2025-03, 2025-09 (≤ 10 imputed days) | none |
+| `utj_coverage` (per model; not a ranking) | 2024-07 to 2025-09 | the same | WY2025 complete |
+| `utj_set_a_common` | none | 2025-02 to 09 | none |
+
+Measured-reference cohorts have no estimates for 2025-04 to 08 because raw station ET is missing for long runs (all of May 2025), well beyond 14 days. GS2025 and calendar 2025 cannot be complete or estimated, because the record ends on 2025-10-09, before the season end (12-06). 2024 periods start mid-year, on 2024-06-05.
 

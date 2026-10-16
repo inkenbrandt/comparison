@@ -107,7 +107,10 @@ def read_model_window(
 def write_footprint(path: str | os.PathLike[str], values: np.ndarray, grid: Grid) -> str:
     """Write a footprint as a float64 single-band GeoTIFF without a nodata value.
 
-    float64 keeps the weights exactly; zero cells are zero contribution.
+    float64 keeps the weights exactly; zero cells are zero contribution. The file
+    is read back and must be bit-identical to ``values``; otherwise it is removed
+    and :class:`OSError` is raised. (A US-UTJ run in a OneDrive-synced folder left
+    three footprints with garbage values although the arrays were correct.)
     """
     rasterio = require("rasterio", "Writing rasters")
     from affine import Affine
@@ -123,6 +126,12 @@ def write_footprint(path: str | os.PathLike[str], values: np.ndarray, grid: Grid
                        transform=Affine(*grid.transform)) as ds:
         ds.write(arr, 1)
     os.replace(tmp, path)
+    with rasterio.open(path) as ds:
+        back = ds.read(1)
+    if back.shape != arr.shape or not np.array_equal(back, arr, equal_nan=True):
+        os.remove(path)
+        raise OSError(f"{path}: footprint read back differs from the array written; file "
+                      "removed (storage or sync corruption?)")
     return os.fspath(path)
 
 

@@ -195,3 +195,27 @@ def test_unreadable_raster_is_counted_or_raised(setup):
     assert "unreadable_raster" in set(r.exclusions.to_frame()["reason_code"])
     with pytest.raises(rasterio.errors.RasterioIOError):
         run(setup, strict=True)
+
+
+def test_write_footprint_detects_corruption_after_write(tmp_path, monkeypatch):
+    """A file that differs from the array after writing is removed and reported."""
+    import os
+
+    from etcompare.io import rasters
+    from etcompare.spatial import Grid
+
+    grid = Grid("EPSG:32612", (10.0, 0.0, 500000.0, 0.0, -10.0, 4100000.0), 4, 4)
+    values = np.full((4, 4), 1 / 16)
+    path = tmp_path / "fp.tif"
+    assert rasters.write_footprint(path, values, grid) == os.fspath(path)
+    real_replace = os.replace
+
+    def corrupting_replace(src, dst):
+        real_replace(src, dst)
+        with rasterio.open(dst, "r+") as ds:
+            ds.write(np.full((4, 4), -9.4e300), 1)
+
+    monkeypatch.setattr(rasters.os, "replace", corrupting_replace)
+    with pytest.raises(OSError, match="read back differs"):
+        rasters.write_footprint(path, values, grid)
+    assert not path.exists()
