@@ -15,8 +15,113 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 9 — Performance metrics | **Done** 2026-10-15; US-UTJ growing-season metrics run 2026-10-16 (D-046) |
 | 10 — Paired block-bootstrap intervals | **Done** 2026-10-16 (station level; defaults Provisional, no block length adopted) |
 | 11 — Ranking and paired contrasts | **Done** 2026-10-16 (station level; defaults Provisional; network summaries have n_sites = 1 for US-UTJ) |
-| 12 — Closure, coverage and environmental diagnostics | Not started (next) |
-| 13–18 | Not started |
+| 12 — Closure, coverage and environmental diagnostics | **Done** 2026-10-16 (station level; defaults Provisional; several diagnostics `not_available` for US-UTJ by design) |
+| 13 — Landscape representativeness and satellite support | Not started (next) |
+| 14–18 | Not started |
+
+## Step 12 — Closure, coverage and environmental diagnostics (2026-10-16)
+
+**Run it**
+```bash
+uv run python -m pytest                           # 417 passed, 3 skipped (opt-in Drive raster tests)
+uv run ruff check src tests tools/run_cohorts.py && uv run mypy   # clean
+uv run python tools/run_cohorts.py examples/us_utj.yaml           # + diagnostics (~3 min 45 s)
+UV_LINK_MODE=copy uv run --isolated --resolution lowest-direct --python 3.11 --with pytest \
+    python -W error::FutureWarning -m pytest tests/test_diagnostics.py tests/test_ranking.py \
+    tests/test_bootstrap.py tests/test_metrics.py tests/test_aggregation.py tests/test_cohorts.py \
+    tests/test_schemas.py tests/test_config.py tests/test_imputation.py   # oldest stack: 310 passed
+```
+
+### API
+- **`etcompare.diagnostics.diagnose_comparison(cohort, spec, metric_spec, *, station_daily, extractions=(), bootstrap=None)`** returns an immutable `DiagnosticsResult` with:
+  - `closure` (`closure_magnitude` v1) and `provenance` (`reference_provenance_periods` v1);
+  - `conditional` (`conditional_errors` v1) and `regressions` (`error_regressions` v1);
+  - `availability` (`diagnostic_availability` v1);
+  - `bins`, `report`, `tables()` and `summary()`.
+- **`reference_rank_changes(sensitivity, diagnostics_id)`** turns a `ranking_sensitivity` table into `reference_rank_changes` v1 without re-ranking.
+- **Building blocks** (public, tested): `resolve_bins` (it sees no errors), `training_quantile_edges`, `assign_bins`, `wind_sector`, `sector_bounds`, `season_index`, `season_labels`, `month_labels` and `BinDefinition`.
+- **Config:**
+  - New `DiagnosticsSpec` and `DiagnosticVariableSpec`, in a `diagnostics:` YAML section.
+  - `DiagnosticsSpec` fields: `diagnostics_id`, `metric_set`, `min_bin_days` (mandatory), `metrics`, `bootstrap`, `calendar`, `gap_filled_fraction_edges`, `provenance_subsets`, `closure`, `closure_metadata`, `sensible_heat_variable`, `net_radiation_variable`, `wind_direction_variable`, `variables` and `comparisons`.
+  - `DiagnosticVariableSpec` fields: `source`, `column`, `units`, `meaning`, `status` (all mandatory); bins as `edges`, `quantiles` + `training_start`/`training_end`, or `n_sectors`; plus `kind`, `measured_days_only` and `note`.
+  - New constants: `DIAGNOSTIC_SOURCES`, `VARIABLE_STATUSES`, `VARIABLE_KINDS`, `CALENDAR_CONDITIONS` and `DIAGNOSTIC_METRICS`. `Config.diagnostics_spec()` is new.
+
+### Delivered
+- **[src/etcompare/diagnostics.py](src/etcompare/diagnostics.py)**; the rules are in the module docstring and D-051:
+  - **Correction magnitude:** existing `ET_corr − ET`, `ET_corr/ET`, `ebc_cf` and declared closure metadata on `corrected_from_raw` days only, by all / month / season, for the station record and the cohort's days. Gap-filled days are excluded and counted. Nothing is recomputed, and every row is labelled reference sensitivity.
+  - **Provenance subsets** (all accepted, `corrected_from_raw`, `corrected_filled`) inside one frozen cohort, with gridMET flags (D-005). Gap-filled fraction per period, and as a conditioning variable.
+  - **Conditional errors per declared bin and model** via `compute_metrics`:
+    - bins are fixed before errors exist;
+    - remainder rows (outside edges, missing value, excluded provenance) account for every day;
+    - sparse and empty bins carry a status and no value;
+    - `bin_days_shared` and `n_days_bin_cohort` are explicit.
+  - **Optional bin intervals** reuse the step-10 blocks, runs and streams at every block length.
+  - **Process diagnostics:** a labelled negative daily-mean H bin; sector logic for wind direction; net-radiation regressions, corrected (flagged `mathematical_coupling`) and raw.
+  - **Explicit `not_available` rows** for undeclared, unverified, missing, non-numeric, all-null or out-of-range variables, daytime H, wind direction and satellite support.
+- **Schemas:** the six tables above, all v1, keyed so that cohorts, variants, sides, variables, bins, metrics and block lengths cannot collide.
+- **Example config:** `utj_diagnostics` on the six ranking cohorts plus `utj_closure_all_models`, all **Provisional** (D-051):
+  - `min_bin_days` 20; MBE, MAE and RMSE; the `utj_block_bootstrap` intervals.
+  - Fixed round edges for gridMET ETo, VPD, wind speed, daily H and closure ratio, and for the retained and domain-capture fractions.
+  - `h_subday_gaps`, `le_subday_gaps` and `rh` are declared `unverified`; wind direction is not declared.
+- **[tools/run_cohorts.py](tools/run_cohorts.py)** writes `<id>__utj_diagnostics_{closure,provenance,conditional,regressions,availability}.{parquet,csv}` and `utj_diagnostics__utj_model_ranking_reference_rank_changes.{parquet,csv}`. Each report lists the skipped analyses, the closure magnitude and daily MAE per bin. With `--no-bootstrap` the diagnostics run without intervals.
+- **Docs:** D-051 (rules and defaults), D-052 (US-UTJ run); a new contract §9 row and a §4.4 note on the station-variable declarations.
+
+### Gate checks, in [tests/test_diagnostics.py](tests/test_diagnostics.py) (53 tests)
+Expected values are independent: numpy masks and formulas on the cohort's paired rows, closure magnitudes from the synthetic ET and factors, and hand-written sector boundaries.
+- **Unknown meteorology:** a missing column, an unverified variable and an absent direction column give `not_available` (`column_missing` / `variable_unverified`). Wind speed, H, closure ratio, season, month, gap fraction, provenance, closure and regressions all still run. Non-numeric and all-null columns give `non_numeric` / `no_values`, and out-of-range directions give `out_of_range`.
+- **Sparse bins:** a 5-day bin is `sparse_bin`, with a null value and the counts in `status_detail`, and a 0-day bin is `empty_bin`.
+- **Wind wrap:** 359°, 1°, 0° and 360° are north. With 8 sectors, 22.4999° is north, 22.5° opens NE, 337.5° is north and 337.4999° is NW. With 4 sectors, 45° opens E. Sector bounds are checked, values outside [0, 360] raise, and NaN gives −1. Through the diagnostics, alternating 359°/1° days all fall in sector 0.
+- **Bins from config, not errors:** two runs with very different modeled values give identical bin edges, labels and day counts, but different metrics. Training-quantile edges equal `numpy.quantile` of the training-period values and are unchanged when ET changes; tied quantiles are refused.
+- **Closure:** with known factors (1.2 in Jan–Feb, 1.5 later) and 15 January days filled with absurd values and factors, the correction mean, max and March median match numpy. The ratio and `ebc_cf` give mean 1.2 with standard deviation 0 in January, over 16 days with 15 excluded. DJF has 44 days, closure metadata matches, and the cohort day set agrees.
+- **Provenance subsets:** for every model, the all / measured / filled subsets have 240 / 192 / 48 days, are `bin_days_shared`, and their RMSE matches numpy. Filled rows carry `not_independent_validation`; the monthly gap fraction matches.
+- **Conditional metrics:** MBE, MAE and RMSE for every VPD and H bin and model equal numpy on the bin sample. The bins plus remainders sum to the series, and the negative-H bin carries its labels.
+- **Also tested:**
+  - `measured_days_only` puts filled days in the excluded remainder.
+  - An extraction variable that differs by model gives unshared bins, flagged, and a `not_available` row for the side without values.
+  - Raw-reference regression slopes equal `numpy.polyfit`; corrected rows are flagged coupled; a corrected-only cohort gives `cohort_lacks_variant`.
+  - **Bin intervals:** the same seed reproduces them; 7- and 14-day rows exist with `n_blocks` = ⌊240/b⌋; a bin of alternate days is `insufficient_support`; a sparse bin is `no_estimate`; a mismatched bootstrap raises.
+  - **Rank changes:** effect labels (closure, gap filling + days, closure + days); other dimensions are dropped; the wrong table is refused.
+  - **Parquet:** all five result tables round-trip, and the primary keys are unique (every new schema is also covered in `test_schemas`). Results are immutable copies.
+  - **Config:** 34 rejection cases plus duplicate IDs, a mismatched bootstrap metric set, and the example declarations.
+
+### US-UTJ run (D-052; local outputs)
+- **Independent check:** 3,222 non-sparse bin metrics (VPD, ETo, H, wind) recomputed with numpy from the written paired files and the raw CSV match to 8.9e-16. The closure mean and count match the CSV, and the provenance subsets have identical days across models in every cohort.
+- **Not available:** domain capture (no values for the NLDAS set), subdaily gaps (unverified), daytime negative-H frequency, wind direction and satellite support. The retained fraction is unavailable on the window side, and the raw net-radiation version is unavailable in corrected-only cohorts.
+- **Correction:** `ET_corr − ET` median 0.20 mm d⁻¹ (5–95 % 0.03–2.28) and ratio median 1.26 (1.15–1.53) on 303 measured days, with 170 filled days excluded. The ratio is highest in summer 2024.
+- **Rank changes:** closure (`et_raw` vs `et_corrected_measured`, same 188 days) moves 6 of 7 models in MAE and RMSE, by up to 5 positions. Adding the gap-filled days (measured vs inclusive) moves 5 in MAE and 2 in RMSE, by up to 3.
+- **Gap-filled days:** 93 of the 281 inclusive days. The monthly fraction is 0 to 1.0, with all of May 2025 filled. MAE is higher on filled than on measured days for 6 of 7 models. Season is confounded with fill status, and the filled days share gridMET drivers (D-005), so this is not independent validation.
+- **Bins and intervals:** several extreme bins are sparse. Scattered-day bins have no interval at any block length. **28-day blocks give no bin interval at all**, and the 7- and 14-day intervals are probably too narrow (D-048).
+- **Net radiation:** the corrected-minus-raw slope is about −0.0076 mm d⁻¹ per W m⁻² for every model. That is the coupling through the correction, not a model property.
+
+### Units confirmed (user, 2026-10-16; D-053)
+- The user confirmed the station units, with `US-UTJ.ini` as supporting metadata. gridMET ETo, VPD (kPa), wind speed (m s⁻¹), daily H and net radiation (W m⁻²) and RH (%) are now `verified`.
+- The `.ini` lists VPD in hPa, but it describes the half-hourly input; the daily export is kPa.
+- `ebr` and `ebr_5day_clim` stay `provisional`, because the closure window is unresolved. RH has no bins, since VPD is the humidity condition.
+- The diagnostics were rerun. Only labels and flags changed (`variable_provisional`); values, bins and edges are unchanged.
+- Wind direction exists only half-hourly (`WD`). A daily sector diagnostic needs an upstream daily aggregation of direction.
+
+### Assumptions and limitations
+- **Station level, one station.** Conditional summaries are associations in about 1.3 years at one site. They are not causal and do not transfer to other sites.
+- **Units.** Station units are user-confirmed (D-053). The closure method and window behind `ebr` and `ebr_5day_clim` remain unresolved.
+- **Bins with scattered days** cannot support block intervals. Blocks are built from runs of consecutive bin days, as step 10 requires.
+- **Model-specific bin days.** Extraction-based variables can give bins whose days differ by model. These are flagged and are not like-for-like model comparisons.
+- **The negative-H bin is daily-mean only.** It is neither a daytime frequency nor proof of advection.
+- **The coupling remains.** The corrected-reference net-radiation regression stays coupled; the raw version exists only for cohorts with `et_raw`.
+
+### Open (user decisions)
+- **Station variables:** units were confirmed (D-053). Still open:
+  - wind-speed measurement height;
+  - the closure method and window (`ebr`, `ebr_5day_clim`);
+  - the subdaily gap definitions;
+  - whether to export a daily wind direction (or daytime sector) so that the sector diagnostic can run.
+- **Diagnostic defaults:** `min_bin_days` (20) and the bin edges are Provisional.
+- **Carried over:**
+  - the block length and support decision (D-048);
+  - equivalence margins and formal tests (D-049);
+  - the quality threshold (D-008), the measured-LE coverage minimum (D-038), the metric tolerances (D-044) and the imputation driver (D-042);
+  - whether to keep `utj_rank_closure` and `utj_rank_methods`.
+
+**Next:** step 13. Landscape representativeness and satellite support: footprint-weighted land-cover and vegetation-index fractions, and differences from fixed windows. Clear-observation flags need authoritative acquisition metadata, which US-UTJ lacks (D-011).
 
 ## Step 11 — Ranking and paired contrasts (2026-10-16)
 
@@ -112,7 +217,7 @@ Expected values are independent: `scipy.stats.rankdata` and `numpy.quantile` on 
 - **The two new sensitivity cohorts** (`utj_rank_closure`, `utj_rank_methods`): keep, change or drop.
 - Carried over: the quality threshold (D-008), the measured-LE coverage minimum (D-038), the metric tolerances (D-044), the imputation driver (D-042) and the Provisional bootstrap defaults (D-047).
 
-**Next:** step 12. Closure, coverage and environmental diagnostics: correction magnitude and rank changes (the closure rankings above are a start), and error versus season, ETo, VPD, wind, sensible heat, closure ratio, gap-filled fraction and footprint capture, with declared bins.
+**Next (at the time):** step 12. Superseded by the Step 12 entry above.
 
 ## Step 10 — Paired block-bootstrap intervals (2026-10-16)
 

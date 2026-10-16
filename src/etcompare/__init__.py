@@ -16,6 +16,7 @@ submodules:
 - :mod:`etcompare.metrics` -- performance metrics on a cohort's common mask
 - :mod:`etcompare.bootstrap` -- paired moving-block bootstrap intervals of those metrics
 - :mod:`etcompare.ranking` -- station-level rankings, model contrasts and network summaries
+- :mod:`etcompare.diagnostics` -- closure, coverage and environmental diagnostics
 """
 
 from etcompare.errors import (

@@ -52,10 +52,28 @@ and, for every declared ranking that lists the comparison (step 11):
                                 point-rank changes across station, year, temporal scale,
                                 reference variant and extraction side
 
+and, for every declared diagnostics set that lists the comparison (step 12):
+
+  <id>__<diag>_closure.parquet / .csv
+                                correction magnitude on corrected_from_raw days (existing
+                                ET_corr - ET, ratio, ebc_cf, closure metadata) by period
+  <id>__<diag>_provenance.parquet / .csv
+                                observation-dominated and gap-filled days per period
+  <id>__<diag>_conditional.parquet / .csv
+                                metrics of e = P - O per declared bin and model, with
+                                optional block-bootstrap intervals at every block length
+  <id>__<diag>_regressions.parquet / .csv
+                                error vs net radiation, corrected (coupled) and raw
+  <id>__<diag>_availability.parquet / .csv
+                                diagnostics that ran or were skipped, with reasons
+  <diag>__<ranking>_reference_rank_changes.parquet / .csv
+                                rank changes between reference variants (from the
+                                ranking sensitivity table; not re-ranked)
+
 With year_subsets, each calendar year of a multi-year ranking cohort is rebuilt as its own
 frozen cohort (same rule, start/end restricted) and its daily pairs are scored,
 bootstrapped and ranked with subset year=<y>. Rankings need the bootstrap step, so
---no-bootstrap also skips them.
+--no-bootstrap also skips them; diagnostics then run without bin intervals.
 
 Growing seasons declared with ``growing_season_source`` are read from the named
 crop-height table; reference ET for ``reference_et_fraction`` comes from the
@@ -81,6 +99,7 @@ from etcompare.aggregation import aggregate_cohort
 from etcompare.bootstrap import bootstrap_comparison
 from etcompare.cohorts import build_cohort
 from etcompare.config import load_config
+from etcompare.diagnostics import diagnose_comparison, reference_rank_changes
 from etcompare.io.tables import read_table, write_table
 from etcompare.metrics import definitions_frame, score_comparison
 from etcompare.ranking import rank_comparison, ranking_sensitivity, year_subsets
@@ -244,6 +263,25 @@ def main() -> None:
                              "not a verdict on which model is best):\n"
                              + "\n".join(r.report.summary() for r in results)
                              + f"\n{_ranking_text(results)}")
+        for ds in cfg.diagnostics:
+            if ds.comparisons is not None and cid not in ds.comparisons:
+                continue
+            if args.no_bootstrap:
+                ds = replace(ds, bootstrap=None)
+            t0 = time.perf_counter()
+            dg = diagnose_comparison(
+                c, ds, cfg.metric_set(ds.metric_set), station_daily=obs, extractions=ext,
+                bootstrap=cfg.bootstrap_spec(ds.bootstrap) if ds.bootstrap else None)
+            stem = f"{cid}__{ds.diagnostics_id}"
+            for name, t in (("closure", dg.closure), ("provenance", dg.provenance),
+                            ("conditional", dg.conditional), ("regressions", dg.regressions),
+                            ("availability", dg.availability)):
+                write_table(t, out / f"{stem}_{name}.parquet")
+                t.frame.to_csv(out / f"{stem}_{name}.csv", index=False)
+            text += (f"\n\ndiagnostics {ds.diagnostics_id} ({time.perf_counter() - t0:.0f} s; "
+                     "conditional associations, not causes; corrected/raw differences are "
+                     "reference sensitivity, not uncertainty bounds):\n"
+                     f"{dg.report.summary()}\n{_diagnostics_text(dg)}")
         (out / f"{cid}_report.txt").write_text(text + "\n", encoding="utf-8")
         print(text, "\n", "-" * 78)
 
@@ -254,6 +292,53 @@ def main() -> None:
         print(f"ranking sensitivity {rid}: {len(sens)} rows; dimensions present "
               f"{sens.attributes['dimensions_present']}, absent "
               f"{sens.attributes['dimensions_absent']}")
+        for ds in cfg.diagnostics:
+            rc = reference_rank_changes(sens, ds.diagnostics_id)
+            write_table(rc, out / f"{ds.diagnostics_id}__{rid}_reference_rank_changes.parquet")
+            rc.frame.to_csv(out / f"{ds.diagnostics_id}__{rid}_reference_rank_changes.csv",
+                            index=False)
+            f = rc.frame  # daily pairs, whole cohorts (not year subsets or period products)
+            f = f[f["metric"].isin(["mae", "rmse"])
+                  & f["context_a"].str.contains("|all|", regex=False)
+                  & f["context_b"].str.contains("|all|", regex=False)
+                  & f["context_a"].str.contains("|daily:", regex=False)
+                  & f["context_b"].str.contains("|daily:", regex=False)]
+            moved = (f.assign(moved=f["rank_change"] != 0)
+                     .groupby(["effect", "comparison_a", "comparison_b", "variant_a",
+                               "variant_b", "metric"])
+                     .agg(n_moved=("moved", "sum"), max_abs_change=("rank_change",
+                                                                    lambda x: x.abs().max())))
+            with pd.option_context("display.width", 250):
+                print(f"reference rank changes {ds.diagnostics_id}/{rid} (reference "
+                      f"sensitivity, not uncertainty):\n{moved.to_string()}")
+
+
+def _diagnostics_text(dg) -> str:
+    """Skipped analyses, closure magnitude (station record) and daily MAE per bin."""
+    a = dg.availability.frame
+    na = a[a["status"] == "not_available"][["analysis", "variable", "reference_variant",
+                                            "extraction_method", "reason_code"]]
+    cl = dg.closure.frame
+    cl = cl[(cl["day_set"] == "station_record") & (cl["period_type"] == "all")][
+        ["quantity", "n_days", "n_days_filled_excluded", "mean", "median", "q05", "q95"]]
+    c = dg.conditional.frame
+    c = c[(c["metric"] == "mae") & (c["bin_index"] >= 0)
+          & (c["block_length"] == c["block_length"].min())]
+    c = c.assign(cell=[f"{v:.2f}" if s == "ok" else s for v, s in zip(c["value"], c["status"],
+                                                                      strict=True)])
+    wide = c.pivot_table(index=["variable", "bin_index", "bin_label"],
+                         columns=["reference_variant", "extraction_method", "model"],
+                         values="cell", aggfunc="first")
+    n = c.drop_duplicates(["variable", "bin_index"]).set_index(
+        ["variable", "bin_index", "bin_label"])["n_days_bin_cohort"]
+    wide.insert(0, "n_days", n)
+    with pd.option_context("display.width", 300, "display.max_columns", 40,
+                           "display.max_rows", 500, "display.max_colwidth", 60):
+        return (f"not available:\n{na.to_string(index=False)}\n\n"
+                f"closure magnitude, corrected_from_raw station days:\n"
+                f"{cl.to_string(index=False)}\n\n"
+                f"daily MAE per bin (status instead of a value for sparse bins):\n"
+                f"{wide.to_string()}")
 
 
 def _ranking_text(results) -> str:

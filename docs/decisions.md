@@ -737,3 +737,172 @@ What would change these results:
 - a block-length and support decision (D-048);
 - declared equivalence margins;
 - a declared quality threshold (D-008).
+
+---
+
+**Revision 2026-10-16 (n):** Step 12 implemented. D-051 and D-052 added. D-001 to D-050 are unchanged. Later the same day the user confirmed the station-variable units (D-053).
+
+### D-051 — Closure, coverage and environmental diagnostics (Adopted rules; US-UTJ defaults Provisional)
+`etcompare.diagnostics.diagnose_comparison(cohort, spec, metric_spec, station_daily=, extractions=, bootstrap=)` describes one frozen cohort under a `DiagnosticsSpec` (the new `diagnostics:` config section). It writes five tables: `closure_magnitude`, `reference_provenance_periods`, `conditional_errors`, `error_regressions` and `diagnostic_availability`. `reference_rank_changes(sensitivity, diagnostics_id)` writes a sixth, `reference_rank_changes`. All six schemas are new at v1.
+
+**Closure and reference sensitivity.**
+- **Never recomputed.** The correction magnitude uses the station's existing columns on `corrected_from_raw` days only:
+  - `correction_mm = ET_corr − ET`;
+  - `correction_ratio = ET_corr / ET` (days with ET = 0 are counted as missing);
+  - the closure factor (`ebc_cf`);
+  - declared closure metadata (`ebr`, `ebr_corr`, `ebr_5day_clim`).
+- **Distribution:** mean, standard deviation, minimum, 5/25/50/75/95th percentiles and maximum, with counts. It is given for all days, per month (`YYYY-MM`) and per meteorological season (`YYYY-DJF`, with December counted in the following year). Both the station record (`day_set = station_record`) and the cohort's days (`cohort`) are covered.
+- **Gap-filled days are excluded and counted** (`n_days_filled_excluded`). Their `ET_corr` is `gridMET_ETr × ETrF_filtered`, not a closure adjustment, even where `ebc_cf` is present (D-004, D-005).
+- **Label:** corrected/raw differences are reference sensitivity, not a calibrated uncertainty envelope containing the truth (every row carries the flag `reference_sensitivity_not_uncertainty`).
+- **Rank changes are not re-ranked.** They are the `reference_variant` rows of `ranking_sensitivity` (D-049), each labelled with the effect it isolates:
+
+  | Pair | `effect` |
+  |---|---|
+  | `et_raw` vs `et_corrected_measured`, one cohort | `closure` |
+  | the same variants on different cohorts | `closure_and_cohort_days` |
+  | `et_corrected_measured` vs `et_corrected_inclusive` | `gap_filling_and_cohort_days` |
+  | `et_raw` vs `et_corrected_inclusive` | `closure_and_gap_filling` |
+
+  Only the first isolates closure. Unrestricted ET vs ET_corr mixes closure with gap filling (D-004).
+
+**Gap-filled versus observation-dominated days (D-005).**
+- **Subsets of one cohort.** Inside one frozen cohort, metrics on all accepted days are compared with the `corrected_from_raw` and `corrected_filled` subsets (`variable = reference_provenance`).
+- **Identical days.** Provenance belongs to the station day, so every model of a frozen cohort has identical subset days (tested; `bin_days_shared`).
+- **Names.** "Observation-dominated" is used rather than "observed", because subdaily gap fractions are unknown.
+- **Flags.** Filled-day rows carry `shared_gridmet_drivers` and `not_independent_validation`; all-day rows that include filled days carry `includes_gap_filled_days`.
+- **Gap-filled fraction.** It is reported per month, per season and overall in `reference_provenance_periods`. As a conditioning variable (`gap_filled_fraction`), each day gets its calendar month's share of filled cohort days.
+
+**Conditional error summaries.**
+- **Declared variables.** Every conditioning variable is declared with `source` (`station`, i.e. a `station_daily` column such as `src_vpd` (D-020); or `extraction`, a column of the cohort side's extraction rows), `column`, `units`, `meaning` and `status`:
+  - `verified`;
+  - `provisional`: used, with rows flagged `variable_provisional`;
+  - `unverified`: declared only so that its diagnostic reports `not_available`, with a mandatory `note`.
+- **Skips are local.** An undeclared or unverified variable, a missing column, a non-numeric or all-null column, or out-of-range directions give a `diagnostic_availability` row with `status = not_available`, a `reason_code` and a reason. Only that diagnostic is skipped (tested).
+- **Bins are fixed before any error exists.** `resolve_bins` receives only the configuration and the station table, never errors. Bins can be:
+  - declared fixed `edges` (the default);
+  - `quantiles` of the variable's own values over a declared training period (station variables only; tied quantiles are refused);
+  - month of year and meteorological season;
+  - wind sectors;
+  - reference provenance.
+
+  Interval bins are `[lower, upper)`, and the last is `[lower, upper]`; ±inf is allowed at the ends. Days outside the edges, days without a value and, for `measured_days_only` variables, gap-filled days become remainder rows (`bin_index` −1, −2, −3). Every day is therefore accounted for (tested: the bins sum to the series).
+- **Metrics are reused.** Each bin's paired sample, per model, reference variant and side, goes through `metrics.compute_metrics` with the metric set's tolerance. The metrics are a subset of `DIAGNOSTIC_METRICS` (MBE, MAE, RMSE, bias-corrected RMSE, percent bias, r).
+- **Sparse bins:** fewer than `min_bin_days` days give `sparse_bin` (`empty_bin` with none), with a status and no value.
+- **Counts:** `n_days` (this model), `n_days_bin_cohort` (any model), `n_days_reference_filled`, `n_days_series` and `bin_days_shared`. A variable read from extraction rows (retained footprint fraction) can place different days of different models in one bin; such rows are flagged `bin_days_differ_across_models` and do not compare models on identical days.
+- **One cohort only.** Rows are keyed by cohort, site, model, variant and side, so unequal cohorts are never pooled (D-039).
+- **Optional intervals reuse the step-10 scheme.** The bin's days are split into runs of consecutive calendar days (and at the season-year boundary). `bootstrap.segment_bounds`, `block_support`, `sample_rng` and the replicate routine are reused. Draws are shared by every series with the same bin days, and every block length is reported side by side. Runs shorter than the block hold no full block, so scattered bins mostly give `insufficient_support`. No block length is preferred (D-048).
+- **Interpretation:** conditional summaries are associations within one station's record, not causal explanations.
+
+**Process diagnostics.**
+- **Sensible heat:** only daily-mean H exists. Its negative bin (edges must include 0) is flagged `negative_daily_mean_h` and `daily_mean_h_indicator`. It is neither a daytime negative-H frequency (`daytime_negative_h_frequency` is always `not_available` with daily input) nor proof of advection.
+- **Wind direction:** `wind_sector` uses `n` equal sectors (`n` divides 360), with sector 0 centred on north. Sector `k` = `[k·w − w/2, k·w + w/2)`. 359° and 1° share the north sector, 360° is north, and with 8 sectors 22.5° opens the next sector. Values outside [0, 360] are refused, never wrapped. Without a declared direction variable the analysis is `not_available`.
+- **Net radiation:** `error_regressions` gives the OLS slope, intercept and r of `e` on net radiation per series.
+  - With a corrected reference, `coupling = energy_balance_corrected_reference` and the flag `mathematical_coupling` are set. The correction scales measured ET by the closure ratio, which depends on net radiation, so error and predictor are coupled.
+  - The `et_raw` version is reported alongside where the cohort has that variant. Otherwise a `cohort_lacks_variant` row says so.
+- **Satellite support:** no acquisition flags exist (D-011), so clear-versus-interpolated analyses are always `not_available`. Nothing is inferred from missing rows or scene dates.
+
+**Schemas (all v1).**
+- `closure_magnitude`, keyed by day set, period and quantity.
+- `reference_provenance_periods`.
+- `conditional_errors`, keyed by cohort, site, model, variant, side, variable, bin, metric, interval method and block length, so cohorts, variants, sides, variables and bins cannot collide.
+- `error_regressions`.
+- `diagnostic_availability`.
+- `reference_rank_changes`.
+
+They carry explicit counts, statuses and flags.
+
+**US-UTJ defaults (Provisional; fixed before any conditional error was computed).** The `utj_diagnostics` set:
+- **Metrics and bins:** MBE, MAE and RMSE of `utj_metrics`; `min_bin_days` 20; intervals from `utj_block_bootstrap` (7/14/28 days).
+- **Calendar and provenance:** season and month; gap-filled fraction edges 0/0.25/0.5/0.75/1; provenance subsets on.
+- **Closure:** on, with closure metadata `ebr`, `ebr_corr` and `ebr_5day_clim`.
+- **Comparisons:** the six ranking cohorts plus `utj_closure_all_models`.
+- **Station variables:**
+
+  | Variable | Column | Units | Status | Edges |
+  |---|---|---|---|---|
+  | `eto_gridmet` | `src_gridMET_ETo` | mm/day | provisional | 0, 2, 4, 6, 8, ∞ |
+  | `vpd` | `src_vpd` | kPa | provisional (range consistent with kPa) | 0, 0.5, 1, 1.5, 2, 2.5, ∞ |
+  | `wind_speed` | `src_ws_1_1_1` | m s⁻¹ | provisional (height unrecorded) | 0, 1, 1.5, 2, 3, ∞ |
+  | `h_daily` | `src_h_1_1_1` | W m⁻² | provisional | −∞, 0, 25, 50, ∞ |
+  | `rn_daily` | `src_netrad_1_1_1_final` | W m⁻² | provisional | regression only |
+  | `ebr_corr` (closure ratio) | `src_ebr_corr` | 1 | verified (= 1/`ebc_cf`) | 0, 0.7, 0.8, 0.9, ∞; measured days only |
+  | `ebr`, `ebr_5day_clim` | `src_ebr`, `src_ebr_5day_clim` | 1 | provisional | closure metadata only |
+
+- **Extraction variables:**
+
+  | Variable | Column | Units | Status | Edges |
+  |---|---|---|---|---|
+  | `retained_frac` | `fp_weight_retained_frac` | 1 | verified (D-029) | 0, 0.8, 0.9, 0.99, ∞ |
+  | `domain_capture` | `fp_domain_capture_frac` | 1 | verified meaning | 0, 0.9, 1, ∞ |
+
+  The top retained-fraction edge is open because 545 rows exceed 1 by round-off (≤ 4.5e-16). This was decided from the variable's values, not from errors.
+- **Declared unverified, so `not_available`:** `h_subday_gaps` and `le_subday_gaps` (counts, units and denominators unresolved, contract §10) and `rh` (percent versus fraction unconfirmed; VPD is used instead).
+- *Superseded in part by D-053 (same day):* the user confirmed the units, so ETo, VPD, wind speed, daily H, net radiation and RH (%) are now `verified`. `ebr` and `ebr_5day_clim` stay `provisional`.
+- **Not declared:** wind direction (absent from the daily table).
+
+Edges are round physical values in the declared units. No bin, threshold or variable was chosen because it changes agreement. Units marked provisional need user confirmation. If a unit proves wrong, its edges must be redeclared in the correct unit before the diagnostics are rerun, never adjusted after seeing errors.
+
+### D-052 — US-UTJ diagnostics run (Information)
+From `tools/run_cohorts.py examples/us_utj.yaml` on 2026-10-16 (3 min 35 s for all 9 comparisons; the diagnostics took 4–14 s per comparison). The outputs are the local `outputs/cohorts/*__utj_diagnostics_*` files and `utj_diagnostics__utj_model_ranking_reference_rank_changes.*`. They describe one station; they are not causal explanations, and corrected/raw differences are not uncertainty bounds.
+- **Independent check:** MBE, MAE and RMSE recomputed with numpy from the written paired files and the raw CSV match all 3,222 non-sparse bin metrics of the VPD, ETo, H and wind-speed bins to 8.9e-16. Bin day counts match, and every bin below 20 days is `sparse_bin` with no value. The station-record closure mean and count match the CSV exactly. Provenance subsets have identical days for every model in every cohort.
+- **Not available** (every comparison): `domain_capture` (no capture values for the NLDAS footprint set), `h_subday_gaps` and `le_subday_gaps` (declared unverified; `rh` was too until D-053), `daytime_negative_h_frequency` (daily input only), `wind_direction_sector` (no direction) and `satellite_support` (D-011). The retained fraction is `not_available` on the 3×3-window side (no footprint). Cohorts without `et_raw` report the raw net-radiation version as `cohort_lacks_variant`. Every other diagnostic ran.
+- **Correction magnitude** (303 `corrected_from_raw` station days; 170 gap-filled days excluded):
+  - `ET_corr − ET`: mean 0.57 mm d⁻¹, median 0.20, 5–95 % 0.03–2.28.
+  - `ET_corr/ET`: mean 1.30, median 1.26, 5–95 % 1.15–1.53. It equals `ebc_cf` to 2.9e-15, as the adapter verified; nothing was recomputed.
+  - **Seasonally:** the ratio is highest in 2024-JJA (median 1.49, 39 days) and lowest in 2025-SON (1.20, 38 days). The absolute correction follows ET: about 2 mm d⁻¹ in 2024-JJA against 0.04 mm d⁻¹ in 2025-DJF.
+- **Rank changes between reference variants** (daily, whole cohorts; from `ranking_sensitivity`, not re-ranked):
+
+  | Effect | Pair | Models moved, MAE / RMSE | Largest move |
+  |---|---|---|---|
+  | `closure` | `utj_rank_closure`, `et_raw` vs `et_corrected_measured` (188 days) | 6 / 6 of 7 | 5 positions |
+  | `gap_filling_and_cohort_days` | measured (188) vs inclusive (281) | 5 / 2 | 3 (MAE), 1 (RMSE) |
+  | `closure_and_gap_filling` | `et_raw` vs inclusive | 4 / 5 | 5 |
+
+  Closure moves the rankings more than adding the gap-filled days does. Both are reference sensitivity (D-050).
+- **Gap-filled versus observation-dominated days, inclusive ranking cohort** (281 days: 188 `corrected_from_raw`, 93 `corrected_filled`, identical for all models):
+  - **Gap-filled fraction:** 0.33 overall. Per month it ranges from 0 (2025-09) to 1.0 (2025-05, every day filled), and it is 0.43–0.60 in June–August. Gap-filled days are therefore concentrated in the high-ET months, so the filled subset also differs in season.
+  - **MAE:** higher on filled days than on measured days for 6 of 7 models (SSEBop only marginally: 0.97 against 0.96). For example, ensemble has 0.93 against 0.70 mm d⁻¹ and SIMS 1.03 against 0.70. eemetric is the exception, with 0.74 against 0.95. Set A (260 days, 88 filled) shows the same pattern.
+  - **Interpretation:** filled days share gridMET drivers with OpenET (D-005), so this is not independent validation either way. Season and fill status are confounded.
+- **Conditional bins** (daily MAE, `min_bin_days` 20):
+  - **Sparse bins** in the 188-day measured cohort: VPD 2–2.5 kPa (14 days), ETo ≥ 8 mm d⁻¹ (18), wind < 1 and ≥ 3 m s⁻¹ (17, 14), closure ratio < 0.7 (16), and most single months. The closure ratio has no day at or above 0.9.
+  - **Negative daily-mean H** (31 days in the measured cohort): MAE 0.8–2.8 mm d⁻¹ against 0.3–1.1 in the other H bins. This is a daily-mean indicator, not a daytime negative-H frequency and not evidence of advection. 30 of the 31 days fall in June–September, so season is confounded with it.
+  - **Retained fraction:** only SIMS falls below 0.99 (cropland mask, D-008), so its bins hold days that the other models do not have. These rows are flagged `bin_days_differ_across_models`.
+- **Intervals per bin** (7 / 14 / 28-day blocks, `min_blocks` 10):
+  - Bins of scattered days (VPD, ETo, wind, H, month) have no interval at any length.
+  - At 7 days, intervals exist for the provenance subsets, some closure-ratio, gap-fraction and retained-fraction bins, and the MAM and JJA season bins of the inclusive cohort.
+  - At 14 days, fewer exist (211 bin × model MAE intervals, against 342 at 7 days): provenance, gap-fraction and retained-fraction bins only.
+  - **28-day blocks give no bin interval anywhere** (`insufficient_support`).
+  - As in D-048, the 7- and 14-day intervals are probably too narrow, because the residual autocorrelation is long. No block length is chosen.
+- **Net radiation** (`utj_closure_all_models`, 188 days, slope of e on Rn):
+  - **Raw reference:** −0.009 to −0.003 mm d⁻¹ per W m⁻² (SIMS +0.0075).
+  - **Corrected reference:** −0.017 to 0.000.
+  - **Coupling:** the corrected-minus-raw slope is about −0.0076 for every model. This shift is the slope of the correction term itself on Rn: the mathematical coupling the raw version is there to expose. Neither slope is a causal effect.
+- **Every row** carries `day_alignment=unverified` (D-023), and provisional variables carry `variable_provisional` (after D-053, only `ebr` and `ebr_5day_clim`).
+
+What would change these results:
+- confirmed units or meanings of the station variables (their status, and edges where a unit is wrong);
+- subdaily gap definitions (they would allow gap diagnostics);
+- acquisition metadata (satellite support);
+- wind direction;
+- a domain-capture product for the NLDAS set;
+- a block-length decision (D-048);
+- more stations.
+
+### D-053 — US-UTJ station meteorology units confirmed (Adopted 2026-10-16, user decision)
+The user confirmed the station-variable units that D-051 had marked provisional, and pointed to `US-UTJ.ini` (repository root, local) as supporting metadata. The `.ini` `[DATA]` section describes the **half-hourly** AmeriFlux-format input, not the daily CSV (contract §2). It gives NETRAD, H, LE and G in W/m², WS in m/s, RH_1_1_1 in % (0–100), WD as azimuth in degrees, and VPD in **hPa**.
+
+| Daily column | Unit (status `verified`) | Evidence |
+|---|---|---|
+| `gridMET_ETo` | mm/day | user |
+| `vpd` | kPa | user. The `.ini`'s hPa is the half-hourly input; the daily range 0.14–3.91 is kPa, so flux-data-qaqc converted it |
+| `ws_1_1_1` | m s⁻¹ | user; `.ini` WS m/s. Measurement height is still not recorded |
+| `h_1_1_1`, `netrad_1_1_1_final` | W m⁻² (daily means) | user; `.ini` H, NETRAD in W/m² |
+| `rh` | % | user; `.ini` RH_1_1_1 in % |
+
+- **`ebr` and `ebr_5day_clim` stay `provisional`.** They are dimensionless, but the closure method and window are unresolved (contract §10).
+- **RH is declared without bins.** VPD remains the declared humidity condition, and no bin is added after errors have been seen.
+- **Wind direction** exists in the half-hourly input (`WD`), but not in the daily table. A daily wind-sector diagnostic needs a declared daily aggregation of direction upstream (for example a vector mean, or the daytime dominant sector), so it remains `not_available`.
+- **Subdaily gap columns** are not described by the `.ini` and stay `unverified`.
+
+Status changes only labels and flags (`variable_provisional` is dropped). Values, bins and edges are unchanged, because the confirmed units are the ones the edges were declared in. The diagnostics were rerun to update the labels.
+

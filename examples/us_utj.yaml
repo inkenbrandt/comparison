@@ -324,4 +324,122 @@ rankings:
                   utj_pair_eemetric_ssebop, utj_set_a_common, utj_rank_closure,
                   utj_rank_methods]
 
+# Closure, coverage and environmental diagnostics (guide step 12; D-051, D-052). Every value
+# here is a Provisional default fixed before any conditional error was computed: bin edges
+# are round physical values chosen from the variables' declared meaning (never from errors),
+# and min_bin_days is a sample-size floor. Station meteorology units were confirmed by the
+# user on 2026-10-16, with US-UTJ.ini as supporting metadata (D-053). Variables whose meaning
+# is still unresolved are declared `unverified`, so their diagnostics report not_available
+# with the reason. Conditional errors are associations, not causes;
+# corrected/raw differences are reference sensitivity, not uncertainty bounds.
+diagnostics:
+  - diagnostics_id: utj_diagnostics
+    metric_set: utj_metrics
+    metrics: [mbe, mae, rmse]
+    min_bin_days: 20                  # Provisional: fewer days -> sparse_bin, no value
+    bootstrap: utj_block_bootstrap    # 7/14/28-day blocks side by side; no length adopted (D-048)
+    calendar: [season, month]
+    gap_filled_fraction_edges: [0, 0.25, 0.5, 0.75, 1]   # month share of gap-filled days
+    provenance_subsets: true          # corrected_from_raw vs all accepted days (D-005)
+    closure: true
+    closure_metadata: [ebr, ebr_corr, ebr_5day_clim]
+    sensible_heat_variable: h_daily
+    net_radiation_variable: rn_daily
+    wind_direction_variable: null     # no wind direction in the daily table
+    comparisons: [utj_rank_corrected_inclusive, utj_rank_corrected_measured,
+                  utj_pair_eemetric_ssebop, utj_set_a_common, utj_rank_closure,
+                  utj_rank_methods, utj_closure_all_models]
+    variables:
+      eto_gridmet:
+        source: station
+        column: src_gridMET_ETo
+        units: mm/day
+        meaning: gridMET grass reference ET (daily); also drives the station gap fill via ETr
+        status: verified              # user-confirmed 2026-10-16 (D-053)
+        edges: [0, 2, 4, 6, 8, .inf]
+      vpd:
+        source: station
+        column: src_vpd
+        units: kPa
+        meaning: daily vapour pressure deficit at the station (flux-data-qaqc)
+        status: verified              # user-confirmed kPa (D-053); the .ini's hPa is the half-hourly input
+        edges: [0, 0.5, 1.0, 1.5, 2.0, 2.5, .inf]
+      wind_speed:
+        source: station
+        column: src_ws_1_1_1
+        units: m s-1
+        meaning: daily mean wind speed at the station; measurement height not recorded
+        status: verified              # user-confirmed m/s; .ini WS in m/s (D-053)
+        edges: [0, 1.0, 1.5, 2.0, 3.0, .inf]
+      h_daily:
+        source: station
+        column: src_h_1_1_1
+        units: W m-2
+        meaning: daily-mean sensible heat flux (not daytime); negative values are a daily-mean indicator only
+        status: verified              # user-confirmed; .ini H in W/m2 (D-053)
+        edges: [-.inf, 0, 25, 50, .inf]
+      rn_daily:
+        source: station
+        column: src_netrad_1_1_1_final
+        units: W m-2
+        meaning: daily-mean net radiation (coupling diagnostic predictor)
+        status: verified              # user-confirmed; .ini NETRAD in W/m2 (D-053)
+      ebr_corr:
+        source: station
+        column: src_ebr_corr
+        units: "1"
+        meaning: energy-balance ratio used for the correction (= 1 / ebc_cf, verified 458/458)
+        status: verified
+        edges: [0, 0.7, 0.8, 0.9, .inf]
+        measured_days_only: true      # no closure meaning on gap-filled days (D-004)
+      ebr:
+        source: station
+        column: src_ebr
+        units: "1"
+        meaning: daily energy-balance ratio before smoothing; window/method unresolved
+        status: provisional           # dimensionless; closure method and window still unresolved
+      ebr_5day_clim:
+        source: station
+        column: src_ebr_5day_clim
+        units: "1"
+        meaning: 5-day climatology energy-balance ratio (fallback); window unresolved
+        status: provisional           # dimensionless; closure method and window still unresolved
+      retained_frac:
+        source: extraction
+        column: fp_weight_retained_frac
+        units: "1"
+        meaning: footprint weight retained after model nodata, over the truncated footprint (D-029)
+        status: verified
+        edges: [0, 0.8, 0.9, 0.99, .inf]   # open top: 545 rows exceed 1 by round-off (<= 4.5e-16)
+      domain_capture:
+        source: extraction
+        column: fp_domain_capture_frac
+        units: "1"
+        meaning: original modeled-domain capture of the footprint (D-029); not built for the NLDAS set
+        status: verified
+        edges: [0, 0.9, 1.0, .inf]
+      h_subday_gaps:
+        source: station
+        column: src_H_subday_gaps
+        units: unknown
+        meaning: subdaily H gap diagnostic
+        status: unverified
+        note: counts, units and denominators are unresolved (contract 10); null is not zero gaps
+        edges: [0, 1, 48]
+      le_subday_gaps:
+        source: station
+        column: src_LE_subday_gaps
+        units: unknown
+        meaning: subdaily LE gap diagnostic
+        status: unverified
+        note: counts, units and denominators are unresolved (contract 10); null is not zero gaps
+        edges: [0, 1, 48]
+      rh:
+        source: station
+        column: src_rh
+        units: "%"
+        meaning: daily relative humidity (0-100 %)
+        status: verified              # user-confirmed; .ini RH_1_1_1 in % (D-053)
+        # No bins: VPD is the declared humidity condition. Bins are not added after errors were seen.
+
 output_dir: ../outputs
