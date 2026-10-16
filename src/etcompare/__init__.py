@@ -15,6 +15,7 @@ submodules:
 - :mod:`etcompare.aggregation` -- period totals and calendar completeness of a cohort
 - :mod:`etcompare.metrics` -- performance metrics on a cohort's common mask
 - :mod:`etcompare.bootstrap` -- paired moving-block bootstrap intervals of those metrics
+- :mod:`etcompare.ranking` -- station-level rankings, model contrasts and network summaries
 """
 
 from etcompare.errors import (

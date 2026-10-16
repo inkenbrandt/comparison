@@ -14,8 +14,105 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 8 — Temporal aggregation and completeness | **Done** 2026-10-15; imputed estimated totals and crop-height growing season added the same day. The US-UTJ real-data run was completed on 2026-10-15 (see "Steps 5–6 outputs regenerated" below) |
 | 9 — Performance metrics | **Done** 2026-10-15; US-UTJ growing-season metrics run 2026-10-16 (D-046) |
 | 10 — Paired block-bootstrap intervals | **Done** 2026-10-16 (station level; defaults Provisional, no block length adopted) |
-| 11 — Ranking and paired contrasts | Not started (next) |
-| 12–18 | Not started |
+| 11 — Ranking and paired contrasts | **Done** 2026-10-16 (station level; defaults Provisional; network summaries have n_sites = 1 for US-UTJ) |
+| 12 — Closure, coverage and environmental diagnostics | Not started (next) |
+| 13–18 | Not started |
+
+## Step 11 — Ranking and paired contrasts (2026-10-16)
+
+**Run it**
+```bash
+uv run python -m pytest                           # 358 passed, 3 skipped (opt-in Drive raster tests)
+uv run ruff check src tests tools/run_cohorts.py && uv run mypy   # clean
+uv run python tools/run_cohorts.py examples/us_utj.yaml           # + rankings (~2 min 45 s)
+UV_LINK_MODE=copy uv run --isolated --resolution lowest-direct --python 3.11 --with pytest \
+    python -W error::FutureWarning -m pytest tests/test_ranking.py tests/test_bootstrap.py \
+    tests/test_metrics.py tests/test_aggregation.py tests/test_cohorts.py tests/test_schemas.py \
+    tests/test_config.py tests/test_imputation.py # oldest stack: 251 passed
+```
+`UV_LINK_MODE=copy` is needed here because OneDrive refuses uv's hard links in the isolated environment.
+
+### API
+- **`etcompare.ranking.rank_comparison(cohort, metric_results, bootstrap, spec, *, subset="all")`** returns an immutable `RankingResult` with:
+  - `rankings` (`model_rankings` v1), `rank_distribution` (v1), `contrasts` (`model_contrasts` v1) and `network` (`network_summaries` v1);
+  - `report` and `summary()`.
+
+  `bootstrap=None` gives point ranks only (`not_resampled`).
+- **`network_summaries(metrics, spec)`** works on one comparison's `metrics` table. **`ranking_sensitivity(results)`** returns `ranking_sensitivity` v1.
+- **Building blocks** (public, tested): `check_rankable`, `oriented`, `rank_positions`, `adjust_p_values`, `bootstrap_p_value` and `year_subsets`.
+- **Config:**
+  - New `RankingSpec` in a `rankings:` YAML section, with fields `ranking_id`, `metric_set`, `bootstrap`, `metrics` (metric → direction), `equivalence_margins`, `period_equivalence_margins`, `network_summaries`, `formal_tests`, `multiplicity`, `year_subsets` and `comparisons`.
+  - New constants: `RANKING_DIRECTIONS` (the one place where directions are declared), `DIRECTIONS`, `NETWORK_SUMMARY_TYPES` and `MULTIPLICITY_POLICIES`.
+
+### Delivered
+- **[src/etcompare/ranking.py](src/etcompare/ranking.py)**; the rules are in the module docstring and D-049:
+  - Only `all_models` and `pairwise` cohorts and only score metrics are ranked, inside one frozen context. Mixed fingerprints, variants, sides, scales, products, units or support raise.
+  - **Ties:** mid-ranks, with tied positions shared equally.
+  - **Rank stability per block length, side by side:** mean rank, a rank interval, top-rank frequency (labelled a bootstrap stability measure) and the position distribution. All come from `BootstrapResult.replicates()`, replicate by replicate; nothing is redrawn and no metric is re-implemented.
+  - **Statuses** carry through: `insufficient_support`, `insufficient_valid_replicates`, `estimate_undefined` and `not_resampled`.
+  - **`leader_status`:** `unique_leader` only when the best model's contrast intervals exclude zero against every other model. Otherwise `no_unique_leader`, with `leading_models` listed.
+  - **Contrasts** are `metric(model_a) − metric(model_b)`, with the earlier-declared model as the baseline. Each row has a sign meaning, `interval_position` and `favoured_model`. Closest-to-zero metrics get `value` and `absolute_value` rows.
+  - **Equivalence** (`not_assessed` without a margin) and optional formal tests under Holm or Bonferroni; everything else is `exploratory`.
+  - **Network summaries:** equal-site mean (primary), observation and sqrt-observation weighting, and pooled RMSE (labelled as not the mean station RMSE). Each carries `n_sites`; one site gives `single_site` and `not_network_evidence`.
+  - **Sensitivity** across station, year, temporal scale, reference variant, extraction side and cohort.
+- **Schemas:** `model_rankings`, `rank_distribution`, `model_contrasts`, `network_summaries` and `ranking_sensitivity`, all v1. Ranking, contrast and distribution tables are keyed by `ranking_id`, comparison, cohort, subset, metric set, bootstrap, scope, scale, period type, aggregation, product, variant, side, metric, model(s), basis, interval method, block unit and block length, so cohorts, block lengths and products cannot collide. They carry `n_sites`, `n_days`, `n_periods`, `n_segments`, `n_blocks`, statuses, the cohort fingerprint and flags.
+- **Example config:**
+  - Ranking `utj_model_ranking` with MAE, RMSE, `nrmse_mean`, r, r², NSE, KGE 2009, MBE and percent bias.
+  - No equivalence margins; all four network summaries; `formal_tests: false`; `year_subsets: true`.
+  - Six cohorts, including two new all-model sensitivity cohorts: `utj_rank_closure` (`et_raw` + `et_corrected_measured`) and `utj_rank_methods` (footprint + 3×3 window). All of this is **Provisional** (D-049).
+- **[tools/run_cohorts.py](tools/run_cohorts.py)** writes `<id>__utj_model_ranking_{rankings,rank_distribution,contrasts,network}.{parquet,csv}` (all subsets, every block length) and `utj_model_ranking_sensitivity.{parquet,csv}`. The reports show daily ranks per block length, leader status and network `n_sites`.
+- **Docs:** D-049 (rules and defaults), D-050 (US-UTJ run); a new contract §9 row.
+
+### Gate checks, in [tests/test_ranking.py](tests/test_ranking.py) (45 tests)
+Expected values are independent: `scipy.stats.rankdata` and `numpy.quantile` on the step-10 replicate arrays, numpy metrics of concatenated or duplicated records, and Holm/Bonferroni by hand.
+- **Duplicated station record:**
+  - Duplicating site A's record (every day twice) leaves its station metric unchanged (checked with `compute_metrics`) and doubles `n_days`.
+  - The equal-site mean is unchanged, while the observation-weighted mean changes, from (120a + 80b)/200 to (240a + 80b)/320.
+  - A copy added as a separate *site* is a new site (n_sites = 3), and the equal-site mean becomes (2a + b)/3.
+  - Pooled RMSE equals the RMSE of the concatenated errors and differs from the mean station RMSE.
+- **Known small advantage:** errors of k·e with k = 1, 1.02, 3.
+  - MAE(bbb) − MAE(aaa) = 0.02·mean|e|, with an interval entirely above 0, favouring aaa. NSE is negative and |MBE| positive, also favouring aaa.
+  - Ranks are 1/2/3 for MAE, RMSE, NSE and |MBE|; top-rank frequency is 1, with a unique leader.
+- **No pooling:** mixed fingerprints, reference variants, extraction methods and period products raise in `check_rankable`. Metric results of another cohort are refused, and `model_available` and `paired_method` cohorts are refused.
+- **Diagnostic metrics:** `bias_corrected_rmse`, `mape`, `ols_slope` and `kge_2009_alpha` are refused by the config and by `check_rankable`.
+- **Identical models:**
+  - The replicate arrays are identical and the contrasts are exactly 0 in estimate and bounds.
+  - Both models get mid-rank 1.5 with `n_tied` = 2, top-rank frequency 0.5 each and positions {1: 0.5, 2: 0.5}.
+  - The result is `no_unique_leader`, and an MAE margin gives `equivalent`.
+- **Overlapping intervals:** three equal-noise models give `no_unique_leader` at both block lengths, top-rank frequencies sum to 1, and equivalence is `not_assessed` even though the intervals cross zero.
+- **Rank statistics match the replicates:** mean rank, top-rank frequency, rank bounds, the position distribution (each position sums to 1) and contrast bounds.
+- **Equivalence:** without a margin the result is `not_assessed` (or `not_applicable` for signed closest-to-zero rows). Margins below, above and inside the interval give `practically_different`, `equivalent` and `inconclusive`.
+- **Pairwise contrasts** equal the step-10 pairwise intervals exactly.
+- **Statuses:** a constant model gives `estimate_undefined` for r and leaves the defined pairs `ok`. 50-day blocks give `insufficient_support`, with point ranks kept and statistics null. With no bootstrap the status is `not_resampled`.
+- **Formal tests:** Holm and Bonferroni are checked against hand values; tested rows are `formal`, the rest `exploratory`; `family_size` is checked. Without `formal_tests` every row is `exploratory`, with no p-values.
+- **Single site:** status `single_site`, the `not_network_evidence` flag and a report warning. Mixed comparisons refuse network summaries, and an undefined site metric leaves the summary undefined.
+- **Sensitivity:** reference-variant (same cohort), temporal-scale (daily vs monthly) and year dimensions are found; station and extraction are reported absent; `rank_change` = `rank_b` − `rank_a`.
+- **Parquet:** all five tables round-trip (also every new schema in `test_schemas`). Results are immutable.
+- **Config:** 25 rejection cases plus duplicate IDs.
+
+### US-UTJ run (D-050; local outputs)
+- **Independent check:** ranks recomputed with `scipy.stats.rankdata` from the written paired files match every daily ranking. Values and contrast estimates match the metric tables to 1.1e-14.
+- **No block length is chosen.** 28-day blocks lack support everywhere (set A and pairwise-2024 also lack 14-day support). The 7- and 14-day intervals are probably too narrow (D-048).
+- **No all-model cohort has a unique leader** for any metric at 7 or 14 days. In the pairwise cohort, eemetric's |MBE|, |percent bias| and KGE are separated; MAE, RMSE and NSE are not.
+- **Reference variant (raw vs corrected) moves rankings most:** 6 of 7 models move in MAE and RMSE, by up to 5 positions. Footprint vs 3×3 window moves them less.
+- **Network summaries:** n_sites = 1, `single_site`; not network evidence.
+- **Gap-filled days:** the 93 gap-filled reference days of the inclusive cohort share gridMET drivers (D-005).
+
+### Assumptions and limitations
+- **Station level only.** Network summaries carry no interval: hierarchical site × calendar-block resampling is not implemented (a documented limitation). With one station, every network summary is a station result.
+- **Ties are exact.** There is no tie tolerance: models whose metrics differ only by round-off are not tied.
+- **Leader status and equivalence** use the first declared interval method at each block length. Equivalence on a 95 % interval is a TOST at 2.5 % per side.
+- **Year subsets** are daily only (no period products) and are rebuilt by the runner from the same inputs.
+- **Sensitivity uses point ranks only.** Cross-cohort pairs (`same_cohort = false`) differ in days as well.
+
+### Open (user decisions)
+- **Equivalence margins:** none declared for US-UTJ. Any margin must be fixed before ranking and per metric.
+- **Formal tests and multiplicity policy:** not requested; every contrast is exploratory.
+- **Block length and support** (D-048): still open. Rankings report every length side by side.
+- **The two new sensitivity cohorts** (`utj_rank_closure`, `utj_rank_methods`): keep, change or drop.
+- Carried over: the quality threshold (D-008), the measured-LE coverage minimum (D-038), the metric tolerances (D-044), the imputation driver (D-042) and the Provisional bootstrap defaults (D-047).
+
+**Next:** step 12. Closure, coverage and environmental diagnostics: correction magnitude and rank changes (the closure rankings above are a start), and error versus season, ETo, VPD, wind, sensible heat, closure ratio, gap-filled fraction and footprint capture, with declared bins.
 
 ## Step 10 — Paired block-bootstrap intervals (2026-10-16)
 
@@ -118,7 +215,7 @@ Expected values are independent: block geometry from the dates, Monte Carlo with
 - **Period block length** (1, i.e. months treated as independent) and the other Provisional defaults (D-047).
 - Carried over: the quality threshold (D-008), the measured-LE coverage minimum (D-038), the metric tolerances (D-044) and the imputation driver (D-042).
 
-**Next:** step 11. Station-level rankings and paired model contrasts on the all-model cohorts, using the shared-index replicates (`BootstrapResult.replicates()`); equal-site network summaries; a declared practical-equivalence margin; and ranking-stability reporting. Intervals are not to be turned into a unique winner.
+**Next (at the time):** step 11. Superseded by the Step 11 entry above.
 
 ## Step 9 — Transparent performance metrics (2026-10-15)
 

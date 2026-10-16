@@ -25,17 +25,20 @@ from typing import Any, Final, Literal
 import numpy as np
 import pandas as pd
 
-from etcompare.config import ET_TOTAL_UNIT as ET_TOTAL_UNIT
-from etcompare.config import ET_UNIT as ET_UNIT
 from etcompare.config import (
+    DIRECTIONS,
     FOOTPRINT_VALUE_SEMANTICS,
     INTERVAL_LABELS,
     INTERVAL_METHODS,
+    MULTIPLICITY_POLICIES,
+    NETWORK_SUMMARY_TYPES,
     PERIOD_TYPES,
     PRODUCT_DAY_DEFINITIONS,
     STATION_DAY_DEFINITIONS,
     TEMPORAL_SUPPORTS,
 )
+from etcompare.config import ET_TOTAL_UNIT as ET_TOTAL_UNIT
+from etcompare.config import ET_UNIT as ET_UNIT
 from etcompare.config import REFERENCE_VARIANTS as REFERENCE_VARIANTS
 from etcompare.config import TOTAL_PRODUCTS as TOTAL_PRODUCTS
 from etcompare.errors import DuplicateKeyError, SchemaError
@@ -76,6 +79,19 @@ BLOCK_UNITS: Final = ("site_day", "period")
 CONTRAST_DIMENSIONS: Final = ("none", "extraction_side", "reference_variant", "model")
 INTERVAL_STATUSES: Final = ("ok", "insufficient_support", "estimate_undefined",
                             "insufficient_valid_replicates")
+#: Rankings and model contrasts (``etcompare.ranking``). ``not_resampled``: no bootstrap
+#: block length applies, so only the point estimate exists.
+RANKING_STATUSES: Final = (*INTERVAL_STATUSES, "not_resampled")
+LEADER_STATUSES: Final = ("unique_leader", "no_unique_leader", "not_assessed")
+CONTRAST_BASES: Final = ("value", "absolute_value")
+INTERVAL_POSITIONS: Final = ("above_zero", "below_zero", "includes_zero")
+EQUIVALENCE_RESULTS: Final = ("not_assessed", "not_applicable", "no_interval", "equivalent",
+                              "practically_different", "inconclusive")
+INFERENCE_LABELS: Final = ("exploratory", "formal")
+TEST_DECISIONS: Final = ("reject_zero", "not_rejected")
+NETWORK_STATUSES: Final = ("ok", "single_site", "estimate_undefined")
+SENSITIVITY_DIMENSIONS: Final = ("station", "year", "temporal_scale", "reference_variant",
+                                 "extraction_method", "cohort")
 
 
 @dataclass(frozen=True)
@@ -595,6 +611,253 @@ RESIDUAL_AUTOCORRELATION = TableSchema(
                  "extraction_method", "footprint_set_id", "lag"),
 )
 
+def _ranking_context(*, scope: bool = True) -> tuple[ColumnSpec, ...]:
+    """Key columns that fix one frozen ranking context (shared by the step-11 tables)."""
+    cols = [
+        _key("ranking_id", "string", "Declared ranking (rankings[] in the config)"),
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("subset", "string", "'all', or the frozen sub-cohort ranked (e.g. 'year=2025')"),
+        _key("metric_set_id", "string", "Metric set of the point estimates"),
+        _key("bootstrap_id", "string", "Bootstrap whose replicates are used ('none' if none)"),
+    ]
+    if scope:
+        cols.append(_key("scope", "string", "Site ID (station level)"))
+    cols += [
+        _key("temporal_scale", "string", "daily pairs or period totals", allowed=TEMPORAL_SCALES),
+        _key("period_type", "string", "Period type of period totals; 'none' for daily",
+             allowed=("none", *PERIOD_TYPES)),
+        _key("aggregation_id", "string", "Period aggregation; 'none' for daily"),
+        _key("product", "string", "daily_pairs, or the period product", allowed=METRIC_PRODUCTS),
+        _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
+        _key("extraction_method", "string", "Extraction method"),
+        _key("footprint_set_id", "string", "Footprint set of the extraction (or 'none')"),
+    ]
+    return tuple(cols)
+
+
+_RESAMPLING = (
+    _key("block_unit", "string", "Resampling unit: site_day (daily pairs) or period",
+         allowed=BLOCK_UNITS),
+    _key("block_length", "int", "Bootstrap block length in block units; 0 = not resampled"),
+)
+_CONTEXT_KEY = ("ranking_id", "comparison_id", "cohort_id", "subset", "metric_set_id",
+                "bootstrap_id", "scope", "temporal_scale", "period_type", "aggregation_id",
+                "product", "reference_variant", "extraction_method", "footprint_set_id")
+
+MODEL_RANKINGS = TableSchema(
+    "model_rankings", "1",
+    "Station-level ranks of the models of one frozen ranking cohort, per context, metric and "
+    "bootstrap block length, with rank stability from shared-index replicates. Ranks are "
+    "descriptive; top_rank_frequency is a bootstrap stability measure, not the probability "
+    "that a model is best.",
+    (
+        *_ranking_context(),
+        _key("metric", "string", "Ranked metric (role score)"),
+        _key("model", "string", "Canonical model name"),
+        *_RESAMPLING,
+        _c("scope_type", "string", "'site' (station level)", nullable=False, allowed=("site",)),
+        _c("direction", "string", "Better direction of the metric (RANKING_DIRECTIONS)",
+           nullable=False, allowed=DIRECTIONS),
+        _c("value", "float", "Step-9 point estimate; null when undefined"),
+        _c("units", "string", "Units of value", nullable=False),
+        _c("rank", "float", "Point mid-rank (1 = best; tied models share the average of "
+           "their positions); null unless every model's estimate is defined"),
+        _c("n_models", "int", "Models ranked in the context", nullable=False),
+        _c("n_tied", "int", "Models sharing this model's point value (including itself)"),
+        _c("mean_rank", "float", "Mean replicate mid-rank; null unless status is ok"),
+        _c("rank_lower", "float", "Lower rank bound: lower quantile of replicate mid-ranks"),
+        _c("rank_upper", "float", "Upper rank bound: higher quantile of replicate mid-ranks"),
+        _c("top_rank_frequency", "float", "Share of valid replicates in which the model holds "
+           "position 1 (ties split it); a bootstrap stability measure", unit=FRACTION),
+        _c("confidence_level", "float", "Level of the rank interval and of contrast "
+           "intervals", unit=FRACTION),
+        _c("leader_status", "string", "unique_leader only when the point-best model's "
+           "contrast interval excludes zero in its favour against every other model",
+           nullable=False, allowed=LEADER_STATUSES),
+        _c("leading_models", "string", "';'-joined point-best model(s) and every model not "
+           "separated from it by its contrast interval"),
+        _c("leader_interval_method", "string", "Interval method used for leader_status",
+           allowed=INTERVAL_METHODS),
+        _c("seed", "int", "Bootstrap seed"),
+        _c("n_replicates_requested", "int", "Requested replicates", nullable=False),
+        _c("n_replicates_valid", "int", "Replicates in which every model's metric is defined",
+           nullable=False),
+        _c("n_sites", "int", "Sites in the context (1: station level)", nullable=False),
+        _c("n_days", "int", "Days in the scored sample (matched days for period totals)",
+           nullable=False),
+        _c("n_days_reference_filled", "int", "Scored days with a gap-filled reference",
+           nullable=False),
+        _c("n_periods", "int", "Periods in the scored sample (period totals only)"),
+        _c("n_segments", "int", "Uninterrupted segments of the resampled sample"),
+        _c("n_blocks", "int", "Disjoint full-length blocks (the support compared with "
+           "min_blocks)"),
+        _c("status", "string", "ok, or why rank statistics are missing", nullable=False,
+           allowed=RANKING_STATUSES),
+        _c("status_detail", "string", "Reason behind a non-ok status"),
+        _c("ranking_scope", "string", "all_models or pairwise", nullable=False,
+           allowed=("all_models", "pairwise")),
+        _c("cohort_membership_sha256", "string", "Cohort fingerprint", nullable=False),
+        _c("flags", "string", "';'-joined flags of the ranked metric rows"),
+    ),
+    primary_key=(*_CONTEXT_KEY, "metric", "model", "block_unit", "block_length"),
+)
+
+RANK_DISTRIBUTION = TableSchema(
+    "rank_distribution", "1",
+    "Per-model distribution of rank positions over the valid bootstrap replicates of a "
+    "model_rankings row with status ok. Tied models share their positions equally, so each "
+    "model's frequencies and each position's frequencies sum to 1.",
+    (
+        *_ranking_context(),
+        _key("metric", "string", "Ranked metric"),
+        _key("model", "string", "Canonical model name"),
+        *_RESAMPLING,
+        _key("position", "int", "Rank position (1 = best)"),
+        _c("frequency", "float", "Share of valid replicates at this position", unit=FRACTION,
+           nullable=False),
+        _c("n_replicates_valid", "int", "Valid replicates", nullable=False),
+    ),
+    primary_key=(*_CONTEXT_KEY, "metric", "model", "block_unit", "block_length", "position"),
+)
+
+MODEL_CONTRASTS = TableSchema(
+    "model_contrasts", "1",
+    "Paired model contrasts metric(model_a) - metric(model_b) inside one frozen ranking "
+    "context, computed replicate by replicate on shared bootstrap indices, with practical "
+    "equivalence and (optional) formal tests. model_b is the model declared earlier in the "
+    "comparison.",
+    (
+        *_ranking_context(),
+        _key("metric", "string", "Contrasted metric"),
+        _key("model_a", "string", "Minuend model"),
+        _key("model_b", "string", "Subtrahend (baseline) model, declared earlier"),
+        _key("contrast_basis", "string", "value: metric_a - metric_b; absolute_value: "
+             "|metric_a| - |metric_b| (closest_to_zero metrics)", allowed=CONTRAST_BASES),
+        _key("interval_method", "string", "percentile or basic", allowed=INTERVAL_METHODS),
+        *_RESAMPLING,
+        _c("scope_type", "string", "'site' (station level)", nullable=False, allowed=("site",)),
+        _c("direction", "string", "Better direction of the metric", nullable=False,
+           allowed=DIRECTIONS),
+        _c("ranking_basis", "bool", "This basis orders the models (false for the signed "
+           "difference of a closest_to_zero metric)", nullable=False),
+        _c("sign_meaning", "string", "How to read the sign of estimate", nullable=False),
+        _c("estimate", "float", "Point contrast (practical effect size, in units); null when "
+           "undefined"),
+        _c("lower", "float", "Lower bound; null unless status is ok"),
+        _c("upper", "float", "Upper bound; null unless status is ok"),
+        _c("units", "string", "Units of estimate, bounds and margin", nullable=False),
+        _c("interval_position", "string", "Where the interval lies relative to zero",
+           allowed=INTERVAL_POSITIONS),
+        _c("favoured_model", "string", "Model favoured by an interval excluding zero (ranking "
+           "basis only); null otherwise"),
+        _c("equivalence_margin", "float", "Predeclared practical-equivalence margin (+/-)"),
+        _c("equivalence", "string", "Interval inside (-margin, margin): equivalent; entirely "
+           "beyond it: practically_different; an interval crossing zero is not equivalence",
+           nullable=False, allowed=EQUIVALENCE_RESULTS),
+        _c("confidence_level", "float", "Nominal two-sided level", unit=FRACTION),
+        _c("seed", "int", "Bootstrap seed"),
+        _c("n_replicates_requested", "int", "Requested replicates", nullable=False),
+        _c("n_replicates_valid", "int", "Replicates with both metrics defined", nullable=False),
+        _c("n_sites", "int", "Sites (1: station level)", nullable=False),
+        _c("n_days", "int", "Days in the scored sample", nullable=False),
+        _c("n_periods", "int", "Periods in the scored sample (period totals only)"),
+        _c("n_segments", "int", "Uninterrupted segments of the resampled sample"),
+        _c("n_blocks", "int", "Disjoint full-length blocks"),
+        _c("status", "string", "ok, or why no interval is given", nullable=False,
+           allowed=RANKING_STATUSES),
+        _c("status_detail", "string", "Reason behind a non-ok status"),
+        _c("inference", "string", "formal only for a tested ranking-basis contrast under a "
+           "declared multiplicity policy; everything else is exploratory", nullable=False,
+           allowed=INFERENCE_LABELS),
+        _c("p_value", "float", "Percentile-inversion bootstrap p-value (formal tests only)",
+           unit=FRACTION),
+        _c("p_value_adjusted", "float", "Multiplicity-adjusted p-value", unit=FRACTION),
+        _c("multiplicity_policy", "string", "Declared policy (formal tests only)",
+           allowed=MULTIPLICITY_POLICIES),
+        _c("family_size", "int", "Contrasts in the multiplicity family"),
+        _c("test_decision", "string", "reject_zero / not_rejected at 1 - confidence_level",
+           allowed=TEST_DECISIONS),
+        _c("ranking_scope", "string", "all_models or pairwise", nullable=False,
+           allowed=("all_models", "pairwise")),
+        _c("cohort_membership_sha256", "string", "Cohort fingerprint", nullable=False),
+        _c("flags", "string", "';'-joined flags of both metric rows"),
+    ),
+    primary_key=(*_CONTEXT_KEY, "metric", "model_a", "model_b", "contrast_basis",
+                 "interval_method", "block_unit", "block_length"),
+)
+
+NETWORK_SUMMARIES = TableSchema(
+    "network_summaries", "1",
+    "Summaries of station-level metrics across the sites of one frozen cohort. The "
+    "equal-site mean is the primary network result; observation weightings are labelled "
+    "alternatives, and pooled RMSE (over all site observations) is not the mean station "
+    "RMSE. With n_sites = 1 a row is a single station, not network evidence. No interval: "
+    "site-population inference needs hierarchical resampling (not implemented).",
+    (
+        *_ranking_context(scope=False),
+        _key("model", "string", "Canonical model name"),
+        _key("metric", "string", "Summarized metric"),
+        _key("summary_type", "string", "How station metrics are combined",
+             allowed=NETWORK_SUMMARY_TYPES),
+        _c("scope_type", "string", "'network'", nullable=False, allowed=("network",)),
+        _c("summary_label", "string", "Human-readable label of the summary", nullable=False),
+        _c("primary", "bool", "True for the equal-site mean", nullable=False),
+        _c("weighting", "string", "Site weight: equal, n_obs, sqrt_n_obs, or pooled",
+           nullable=False, allowed=("equal", "n_obs", "sqrt_n_obs", "pooled")),
+        _c("observation_unit", "string", "What n_obs counts: day (daily pairs) or period",
+           nullable=False, allowed=("day", "period")),
+        _c("value", "float", "Summary value; null unless every site's metric is defined"),
+        _c("units", "string", "Units of value", nullable=False),
+        _c("n_sites", "int", "Sites summarized", nullable=False),
+        _c("sites", "string", "';'-joined site IDs", nullable=False),
+        _c("n_days", "int", "Days over all sites", nullable=False),
+        _c("n_days_reference_filled", "int", "Gap-filled reference days over all sites",
+           nullable=False),
+        _c("n_periods", "int", "Periods over all sites (period totals only)"),
+        _c("network_evidence", "bool", "False when n_sites < 2", nullable=False),
+        _c("status", "string", "ok, single_site or estimate_undefined", nullable=False,
+           allowed=NETWORK_STATUSES),
+        _c("status_detail", "string", "Reason behind a non-ok status"),
+        _c("cohort_membership_sha256", "string", "Cohort fingerprint (if known)"),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("ranking_id", "comparison_id", "cohort_id", "subset", "metric_set_id",
+                 "bootstrap_id", "temporal_scale", "period_type", "aggregation_id", "product",
+                 "reference_variant", "extraction_method", "footprint_set_id", "model",
+                 "metric", "summary_type"),
+)
+
+RANKING_SENSITIVITY = TableSchema(
+    "ranking_sensitivity", "1",
+    "How point ranks change between two ranking contexts that differ in one dimension "
+    "(station, year, temporal scale, reference variant, extraction method) or only in their "
+    "frozen cohort. Each context is an internally frozen cohort; same_cohort says whether "
+    "both use the same cohort (same days).",
+    (
+        _key("ranking_id", "string", "Declared ranking"),
+        _key("dimension", "string", "The one dimension in which the contexts differ",
+             allowed=SENSITIVITY_DIMENSIONS),
+        _key("context_a", "string", "Context label: comparison|subset|scope|scale|variant|side"),
+        _key("context_b", "string", "Context label of the other context"),
+        _key("metric", "string", "Ranked metric"),
+        _key("model", "string", "Canonical model name"),
+        _c("rank_a", "float", "Point mid-rank in context_a", nullable=False),
+        _c("rank_b", "float", "Point mid-rank in context_b", nullable=False),
+        _c("rank_change", "float", "rank_b - rank_a (positive: worse in context_b)",
+           nullable=False),
+        _c("n_models", "int", "Models ranked in both contexts", nullable=False),
+        _c("same_cohort", "bool", "Both contexts use one cohort fingerprint", nullable=False),
+        _c("comparison_a", "string", "Comparison of context_a", nullable=False),
+        _c("comparison_b", "string", "Comparison of context_b", nullable=False),
+        _c("n_days_a", "int", "Days scored in context_a", nullable=False),
+        _c("n_days_b", "int", "Days scored in context_b", nullable=False),
+        _c("n_periods_a", "int", "Periods scored in context_a"),
+        _c("n_periods_b", "int", "Periods scored in context_b"),
+    ),
+    primary_key=("ranking_id", "dimension", "context_a", "context_b", "metric", "model"),
+)
+
 EXCLUSIONS = TableSchema(
     "exclusions", "1", "Rows removed or flagged, with stage and reason.",
     (
@@ -611,7 +874,9 @@ SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
     s.name: s for s in (STATIONS, STATION_DAILY, MODEL_MANIFEST, ASSET_SITES,
                         FOOTPRINT_MANIFEST, EXTRACTIONS, PAIRED, COHORT_MEMBERSHIP,
                         PERIOD_TOTALS, DAILY_ESTIMATES, CROP_HEIGHT, METRICS,
-                        CUMULATIVE_ERROR, INTERVALS, RESIDUAL_AUTOCORRELATION, EXCLUSIONS)
+                        CUMULATIVE_ERROR, INTERVALS, RESIDUAL_AUTOCORRELATION, MODEL_RANKINGS,
+                        RANK_DISTRIBUTION, MODEL_CONTRASTS, NETWORK_SUMMARIES,
+                        RANKING_SENSITIVITY, EXCLUSIONS)
 })
 
 

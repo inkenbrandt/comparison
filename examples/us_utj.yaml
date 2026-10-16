@@ -213,6 +213,23 @@ comparisons:
     reference_variants: [et_corrected_measured]
     sides: [*nldas_fp]
     sources: [us_utj_nldas_eto]
+  # Ranking-sensitivity cohorts (step 11; D-049). Each is an all-model cohort frozen across
+  # both of its reference variants or both of its sides, so rankings per variant or side use
+  # identical days. Closure: raw vs corrected on measured days. Extraction: footprint vs 3x3.
+  - comparison_id: utj_rank_closure
+    kind: common_date
+    models: *all_models
+    reference_variants: [et_raw, et_corrected_measured]
+    sides: [*nldas_fp]
+    sources: [us_utj_nldas_eto]
+  - comparison_id: utj_rank_methods
+    kind: common_date
+    models: *all_models
+    reference_variants: [et_corrected_measured]
+    sides:
+      - *nldas_fp
+      - {extraction_method: pixel_window_3x3, footprint_set_id: none}
+    sources: [us_utj_nldas_eto]
   # Pre-extracted producer table (set A): regression check of the 260 common dates.
   - comparison_id: utj_set_a_common
     kind: common_date
@@ -278,5 +295,33 @@ bootstrap:
     water_year_start_month: 10
     acf_max_lag: 28
     contrasts: true
+
+# Station-level rankings and paired model contrasts (guide step 11; D-049, D-050). All
+# values are Provisional defaults fixed before any ranking was computed. Rankings use the
+# step-9 point estimates and the step-10 replicates at every bootstrap block length side by
+# side; no block length is adopted (D-047, D-048). Ranks describe one station; they are not
+# a verdict on which model is best.
+rankings:
+  - ranking_id: utj_model_ranking
+    metric_set: utj_metrics
+    bootstrap: utj_block_bootstrap
+    metrics:                          # directions must match RANKING_DIRECTIONS
+      mae: lower
+      rmse: lower
+      nrmse_mean: lower
+      pearson_r: higher
+      pearson_r_squared: higher
+      nse: higher
+      kge_2009: higher
+      mbe: closest_to_zero            # ranked by |MBE|
+      percent_bias: closest_to_zero   # ranked by |percent bias|
+    equivalence_margins: {}           # none declared: equivalence is not_assessed (open)
+    network_summaries: [equal_site_mean, observation_weighted_mean,
+                        sqrt_observation_weighted_mean, pooled_rmse]
+    formal_tests: false               # every contrast is exploratory
+    year_subsets: true                # rank each calendar year of multi-year cohorts
+    comparisons: [utj_rank_corrected_inclusive, utj_rank_corrected_measured,
+                  utj_pair_eemetric_ssebop, utj_set_a_common, utj_rank_closure,
+                  utj_rank_methods]
 
 output_dir: ../outputs

@@ -591,3 +591,149 @@ What would change these results:
 - a different `min_blocks`.
 
 Each is a user decision to be declared in configuration, never tuned on interval width.
+
+---
+
+**Revision 2026-10-16 (m):** Step 11 implemented. D-049 and D-050 added. Two all-model sensitivity cohorts were added to the example config (`utj_rank_closure`, `utj_rank_methods`). D-040 to D-048 are unchanged.
+
+### D-049 — Rankings, model contrasts and network summaries (Adopted rules; US-UTJ defaults Provisional)
+`etcompare.ranking.rank_comparison(cohort, metric_results, bootstrap, spec)` ranks the models of one cohort under a `RankingSpec` (the new `rankings:` config section). It writes four tables: `model_rankings`, `rank_distribution`, `model_contrasts` and `network_summaries`. `ranking_sensitivity(results)` writes a fifth, `ranking_sensitivity`. All five schemas are new at v1.
+
+**What may be ranked.**
+- **Cohorts:** only cohorts with ranking scope `all_models` (`common_date`) or `pairwise` (`pairwise_model`). Coverage (`model_available`), `paired_method` and `paired_reference` cohorts are refused, both by the config loader and at run time.
+- **Contexts:** models are ranked only inside one frozen context: one cohort fingerprint, site, temporal scale and period product, reference variant and extraction side. `check_rankable` raises when rows differ in any of these fields, or in metric, units or temporal support. A model set that differs from the cohort's also raises. Rankings therefore never pool unequal cohorts (tested).
+- **Metrics:** only `score` metrics. Their directions are declared once, in `config.RANKING_DIRECTIONS`:
+
+  | Direction | Metrics | Ranked by |
+  |---|---|---|
+  | lower is better | `mae`, `rmse`, `nrmse_mean`, `nrmse_mean_percent` | value |
+  | higher is better | `pearson_r`, `pearson_r_squared`, `nse`, `kge_2009` | value |
+  | closest to zero is better | `mbe`, `percent_bias` | absolute value |
+
+  A ranking spec must restate each direction, and a mismatch is refused. Diagnostic metrics (`bias_corrected_rmse`, `mape`), descriptive ones (OLS coefficients) and KGE components are refused as a ranking basis.
+
+**Ties.** Values are put on a lower-is-better scale. Exact equality is a tie, with no tolerance: identical predictions give bit-identical metrics, and anything else does not tie. A model's rank is its mid-rank. Tied models share their positions equally in the rank distribution, so every model's and every position's frequencies sum to 1, and the top-rank frequencies of a context sum to 1 (tested). If any model's point estimate is undefined, the context is not ranked (`estimate_undefined`): dropping that model would rank an unequal set.
+
+**Uncertainty comes from step 10.**
+- **No new draws.** Rank statistics and contrast intervals use `BootstrapResult.replicates()`, computed replicate by replicate on the shared indices. Nothing is redrawn and no metric is re-implemented.
+- **No block length is adopted** (D-047, D-048). Every declared block length is reported side by side, each row keyed by `block_unit` and `block_length`.
+- **Rank statistics:**
+  - `mean_rank`;
+  - a rank interval: the α/2 and 1 − α/2 quantiles of the replicate mid-ranks, using numpy `method="lower"` and `"higher"`;
+  - `top_rank_frequency`, a **bootstrap stability measure, not the probability that a model is best**;
+  - the full position distribution.
+- **Statuses replace values.** A rank statistic or interval built on unsupported or undefined replicates has a status instead of a value:
+  - `insufficient_support`, carried from step 10;
+  - `insufficient_valid_replicates`, when fewer than `min_valid_fraction` of the replicates have every model defined (for contrasts: both models defined);
+  - `estimate_undefined`;
+  - `not_resampled`, when no block length applies.
+
+  The point rank is still reported under `insufficient_support`, because it is the step-9 estimate.
+- **No forced winner.** `leader_status = unique_leader` only when the point-best model's contrast interval (first declared interval method) excludes zero in its favour against every other model. Otherwise the status is `no_unique_leader`, and `leading_models` lists the point-best model or models plus every model not separated from them.
+
+**Contrasts.**
+- **Form:** `metric(model_a) − metric(model_b)` for every pair. `model_b` is the model declared earlier, which matches the step-10 pairwise contrast (tested to be identical).
+- **Reading the sign:** each row states it in `sign_meaning`. For lower-is-better metrics a negative contrast favours `model_a`; for higher-is-better metrics a positive one does.
+- **Closest-to-zero metrics** get two rows:
+  - `value`, the signed difference. It does not order the models (`ranking_basis = false`).
+  - `absolute_value`, `|metric_a| − |metric_b|`. Here a negative contrast favours `model_a`.
+- **Effect size:** the contrast is the practical effect size, in the metric's units (percentage points for percent metrics), reported with its interval, `interval_position` and `favoured_model`.
+- **Extraction-method contrasts** keep the step-10 convention `delta_mae = MAE_window − MAE_footprint`, where positive means the footprint has the smaller error. They come from `etcompare.bootstrap`.
+
+**Equivalence.**
+- **Margins:** `equivalence_margins` (daily, in metric units) and `period_equivalence_margins` (period products) are declared before ranking.
+- **Without a margin** the result is `not_assessed`.
+- **With a margin `d`,** for the ranking-basis interval:
+  - inside `(−d, d)`: `equivalent`;
+  - entirely at or beyond `d` on one side: `practically_different`;
+  - otherwise: `inconclusive`.
+- **The signed `value` rows** of closest-to-zero metrics are `not_applicable`.
+- **An interval crossing zero is never taken as equivalence** (tested).
+- **Level:** judging on the reported 95 % interval corresponds to a TOST at 2.5 % per side.
+
+**Multiplicity.**
+- **Default:** `formal_tests: false`, so every contrast is labelled `exploratory`.
+- **Formal tests** require an explicit `multiplicity` policy (`holm` or `bonferroni`); declaring a policy without formal tests is refused.
+- **Formal tests give:**
+  - for each ranking-basis contrast with an interval, the percentile-inversion bootstrap p-value `min(1, 2·min(P(d ≤ 0), P(d ≥ 0)))`;
+  - an adjustment within one family: one comparison, subset and block length, covering every metric, context and pair;
+  - a decision at α = 1 − confidence level.
+
+**Network summaries.**
+- **Primary result:** the equal-site mean of station metrics.
+- **Optional, labelled alternatives:**
+  - observation-count weighting (`n_days` for daily pairs, `n_periods` for period products);
+  - square-root-count weighting;
+  - `pooled_rmse` = `sqrt(Σ n·RMSE² / Σ n)`. This is the RMSE over all site observations, labelled as *not* the mean station RMSE.
+- **Undefined values:** a summary is undefined when any site's metric is.
+- **Single site:** `n_sites` is explicit. With one site the status is `single_site`, `network_evidence` is false and the row carries the flag `not_network_evidence`.
+- **Gate test:**
+  - Duplicating a station's record within the station (every day twice) leaves its station metric unchanged and doubles its observation count.
+  - That leaves the equal-site mean unchanged, while the observation-weighted mean changes.
+  - A copy added as a separate *site* counts as a new site and does change the equal-site mean. The test documents this.
+- **No interval.** A fixed network and a site population are different targets. Population inference needs hierarchical resampling of sites together with common calendar blocks. This is a documented limitation and is not implemented.
+
+**Ranking sensitivity.**
+- **What is compared:** point ranks of two contexts that differ in exactly one dimension:
+  - station;
+  - year subset;
+  - temporal scale or product (one side daily);
+  - reference variant;
+  - extraction side.
+
+  Contexts that differ only in their cohort are labelled `cohort`; any other pair is confounded and skipped.
+- **Every context is an internally frozen cohort.** `same_cohort` says whether both contexts share one fingerprint.
+- **Year subsets** (`year_subsets: true`) are rebuilt with `build_cohort` under the same rule, with `start` and `end` restricted to one calendar year. They are scored daily, bootstrapped and ranked with `subset=year=<y>`.
+- **Closure and extraction sensitivity** need all-model cohorts frozen across both variants or both sides. The paired-reference and paired-method cohorts cannot be ranked, so two `common_date` cohorts were added:
+  - `utj_rank_closure`: `et_raw` and `et_corrected_measured`;
+  - `utj_rank_methods`: footprint and 3×3 window.
+
+**US-UTJ defaults (Provisional; fixed before any ranking was computed):**
+- ranking `utj_model_ranking` on `utj_metrics` and `utj_block_bootstrap`;
+- ranked metrics MAE, RMSE, `nrmse_mean`, r, r², NSE, KGE 2009, MBE and percent bias. `nrmse_mean_percent` is left out because it is `nrmse_mean` × 100;
+- no equivalence margins, so equivalence is `not_assessed`;
+- all four network summaries;
+- `formal_tests: false`;
+- `year_subsets: true`;
+- the six ranking cohorts.
+
+### D-050 — US-UTJ ranking run (Information)
+From `tools/run_cohorts.py examples/us_utj.yaml` on 2026-10-16 (2 min 43 s for all 9 comparisons). The outputs are the local `outputs/cohorts/*__utj_model_ranking_*` files and `utj_model_ranking_sensitivity.*`. These are descriptions of one station, not verdicts on which model is best.
+- **Independent check:** point ranks recomputed with `scipy.stats.rankdata` from the written paired files match every daily ranking. Metric values and contrast estimates match the step-9 tables to 1.1e-14. Top-rank frequencies sum to 1 in every ranked context.
+- **New cohorts:** `utj_rank_closure` and `utj_rank_methods` both have 188 days, the same as `utj_rank_corrected_measured`. Their corrected-measured and footprint rankings equal it exactly (sensitivity dimension `cohort`: no rank changes).
+- **Block-length support** (as in D-048):
+
+  | Cohort | Days | Blocks at 7 / 14 / 28 days |
+  |---|---|---|
+  | inclusive | 281 | 39 / 19 / 9 |
+  | measured, closure, methods | 188 | 23 / 10 / 4 |
+  | pairwise | 303 | 37 / 16 / 6 |
+  | pairwise, 2024 only | 115 | 14 / 6 / 2 |
+  | pairwise, 2025 only | 188 | 23 / 10 / 4 |
+  | set A | 260 | 28 / 9 / 2 |
+
+  - **28-day blocks mostly lack support:** every 28-day ranking and contrast is `insufficient_support`. Set A and pairwise-2024 also lack 14-day support.
+  - **The 7- and 14-day intervals are probably too narrow** given the residual autocorrelation (D-048), so the stability figures below are probably optimistic.
+  - No block length is chosen.
+- **No unique leader in any all-model cohort.** This holds for every metric, at 7 and at 14 days.
+  - Inclusive ranking, daily MAE: 3 of the 21 model-pair intervals exclude zero, at both block lengths.
+  - The point leaders are ensemble (MAE) and SIMS (RMSE, KGE). Their top-rank frequencies are 0.55–0.68, with rank intervals from 1–3 to 1–7. Each is not separated from 3 to 6 other models (`leading_models`).
+- **Pairwise eemetric/ssebop** (303 days):
+  - **Separated:** eemetric's `|MBE|`, `|percent bias|` and KGE are separated at 7 and 14 days, and ssebop's r and r² at 7 days only.
+  - **Not separated:** MAE, RMSE and NSE at either length.
+  - **Year subsets** (2024: 115 days; 2025: 188 days): eemetric's `|MBE|` and `|percent bias|` are separated at 7 days in both years. The two models' MAE ranks swap between the years; their RMSE ranks do not.
+- **Reference variant matters most.** In `utj_rank_closure`, `et_raw` against `et_corrected_measured` moves 6 of the 7 models in MAE and RMSE, by up to 5 positions. SIMS goes from first to sixth in RMSE, and ensemble leads MAE and RMSE on raw ET. This is closure sensitivity, not a statement about which reference is right (D-004).
+- **Extraction side matters less.** In `utj_rank_methods`, footprint against 3×3 window moves 6 models in MAE (by up to 3) and 3 in RMSE (by up to 2). Set A against the NLDAS primary (`extraction_method` dimension, different days) moves none in MAE or RMSE.
+- **Period products:**
+  - Monthly partial sums are the only period samples with rank statistics (10 months in the inclusive cohort and set A, 16 in the pairwise cohort). They mix months with unequal matched days and are descriptive.
+  - Complete and estimated months (at most 9 per cohort), years, water years and growing seasons are `insufficient_support` or `estimate_undefined`.
+- **Network summaries:** `n_sites = 1` everywhere (status `single_site`, flag `not_network_evidence`). They restate the US-UTJ station metrics and are not network evidence.
+- **Not assessed:** equivalence (no margin declared) and formal tests (none requested). Every contrast is exploratory.
+- **Gap-filled reference days:** 93 of the 281 inclusive days and 88 of the 260 set-A days share gridMET drivers with the OpenET interpolation (D-005). They are resampled and ranked like measured days, so the inclusive rankings are not independent validation. The measured-reference cohorts avoid this, with fewer days.
+- **Every row** carries `day_alignment=unverified` (D-023).
+
+What would change these results:
+- more stations, which would make the network summaries evidence;
+- a block-length and support decision (D-048);
+- declared equivalence margins;
+- a declared quality threshold (D-008).

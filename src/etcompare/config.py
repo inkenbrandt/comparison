@@ -11,6 +11,7 @@ with :func:`load_config`. Relative paths resolve against the file's directory.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -75,6 +76,23 @@ METRIC_IDS: Final = DEFAULT_METRICS + OPTIONAL_METRICS
 INTERVAL_METHODS: Final = ("percentile", "basic")
 #: Season-year boundaries that close a resampling segment.
 SEGMENT_BOUNDARIES: Final = ("none", "year", "water_year")
+
+#: The one declaration of which metrics may be ranked and in which direction (guide
+#: step 11; ``etcompare.ranking``). Only metrics with role ``score`` appear here:
+#: diagnostic (bias-corrected RMSE, MAPE), descriptive (OLS coefficients) and component
+#: (KGE parts) metrics are never a ranking basis. ``closest_to_zero`` metrics are ranked
+#: by their absolute value.
+RANKING_DIRECTIONS: Final[Mapping[str, str]] = MappingProxyType({
+    "mae": "lower", "rmse": "lower", "nrmse_mean": "lower", "nrmse_mean_percent": "lower",
+    "pearson_r": "higher", "pearson_r_squared": "higher", "nse": "higher", "kge_2009": "higher",
+    "mbe": "closest_to_zero", "percent_bias": "closest_to_zero",
+})
+DIRECTIONS: Final = ("lower", "higher", "closest_to_zero")
+#: Network summaries of station metrics; ``equal_site_mean`` is the primary one.
+NETWORK_SUMMARY_TYPES: Final = ("equal_site_mean", "observation_weighted_mean",
+                                "sqrt_observation_weighted_mean", "pooled_rmse")
+#: Multiplicity adjustments for formal contrast tests.
+MULTIPLICITY_POLICIES: Final = ("holm", "bonferroni")
 
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
@@ -1163,6 +1181,130 @@ class BootstrapSpec:
         return self.acf_max_lag or max(self.block_lengths)
 
 
+def _margins(value: object, metrics: Mapping[str, str], *, key: str,
+             field: str) -> Mapping[str, float]:
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        raise ContractError(f"{key}: {field} must be a mapping metric -> margin",
+                            config_key=f"{key}.{field}")
+    out = {}
+    for m, v in value.items():
+        if m not in metrics:
+            raise ContractError(f"{key}: {field} names {m!r}, which this ranking does not rank",
+                                config_key=f"{key}.{field}.{m}")
+        if (isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v)
+                or not v > 0):
+            raise ContractError(f"{key}: {field}.{m} must be a positive finite number, got "
+                                f"{v!r}", config_key=f"{key}.{field}.{m}")
+        out[str(m)] = float(v)
+    return MappingProxyType(out)
+
+
+@dataclass(frozen=True)
+class RankingSpec:
+    """Station-level model rankings, paired model contrasts and network summaries (step 11).
+
+    ``etcompare.ranking`` ranks the models of one ranking cohort (``ranking_scope``
+    ``all_models`` or ``pairwise``) inside each frozen context (site, temporal
+    scale and period product, reference variant, extraction side), using the
+    point estimates of ``metric_set`` and the shared-index replicates of
+    ``bootstrap``. Nothing is redrawn and no metric is re-implemented.
+
+    - ``metrics``: mapping metric -> direction. Every entry must be a score
+      metric of the metric set and match :data:`RANKING_DIRECTIONS`.
+    - ``equivalence_margins`` (daily pairs, in the metric's units) and
+      ``period_equivalence_margins`` (period products): predeclared practical
+      equivalence margins. A metric without a margin gets ``not_assessed``.
+    - ``network_summaries``: :data:`NETWORK_SUMMARY_TYPES`; must include the
+      primary ``equal_site_mean``.
+    - ``formal_tests`` requires an explicit ``multiplicity`` policy; without
+      formal tests every contrast is exploratory.
+    - ``year_subsets``: runners also rank each calendar year of a listed cohort
+      that spans several years, as separately built frozen cohorts.
+    """
+
+    ranking_id: str
+    metric_set: str
+    bootstrap: str
+    metrics: Mapping[str, str]
+    equivalence_margins: Mapping[str, float] = field(default_factory=dict)
+    period_equivalence_margins: Mapping[str, float] = field(default_factory=dict)
+    network_summaries: tuple[str, ...] = ("equal_site_mean",)
+    formal_tests: bool = False
+    multiplicity: str | None = None
+    year_subsets: bool = False
+    comparisons: tuple[str, ...] | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        rid = self.ranking_id
+        _require(rid, input="ranking", field="ranking_id", config_key="rankings[].ranking_id")
+        key = f"rankings.{rid}"
+        if not _METHOD_ID.match(str(rid)):
+            raise ContractError(f"{key}: ranking_id must be snake_case", config_key=key)
+        for f in ("metric_set", "bootstrap"):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        if not isinstance(self.metrics, Mapping) or not self.metrics:
+            raise ContractError(f"{key}: metrics must map each ranked metric to its direction "
+                                f"({list(DIRECTIONS)})", config_key=f"{key}.metrics")
+        for m, d in self.metrics.items():
+            if m not in RANKING_DIRECTIONS:
+                raise ContractError(
+                    f"{key}: metric {m!r} cannot be ranked; only score metrics with a declared "
+                    f"direction are rankable ({sorted(RANKING_DIRECTIONS)}). Diagnostic, "
+                    "descriptive and component metrics (bias_corrected_rmse, mape, ols_*, "
+                    "kge_2009_r/_alpha/_beta) are never a ranking basis",
+                    config_key=f"{key}.metrics.{m}")
+            _choice(d, DIRECTIONS, input=key, field=f"metrics.{m}",
+                    config_key=f"{key}.metrics.{m}")
+            if d != RANKING_DIRECTIONS[m]:
+                raise ContractError(f"{key}: metric {m} is ranked {RANKING_DIRECTIONS[m]!r}, "
+                                    f"not {d!r} (RANKING_DIRECTIONS)",
+                                    config_key=f"{key}.metrics.{m}")
+        object.__setattr__(self, "metrics", MappingProxyType(dict(self.metrics)))
+        for f in ("equivalence_margins", "period_equivalence_margins"):
+            object.__setattr__(self, f, _margins(getattr(self, f), self.metrics, key=key,
+                                                 field=f))
+        object.__setattr__(self, "network_summaries", tuple(self.network_summaries or ()))
+        if self.comparisons is not None:
+            object.__setattr__(self, "comparisons", tuple(self.comparisons))
+        ns = self.network_summaries
+        if len(set(ns)) != len(ns):
+            raise ContractError(f"{key}: duplicate network_summaries",
+                                config_key=f"{key}.network_summaries")
+        for s in ns:
+            _choice(s, NETWORK_SUMMARY_TYPES, input=key, field="network_summaries",
+                    config_key=f"{key}.network_summaries")
+        if "equal_site_mean" not in ns:
+            raise ContractError(f"{key}: network_summaries must include equal_site_mean, the "
+                                "primary network result", config_key=f"{key}.network_summaries")
+        if "pooled_rmse" in ns and "rmse" not in self.metrics:
+            raise ContractError(f"{key}: pooled_rmse needs rmse among the ranked metrics",
+                                config_key=f"{key}.network_summaries")
+        for f in ("formal_tests", "year_subsets"):
+            if not isinstance(getattr(self, f), bool):
+                raise ContractError(f"{key}: {f} must be true or false",
+                                    config_key=f"{key}.{f}")
+        if self.formal_tests:
+            if self.multiplicity is None:
+                raise ContractError(f"{key}: formal_tests needs an explicit multiplicity policy "
+                                    f"({list(MULTIPLICITY_POLICIES)})",
+                                    config_key=f"{key}.multiplicity")
+            _choice(self.multiplicity, MULTIPLICITY_POLICIES, input=key, field="multiplicity",
+                    config_key=f"{key}.multiplicity")
+        elif self.multiplicity is not None:
+            raise ContractError(f"{key}: multiplicity applies only with formal_tests: true; "
+                                "without formal tests every contrast is exploratory",
+                                config_key=f"{key}.multiplicity")
+
+    def margin(self, metric: str, temporal_scale: str) -> float | None:
+        """Declared equivalence margin of ``metric`` at ``temporal_scale`` (None: not declared)."""
+        if temporal_scale == "daily":
+            return self.equivalence_margins.get(metric)
+        return self.period_equivalence_margins.get(metric)
+
+
 @dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
@@ -1182,6 +1324,7 @@ class Config:
     crop_height_tables: tuple[CropHeightTableSpec, ...] = ()
     metric_sets: tuple[MetricSpec, ...] = ()
     bootstrap: tuple[BootstrapSpec, ...] = ()
+    rankings: tuple[RankingSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -1214,6 +1357,57 @@ class Config:
         self._check_period_aggregations()
         self._check_metric_sets()
         self._check_bootstrap()
+        self._check_rankings()
+
+    def _check_rankings(self) -> None:
+        rids = [r.ranking_id for r in self.rankings]
+        if len(set(rids)) != len(rids):
+            raise ContractError(f"duplicate ranking_id in {rids}", config_key="rankings")
+        sets = {m.metric_set_id: m for m in self.metric_sets}
+        boots = {b.bootstrap_id: b for b in self.bootstrap}
+        cmps = {c.comparison_id: c for c in self.comparisons}
+        for r in self.rankings:
+            key = f"rankings.{r.ranking_id}"
+            ms = sets.get(r.metric_set)
+            if ms is None:
+                raise ContractError(f"{key}: metric_set {r.metric_set!r} not declared in "
+                                    "metric_sets", config_key=f"{key}.metric_set")
+            b = boots.get(r.bootstrap)
+            if b is None:
+                raise ContractError(f"{key}: bootstrap {r.bootstrap!r} not declared",
+                                    config_key=f"{key}.bootstrap")
+            if b.metric_set != r.metric_set:
+                raise ContractError(f"{key}: bootstrap {b.bootstrap_id} resamples metric set "
+                                    f"{b.metric_set}, not {r.metric_set}",
+                                    config_key=f"{key}.bootstrap")
+            missing = set(r.metrics) - set(ms.metrics)
+            if missing:
+                raise ContractError(f"{key}: metrics {sorted(missing)} are not computed by "
+                                    f"metric set {ms.metric_set_id}", config_key=f"{key}.metrics")
+            if r.period_equivalence_margins and not ms.period_products:
+                raise ContractError(f"{key}: period_equivalence_margins given but metric set "
+                                    f"{ms.metric_set_id} scores no period products",
+                                    config_key=f"{key}.period_equivalence_margins")
+            for cid in r.comparisons or ():
+                c = cmps.get(cid)
+                if c is None:
+                    raise ContractError(f"{key}: comparison {cid!r} not declared",
+                                        config_key=f"{key}.comparisons")
+                if c.ranking_scope == "none":
+                    raise ContractError(
+                        f"{key}: comparison {cid} (kind {c.kind}) has ranking scope 'none'; "
+                        "only common_date and pairwise_model cohorts can be ranked",
+                        config_key=f"{key}.comparisons")
+                for what, ids in (("metric set", ms.comparisons), ("bootstrap", b.comparisons)):
+                    if ids is not None and cid not in ids:
+                        raise ContractError(f"{key}: comparison {cid} is not covered by the "
+                                            f"{what}", config_key=f"{key}.comparisons")
+
+    def ranking_spec(self, ranking_id: str) -> RankingSpec:
+        for r in self.rankings:
+            if r.ranking_id == ranking_id:
+                return r
+        raise KeyError(ranking_id)
 
     def _check_bootstrap(self) -> None:
         bids = [b.bootstrap_id for b in self.bootstrap]
@@ -1401,7 +1595,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
     top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
            "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
            "footprint_aggregations", "comparisons", "period_aggregations",
-           "crop_height_tables", "metric_sets", "bootstrap", "output_dir"}
+           "crop_height_tables", "metric_sets", "bootstrap", "rankings", "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -1545,6 +1739,14 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         kw.update({k: v for k, v in body.items() if k not in kw})
         bootstraps.append(BootstrapSpec(**kw))
 
+    rankings = []
+    rk_fields = set(RankingSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("rankings") or []):
+        _check_keys(body, rk_fields, f"rankings[{i}]")
+        kw = {f: body.get(f) for f in ("ranking_id", "metric_set", "bootstrap", "metrics")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        rankings.append(RankingSpec(**kw))
+
     return Config(
         stations=stations,
         products=products,
@@ -1561,6 +1763,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         crop_height_tables=tuple(crop_tables),
         metric_sets=tuple(metric_sets),
         bootstrap=tuple(bootstraps),
+        rankings=tuple(rankings),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 

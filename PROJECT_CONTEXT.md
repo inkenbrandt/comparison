@@ -260,13 +260,24 @@ Keep context stable. Update it when verified input semantics or scope changes, i
 
 Do not claim the source raster paths are accessible until checked in the user's runtime. Do not expose or package private station data publicly without permission. Use small synthetic fixtures for distributable tests and keep user-supplied examples as local integration inputs unless authorized otherwise.
 
-**Current handoff (updated 2026-10-16):** Guide steps 1–10 are implemented, and step 11 (rankings and paired contrasts) is next.
+**Current handoff (updated 2026-10-16, after step 11):** Guide steps 1–11 are implemented, and step 12 (closure, coverage and environmental diagnostics) is next.
+- **Rankings (step 11):** `etcompare.ranking.rank_comparison` (D-049) ranks models only inside frozen `all_models`/`pairwise` cohorts, per context, and only on score metrics. Directions are declared once, in `config.RANKING_DIRECTIONS`.
+  - Rank stability and model-contrast intervals come from the step-10 replicates, at every block length side by side.
+  - A unique leader is declared only when intervals separate the best model from all others.
+  - Equivalence is `not_assessed` without a declared margin, and every contrast is exploratory unless formal tests are requested.
+  - Settings come from the `rankings:` section (Provisional).
+  - **US-UTJ run (D-050):**
+    - No all-model cohort has a unique leader, and raw versus corrected reference moves the rankings most.
+    - Network summaries have `n_sites = 1` and are not network evidence.
+    - 28-day blocks lack support, and the 7- and 14-day intervals are probably too narrow (D-048).
+  - Rankings describe one station; they are not a verdict on which model is best.
+  - **Open:** equivalence margins, formal tests, the block-length/support decision, and whether to keep the two added sensitivity cohorts (`utj_rank_closure`, `utj_rank_methods`).
 - **Metrics (step 9):** `etcompare.metrics.score_comparison` (D-044) scores daily pairs and each period product separately. Growing-season products were scored on 2026-10-16 (D-046); only partial sums exist, because the record ends before the season ends.
 - **Intervals (step 10):** `etcompare.bootstrap.bootstrap_comparison` (D-047) gives station-level paired moving-block intervals.
   - Whole cohort days are resampled with shared indices. Blocks stay inside gap-free, water-year-bounded segments.
   - Metrics are recomputed with `compute_metrics` in every replicate. Period metrics resample whole periods.
   - Settings come from the `bootstrap:` section (7/14/28-day sensitivity lengths, `min_blocks` 10; all Provisional), and no block length is adopted.
   - The US-UTJ run (D-048) found strong, long residual autocorrelation (lag 14 up to 0.54). The 7- and 14-day intervals are probably too narrow, while 28-day blocks mostly lack support. How to handle this is an open user decision.
-  - Intervals are not rankings.
+  - Intervals are not rankings; step 11 builds rankings on them.
 
-Background from steps 1–8: Period totals (matched-day partial sums, complete-calendar totals, optional estimated totals) are built from cohorts by `etcompare.aggregation.aggregate_cohort` and declared in `period_aggregations:` (D-041). Estimated totals use paired `reference_et_fraction` imputation (gridMET ETr) kept in separate `*_estimated_mm` columns, and growing seasons come from the zone-E crop-height model `US-UTJ_20240101_20251230.csv` (D-042). Primary footprints are NLDAS-grass-ETo weighted (`US-UTJ_nldas_eto_20261014`), built by etcompare from a per-timestep fluxfootprints stack; a measured-LE-weighted set from the same stack is the sensitivity case. The existing set A/B `etw` files were shown to be NLDAS-ETo weighted (D-036). Comparison cohorts are declared in the config's `comparisons:` section and built by `etcompare.cohorts.build_cohort` (D-039, D-040). `IMPLEMENTATION_STATUS.md` holds the details. Station-level metrics and intervals exist for US-UTJ, but no ranking or network summary does.
+Background from steps 1–8: Period totals (matched-day partial sums, complete-calendar totals, optional estimated totals) are built from cohorts by `etcompare.aggregation.aggregate_cohort` and declared in `period_aggregations:` (D-041). Estimated totals use paired `reference_et_fraction` imputation (gridMET ETr) kept in separate `*_estimated_mm` columns, and growing seasons come from the zone-E crop-height model `US-UTJ_20240101_20251230.csv` (D-042). Primary footprints are NLDAS-grass-ETo weighted (`US-UTJ_nldas_eto_20261014`), built by etcompare from a per-timestep fluxfootprints stack; a measured-LE-weighted set from the same stack is the sensitivity case. The existing set A/B `etw` files were shown to be NLDAS-ETo weighted (D-036). Comparison cohorts are declared in the config's `comparisons:` section and built by `etcompare.cohorts.build_cohort` (D-039, D-040). `IMPLEMENTATION_STATUS.md` holds the details. Station-level metrics, intervals and rankings exist for US-UTJ. Its network summaries cover one site only.

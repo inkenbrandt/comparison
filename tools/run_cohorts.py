@@ -38,6 +38,25 @@ bootstrap whose metric set applies (step 10):
   <id>__<bootstrap>_autocorrelation.parquet / .csv
                                 residual (daily error) autocorrelation by calendar lag
 
+and, for every declared ranking that lists the comparison (step 11):
+
+  <id>__<ranking>_rankings.parquet / .csv
+                                station-level model ranks and rank stability per context,
+                                metric and block length (all subsets, e.g. year=2025)
+  <id>__<ranking>_rank_distribution.parquet / .csv
+  <id>__<ranking>_contrasts.parquet / .csv
+                                paired model contrasts with intervals and equivalence
+  <id>__<ranking>_network.parquet / .csv
+                                equal-site (primary) and weighted network summaries
+  <ranking>_sensitivity.parquet / .csv
+                                point-rank changes across station, year, temporal scale,
+                                reference variant and extraction side
+
+With year_subsets, each calendar year of a multi-year ranking cohort is rebuilt as its own
+frozen cohort (same rule, start/end restricted) and its daily pairs are scored,
+bootstrapped and ranked with subset year=<y>. Rankings need the bootstrap step, so
+--no-bootstrap also skips them.
+
 Growing seasons declared with ``growing_season_source`` are read from the named
 crop-height table; reference ET for ``reference_et_fraction`` comes from the
 station tables' ``reference_et_column``. A missing crop-height file stops the
@@ -50,6 +69,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections import defaultdict
 from dataclasses import replace
 
 import pandas as pd
@@ -63,7 +83,9 @@ from etcompare.cohorts import build_cohort
 from etcompare.config import load_config
 from etcompare.io.tables import read_table, write_table
 from etcompare.metrics import definitions_frame, score_comparison
+from etcompare.ranking import rank_comparison, ranking_sensitivity, year_subsets
 from etcompare.registry import SiteRegistry
+from etcompare.schemas import CanonicalTable
 
 
 def main() -> None:
@@ -118,6 +140,7 @@ def main() -> None:
         aggregations.append(agg)
     if cfg.metric_sets:
         definitions_frame().to_csv(out / "metric_definitions.csv", index=False)
+    ranked: dict[str, list] = defaultdict(list)
 
     for spec in specs:
         if not spec.sources:
@@ -189,8 +212,76 @@ def main() -> None:
                 text += (f"\n\nbootstrap {bsp.bootstrap_id} ({time.perf_counter() - t0:.0f} s; "
                          "station-level sampling intervals, not rankings):\n"
                          f"{boot.report.summary()}\n{_bootstrap_text(boot)}")
+                for rs in cfg.rankings:
+                    if rs.bootstrap != bsp.bootstrap_id or (
+                            rs.comparisons is not None and cid not in rs.comparisons) or (
+                            rs.comparisons is None and spec.ranking_scope == "none"):
+                        continue
+                    results = [rank_comparison(c, res, boot, rs)]
+                    if rs.year_subsets:
+                        day_ms = replace(ms, period_aggregations=(), period_products=(),
+                                         period_types=None)
+                        day_bs = replace(bsp, period_block_lengths=())
+                        for label, start, end in year_subsets(c):
+                            sub = build_cohort(obs, ext, replace(spec, start=start, end=end),
+                                               footprint_sets=cfg.footprint_sets)  # type: ignore[arg-type]
+                            sres = score_comparison(sub, day_ms, products=cfg.products)
+                            sboot = bootstrap_comparison(sub, day_ms, day_bs,
+                                                         products=cfg.products,
+                                                         metric_results=sres)
+                            results.append(rank_comparison(sub, sres, sboot, rs, subset=label))
+                    ranked[rs.ranking_id].extend(results)
+                    stem = f"{cid}__{rs.ranking_id}"
+                    for name in ("rankings", "rank_distribution", "contrasts", "network"):
+                        parts = [getattr(r, name) for r in results]
+                        t = CanonicalTable.build(
+                            pd.concat([x.frame for x in parts], ignore_index=True),
+                            parts[0].schema, {**parts[0].attributes,
+                                              "subsets": [r.subset for r in results]})
+                        write_table(t, out / f"{stem}_{name}.parquet")
+                        t.frame.to_csv(out / f"{stem}_{name}.csv", index=False)
+                    text += (f"\n\nranking {rs.ranking_id} (station-level description; "
+                             "not a verdict on which model is best):\n"
+                             + "\n".join(r.report.summary() for r in results)
+                             + f"\n{_ranking_text(results)}")
         (out / f"{cid}_report.txt").write_text(text + "\n", encoding="utf-8")
         print(text, "\n", "-" * 78)
+
+    for rid, results in ranked.items():
+        sens = ranking_sensitivity(results)
+        write_table(sens, out / f"{rid}_sensitivity.parquet")
+        sens.frame.to_csv(out / f"{rid}_sensitivity.csv", index=False)
+        print(f"ranking sensitivity {rid}: {len(sens)} rows; dimensions present "
+              f"{sens.attributes['dimensions_present']}, absent "
+              f"{sens.attributes['dimensions_absent']}")
+
+
+def _ranking_text(results) -> str:
+    """Daily ranks per block length: rank (top-rank frequency) [rank interval], leaders."""
+    f = pd.concat([r.rankings.frame for r in results], ignore_index=True)
+    d = f[(f["product"] == "daily_pairs") & f["metric"].isin(["mae", "rmse", "mbe", "kge_2009"])]
+    d = d.assign(cell=[
+        (f"{r:g}" if pd.notna(r) else "-")
+        + (f" ({t:.2f}) [{lo:g}-{hi:g}]" if s == "ok" else f" {s}")
+        for r, t, lo, hi, s in zip(d["rank"], d["top_rank_frequency"], d["rank_lower"],
+                                   d["rank_upper"], d["status"], strict=True)])
+    keys = ["subset", "reference_variant", "extraction_method", "metric", "model", "value"]
+    wide = d.pivot_table(index=keys, columns="block_length", values="cell",
+                         aggfunc="first").reset_index()
+    wide.columns = [f"b={c}" if isinstance(c, int | float) else c for c in wide.columns]
+    lead = (d.drop_duplicates(["subset", "reference_variant", "extraction_method", "metric",
+                               "block_length"])
+            .pivot_table(index=["subset", "reference_variant", "extraction_method", "metric"],
+                         columns="block_length", values="leader_status", aggfunc="first"))
+    n = pd.concat([r.network.frame for r in results], ignore_index=True)
+    with pd.option_context("display.width", 250, "display.max_columns", 30,
+                           "display.max_rows", 500):
+        return (f"daily ranks: rank (top-rank frequency, a bootstrap stability measure) "
+                f"[rank interval]:\n{wide.to_string(index=False)}\n\nleader status:\n"
+                f"{lead.to_string()}\n\nnetwork summaries: n_sites = "
+                f"{sorted(int(x) for x in set(n['n_sites']))}, statuses "
+                f"{sorted(set(n['status']))} "
+                "(one site: station results, not network evidence)")
 
 
 def _bootstrap_text(boot) -> str:
