@@ -92,6 +92,23 @@ TEST_DECISIONS: Final = ("reject_zero", "not_rejected")
 NETWORK_STATUSES: Final = ("ok", "single_site", "estimate_undefined")
 SENSITIVITY_DIMENSIONS: Final = ("station", "year", "temporal_scale", "reference_variant",
                                  "extraction_method", "cohort")
+#: Closure, coverage and environmental diagnostics (``etcompare.diagnostics``).
+CLOSURE_DAY_SETS: Final = ("station_record", "cohort")
+DIAGNOSTIC_PERIODS: Final = ("all", "month", "season")
+CLOSURE_STATUSES: Final = ("ok", "no_days")
+BIN_KINDS: Final = ("interval", "category", "sector", "outside_edges", "variable_missing",
+                    "excluded_provenance")
+BIN_SOURCES: Final = ("fixed_edges", "training_quantiles", "calendar", "sectors", "provenance")
+#: ok: a value; sparse_bin / empty_bin: fewer than min_bin_days / no days; outside_edges,
+#: variable_missing, excluded_provenance: days accounted for but not binned;
+#: estimate_undefined: the metric is undefined on the bin sample (reason in status_detail).
+BIN_STATUSES: Final = ("ok", "sparse_bin", "empty_bin", "outside_edges", "variable_missing",
+                       "excluded_provenance", "estimate_undefined")
+BIN_INTERVAL_STATUSES: Final = (*INTERVAL_STATUSES, "not_resampled", "no_estimate")
+AVAILABILITY_STATUSES: Final = ("available", "not_available")
+REGRESSION_STATUSES: Final = ("ok", "estimate_undefined")
+RANK_CHANGE_EFFECTS: Final = ("closure", "closure_and_cohort_days", "gap_filling_and_cohort_days",
+                              "closure_and_gap_filling", "other")
 
 
 @dataclass(frozen=True)
@@ -858,6 +875,238 @@ RANKING_SENSITIVITY = TableSchema(
     primary_key=("ranking_id", "dimension", "context_a", "context_b", "metric", "model"),
 )
 
+_SERIES_KEY = (
+    _key("model", "string", "Canonical model name"),
+    _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
+    _key("extraction_method", "string", "Extraction method"),
+    _key("footprint_set_id", "string", "Footprint set of the extraction (or 'none')"),
+)
+
+CLOSURE_MAGNITUDE = TableSchema(
+    "closure_magnitude", "1",
+    "Size of the existing energy-balance correction on corrected_from_raw days only (never "
+    "recomputed): ET_corr - ET, ET_corr / ET and the closure factor, plus declared closure "
+    "metadata, by period. Gap-filled days are excluded and counted. A correction magnitude is "
+    "reference sensitivity, not a calibrated uncertainty envelope containing the truth.",
+    (
+        _key("diagnostics_id", "string", "Declared diagnostics (diagnostics[] in the config)"),
+        _key("comparison_id", "string", "Comparison whose sites (and, for day_set cohort, "
+             "days) are summarised"),
+        _key("cohort_id", "string", "Cohort identifier; 'none' for the station record"),
+        _key("site_id", "string", "Station"),
+        _key("day_set", "string", "station_record: every corrected_from_raw station day of the "
+             "comparison's period; cohort: those that are cohort days", allowed=CLOSURE_DAY_SETS),
+        _key("period_type", "string", "all, month (YYYY-MM) or meteorological season "
+             "(YYYY-DJF, December counted with the following year)", allowed=DIAGNOSTIC_PERIODS),
+        _key("period_label", "string", "'all', 'YYYY-MM' or 'YYYY-SSS'"),
+        _key("quantity", "string", "correction_mm (ET_corr - ET), correction_ratio "
+             "(ET_corr / ET), closure_factor, or a declared closure-metadata variable"),
+        _c("quantity_units", "string", "Units of the statistics", nullable=False),
+        _c("quantity_definition", "string", "Definition or declared meaning", nullable=False),
+        _c("n_days", "int", "corrected_from_raw days with a value", nullable=False),
+        _c("n_days_filled_excluded", "int", "corrected_filled days in the period, excluded",
+           nullable=False),
+        _c("n_days_value_missing", "int", "corrected_from_raw days without a value (or with "
+           "ET = 0 for the ratio)", nullable=False),
+        _c("mean", "float", "Mean"),
+        _c("std", "float", "Population standard deviation"),
+        _c("min", "float", "Minimum"),
+        _c("q05", "float", "5th percentile (numpy linear)"),
+        _c("q25", "float", "25th percentile"),
+        _c("median", "float", "Median"),
+        _c("q75", "float", "75th percentile"),
+        _c("q95", "float", "95th percentile"),
+        _c("max", "float", "Maximum"),
+        _c("status", "string", "ok or no_days", nullable=False, allowed=CLOSURE_STATUSES),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("diagnostics_id", "comparison_id", "cohort_id", "site_id", "day_set",
+                 "period_type", "period_label", "quantity"),
+)
+
+REFERENCE_PROVENANCE_PERIODS = TableSchema(
+    "reference_provenance_periods", "1",
+    "Reference provenance of a cohort's days per period: observation-dominated "
+    "(corrected_from_raw) and gap-filled (corrected_filled) days and the gap-filled fraction, a "
+    "conditioning variable. Gap-filled reference ET shares gridMET drivers with the OpenET "
+    "interpolation (D-005).",
+    (
+        _key("diagnostics_id", "string", "Declared diagnostics"),
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("site_id", "string", "Station"),
+        _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
+        _key("period_type", "string", "all, month or season", allowed=DIAGNOSTIC_PERIODS),
+        _key("period_label", "string", "'all', 'YYYY-MM' or 'YYYY-SSS'"),
+        _c("n_days", "int", "Cohort days in the period", nullable=False),
+        _c("n_days_corrected_from_raw", "int", "Observation-dominated reference days",
+           nullable=False),
+        _c("n_days_corrected_filled", "int", "Gap-filled reference days", nullable=False),
+        _c("gap_filled_fraction", "float", "n_days_corrected_filled / n_days", unit=FRACTION),
+        _c("flags", "string", "';'-joined flags (shared_gridmet_drivers when any day is filled)"),
+    ),
+    primary_key=("diagnostics_id", "comparison_id", "cohort_id", "site_id", "reference_variant",
+                 "period_type", "period_label"),
+)
+
+CONDITIONAL_ERRORS = TableSchema(
+    "conditional_errors", "1",
+    "Metrics of paired errors e = P - O per model inside bins of a declared conditioning "
+    "variable, within one frozen cohort. Bins come from the configuration (fixed edges, training "
+    "quantiles of the variable, calendar, sectors or reference provenance), never from the "
+    "errors. Sparse bins carry a status, not a value. Conditional summaries describe "
+    "associations, not causes.",
+    (
+        _key("diagnostics_id", "string", "Declared diagnostics"),
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("site_id", "string", "Station"),
+        *_SERIES_KEY,
+        _key("variable", "string", "Conditioning variable (declared name, season, month, "
+             "gap_filled_fraction or reference_provenance)"),
+        _key("bin_index", "int", "Bin position; negative for days accounted for but not binned "
+             "(-1 outside edges, -2 variable missing, -3 excluded provenance)"),
+        _key("metric", "string", "Metric (etcompare.metrics)"),
+        _key("interval_method", "string", "percentile / basic, or 'none' without intervals"),
+        _key("block_length", "int", "Bootstrap block length in days; 0 = not resampled"),
+        _c("bin_label", "string", "e.g. '[0.5, 1)', 'JJA', 'corrected_filled'", nullable=False),
+        _c("bin_lower", "float", "Lower edge (intervals and sectors)"),
+        _c("bin_upper", "float", "Upper edge"),
+        _c("bin_closed", "string", "Which edges belong to the bin: left or both"),
+        _c("bin_kind", "string", "interval, category, sector, or a non-binned remainder",
+           nullable=False, allowed=BIN_KINDS),
+        _c("bin_source", "string", "Where the bins come from", nullable=False,
+           allowed=BIN_SOURCES),
+        _c("variable_column", "string", "Source column of the variable"),
+        _c("variable_units", "string", "Declared units of the variable"),
+        _c("variable_status", "string", "verified / provisional / derived"),
+        _c("value", "float", "Metric on the bin sample (compute_metrics); null unless status ok"),
+        _c("units", "string", "Units of value", nullable=False),
+        _c("status", "string", "ok, or why there is no value", nullable=False,
+           allowed=BIN_STATUSES),
+        _c("status_detail", "string", "Reason behind a non-ok status"),
+        _c("n_days", "int", "This model's days in the bin", nullable=False),
+        _c("n_days_bin_cohort", "int", "Cohort days in the bin for any model", nullable=False),
+        _c("n_days_reference_filled", "int", "This model's bin days with gap-filled reference",
+           nullable=False),
+        _c("n_days_series", "int", "This model's cohort days (all bins)", nullable=False),
+        _c("min_bin_days", "int", "Declared minimum bin size", nullable=False),
+        _c("bin_days_shared", "bool", "Every model of the cohort has the same days in this bin",
+           nullable=False),
+        _c("lower", "float", "Interval lower bound; null unless interval_status is ok"),
+        _c("upper", "float", "Interval upper bound"),
+        _c("confidence_level", "float", "Nominal two-sided level", unit=FRACTION),
+        _c("n_segments", "int", "Uninterrupted runs of bin days"),
+        _c("n_blocks", "int", "Disjoint full-length blocks of the bin's runs"),
+        _c("n_replicates_valid", "int", "Replicates with a defined metric"),
+        _c("interval_status", "string", "ok, or why no interval is given", nullable=False,
+           allowed=BIN_INTERVAL_STATUSES),
+        _c("interval_detail", "string", "Reason behind a non-ok interval status"),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("diagnostics_id", "comparison_id", "cohort_id", "site_id", "model",
+                 "reference_variant", "extraction_method", "footprint_set_id", "variable",
+                 "bin_index", "metric", "interval_method", "block_length"),
+)
+
+ERROR_REGRESSIONS = TableSchema(
+    "error_regressions", "1",
+    "Ordinary least squares of daily error e = P - O on a declared predictor (net radiation) "
+    "per model and reference variant. With an energy-balance-corrected reference the error "
+    "and the predictor are mathematically coupled through the correction; the uncorrected "
+    "reference version is reported alongside where the cohort has it. Descriptive only.",
+    (
+        _key("diagnostics_id", "string", "Declared diagnostics"),
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("site_id", "string", "Station"),
+        *_SERIES_KEY,
+        _key("predictor", "string", "Declared predictor variable"),
+        _c("predictor_column", "string", "Source column", nullable=False),
+        _c("predictor_units", "string", "Declared units", nullable=False),
+        _c("predictor_status", "string", "verified / provisional", nullable=False),
+        _c("slope", "float", "d e / d predictor; null when undefined"),
+        _c("slope_units", "string", "mm d-1 per predictor unit", nullable=False),
+        _c("intercept", "float", "e at predictor = 0", unit=ET_UNIT),
+        _c("pearson_r", "float", "Correlation of e and the predictor", unit=FRACTION),
+        _c("n_days", "int", "Days with a predictor value", nullable=False),
+        _c("n_days_predictor_missing", "int", "Cohort days without a predictor value",
+           nullable=False),
+        _c("n_days_reference_filled", "int", "Used days with gap-filled reference",
+           nullable=False),
+        _c("status", "string", "ok or estimate_undefined", nullable=False,
+           allowed=REGRESSION_STATUSES),
+        _c("status_detail", "string", "Reason behind a non-ok status"),
+        _c("coupling", "string", "energy_balance_corrected_reference (coupled), "
+           "uncorrected_reference, or includes_gap_filled_days", nullable=False),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("diagnostics_id", "comparison_id", "cohort_id", "site_id", "model",
+                 "reference_variant", "extraction_method", "footprint_set_id", "predictor"),
+)
+
+DIAGNOSTIC_AVAILABILITY = TableSchema(
+    "diagnostic_availability", "1",
+    "Which diagnostics ran and which were skipped, with reasons. An undeclared or unverified "
+    "variable, a missing column, an all-null column or absent metadata skips only the "
+    "diagnostic that needs it.",
+    (
+        _key("diagnostics_id", "string", "Declared diagnostics"),
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier, or 'all'"),
+        _key("analysis", "string", "Diagnostic (closure_magnitude, conditional_error, ...)"),
+        _key("variable", "string", "Variable it needs, or 'none'"),
+        _key("reference_variant", "string", "Reference variant, or 'all'"),
+        _key("extraction_method", "string", "Extraction method, or 'all'"),
+        _key("footprint_set_id", "string", "Footprint set, or 'all'"),
+        _c("status", "string", "available or not_available", nullable=False,
+           allowed=AVAILABILITY_STATUSES),
+        _c("reason_code", "string", "Stable reason when not_available"),
+        _c("reason", "string", "Explanation (also for labelled available diagnostics)"),
+        _c("variable_column", "string", "Declared source column"),
+        _c("variable_units", "string", "Declared units"),
+        _c("variable_status", "string", "Declared status"),
+        _c("n_days_cohort", "int", "Cohort days considered"),
+        _c("n_days_with_value", "int", "Of those, days with a variable value"),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("diagnostics_id", "comparison_id", "cohort_id", "analysis", "variable",
+                 "reference_variant", "extraction_method", "footprint_set_id"),
+)
+
+REFERENCE_RANK_CHANGES = TableSchema(
+    "reference_rank_changes", "1",
+    "Point-rank changes between reference variants, taken from ranking_sensitivity (never "
+    "re-ranked), with the effect each pair isolates. raw vs corrected-measured on one cohort "
+    "is closure sensitivity; corrected-measured vs corrected-inclusive mixes gap-filled days "
+    "and different cohort days (D-004). Reference sensitivity, not an uncertainty bound.",
+    (
+        _key("diagnostics_id", "string", "Declared diagnostics"),
+        _key("ranking_id", "string", "Declared ranking"),
+        _key("context_a", "string", "Context label of ranking_sensitivity"),
+        _key("context_b", "string", "Context label of ranking_sensitivity"),
+        _key("metric", "string", "Ranked metric"),
+        _key("model", "string", "Canonical model name"),
+        _c("variant_a", "string", "Reference variant of context_a", nullable=False,
+           allowed=REFERENCE_VARIANTS),
+        _c("variant_b", "string", "Reference variant of context_b", nullable=False,
+           allowed=REFERENCE_VARIANTS),
+        _c("effect", "string", "What the pair isolates", nullable=False,
+           allowed=RANK_CHANGE_EFFECTS),
+        _c("rank_a", "float", "Point mid-rank in context_a", nullable=False),
+        _c("rank_b", "float", "Point mid-rank in context_b", nullable=False),
+        _c("rank_change", "float", "rank_b - rank_a (positive: worse in context_b)",
+           nullable=False),
+        _c("n_models", "int", "Models ranked", nullable=False),
+        _c("same_cohort", "bool", "Both contexts use one cohort (same days)", nullable=False),
+        _c("comparison_a", "string", "Comparison of context_a", nullable=False),
+        _c("comparison_b", "string", "Comparison of context_b", nullable=False),
+        _c("n_days_a", "int", "Days scored in context_a", nullable=False),
+        _c("n_days_b", "int", "Days scored in context_b", nullable=False),
+    ),
+    primary_key=("diagnostics_id", "ranking_id", "context_a", "context_b", "metric", "model"),
+)
+
 EXCLUSIONS = TableSchema(
     "exclusions", "1", "Rows removed or flagged, with stage and reason.",
     (
@@ -876,7 +1125,9 @@ SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
                         PERIOD_TOTALS, DAILY_ESTIMATES, CROP_HEIGHT, METRICS,
                         CUMULATIVE_ERROR, INTERVALS, RESIDUAL_AUTOCORRELATION, MODEL_RANKINGS,
                         RANK_DISTRIBUTION, MODEL_CONTRASTS, NETWORK_SUMMARIES,
-                        RANKING_SENSITIVITY, EXCLUSIONS)
+                        RANKING_SENSITIVITY, CLOSURE_MAGNITUDE, REFERENCE_PROVENANCE_PERIODS,
+                        CONDITIONAL_ERRORS, ERROR_REGRESSIONS, DIAGNOSTIC_AVAILABILITY,
+                        REFERENCE_RANK_CHANGES, EXCLUSIONS)
 })
 
 

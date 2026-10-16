@@ -94,6 +94,22 @@ NETWORK_SUMMARY_TYPES: Final = ("equal_site_mean", "observation_weighted_mean",
 #: Multiplicity adjustments for formal contrast tests.
 MULTIPLICITY_POLICIES: Final = ("holm", "bonferroni")
 
+#: Where a diagnostic variable is read (guide step 12; ``etcompare.diagnostics``):
+#: a ``station_daily`` column (``src_*`` source columns, D-020, or canonical ones) or an
+#: ``extractions`` column of the cohort's side (e.g. ``fp_weight_retained_frac``).
+DIAGNOSTIC_SOURCES: Final = ("station", "extraction")
+#: How far a variable's meaning and units are established. ``unverified`` variables are
+#: declared only to record why their diagnostic is ``not_available``; they are never used.
+VARIABLE_STATUSES: Final = ("verified", "provisional", "unverified")
+#: ``continuous``: binned by declared edges or training quantiles; ``direction``: degrees
+#: clockwise from north, binned into sectors that wrap at 0/360.
+VARIABLE_KINDS: Final = ("continuous", "direction")
+#: Calendar conditions (meteorological seasons DJF/MAM/JJA/SON; month of year).
+CALENDAR_CONDITIONS: Final = ("season", "month")
+#: Metrics that may be summarised per bin (each bin needs only its own sample).
+DIAGNOSTIC_METRICS: Final = ("mbe", "mae", "rmse", "bias_corrected_rmse", "percent_bias",
+                             "pearson_r")
+
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
 #: Unit of a period total: depth summed over the period's station days.
@@ -1305,6 +1321,243 @@ class RankingSpec:
         return self.period_equivalence_margins.get(metric)
 
 
+def _edges(value: object, *, key: str, field: str, closed_range: tuple[float, float] | None = None
+           ) -> tuple[float, ...]:
+    """Strictly increasing bin edges (at least two); +-inf allowed at the ends only."""
+    if isinstance(value, str | bytes) or not isinstance(value, list | tuple):
+        raise ContractError(f"{key}: {field} must be a list of numbers",
+                            config_key=f"{key}.{field}")
+    out = []
+    for v in value:
+        if isinstance(v, bool) or not isinstance(v, int | float) or math.isnan(v):
+            raise ContractError(f"{key}: {field} holds {v!r}, not a number",
+                                config_key=f"{key}.{field}")
+        out.append(float(v))
+    if len(out) < 2:
+        raise ContractError(f"{key}: {field} needs at least two values",
+                            config_key=f"{key}.{field}")
+    if any(b <= a for a, b in zip(out, out[1:], strict=False)):  # so +-inf only at the ends
+        raise ContractError(f"{key}: {field} must be strictly increasing",
+                            config_key=f"{key}.{field}")
+    if closed_range is not None and (out[0] < closed_range[0] or out[-1] > closed_range[1]):
+        raise ContractError(f"{key}: {field} must lie in [{closed_range[0]}, {closed_range[1]}]",
+                            config_key=f"{key}.{field}")
+    return tuple(out)
+
+
+@dataclass(frozen=True)
+class DiagnosticVariableSpec:
+    """A conditioning variable of the step-12 diagnostics, declared before any error is seen.
+
+    - ``source``/``column``: a ``station_daily`` column (station meteorology passes
+      through as ``src_<name>``, D-020) or an ``extractions`` column of the
+      cohort's side (footprint support diagnostics).
+    - ``units`` and ``meaning`` are mandatory; nothing is inferred from magnitude.
+    - ``status``: ``verified``, ``provisional`` (used, rows flagged) or
+      ``unverified`` (declared only so its diagnostic reports ``not_available``
+      with ``note`` as the reason).
+    - Bins, optional (a variable without bins is only referenced, e.g. as closure
+      metadata or a regression predictor): fixed ``edges`` (the default), or
+      ``quantiles`` of the variable's own values on a declared training period
+      ``training_start``..``training_end`` (never of errors). ``direction``
+      variables use ``n_sectors`` equal sectors, the first centred on north.
+    - ``measured_days_only``: bin only ``corrected_from_raw`` days (e.g. a closure
+      ratio, which has no closure meaning on gap-filled days, D-004).
+    """
+
+    name: str
+    source: str
+    column: str
+    units: str
+    meaning: str
+    status: str
+    kind: str = "continuous"
+    edges: tuple[float, ...] | None = None
+    quantiles: tuple[float, ...] | None = None
+    training_start: str | None = None
+    training_end: str | None = None
+    n_sectors: int | None = None
+    measured_days_only: bool = False
+    note: str | None = None
+
+    @property
+    def binned(self) -> bool:
+        return self.edges is not None or self.quantiles is not None or self.n_sectors is not None
+
+    def __post_init__(self) -> None:
+        key = f"diagnostics.variables.{self.name}"
+        _require(self.name, input="diagnostic variable", field="name", config_key=key)
+        for f in ("source", "column", "units", "meaning", "status"):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        _choice(self.source, DIAGNOSTIC_SOURCES, input=key, field="source",
+                config_key=f"{key}.source")
+        _choice(self.status, VARIABLE_STATUSES, input=key, field="status",
+                config_key=f"{key}.status")
+        _choice(self.kind, VARIABLE_KINDS, input=key, field="kind", config_key=f"{key}.kind")
+        if self.status == "unverified" and not self.note:
+            raise ContractError(f"{key}: an unverified variable needs a note giving the reason "
+                                "its diagnostic is not available", config_key=f"{key}.note")
+        if not isinstance(self.measured_days_only, bool):
+            raise ContractError(f"{key}: measured_days_only must be true or false",
+                                config_key=f"{key}.measured_days_only")
+        if self.kind == "direction":
+            if self.edges is not None or self.quantiles is not None:
+                raise ContractError(f"{key}: a direction variable is binned by n_sectors, not by "
+                                    "edges or quantiles", config_key=f"{key}.n_sectors")
+            if self.n_sectors is not None:
+                _positive_int(self.n_sectors, key=key, field="n_sectors", minimum=2)
+                if 360 % self.n_sectors:
+                    raise ContractError(f"{key}: n_sectors must divide 360",
+                                        config_key=f"{key}.n_sectors")
+            if self.units != "degree":
+                raise ContractError(f"{key}: a direction variable must be in units 'degree' "
+                                    "(clockwise from north)", config_key=f"{key}.units")
+            return
+        if self.n_sectors is not None:
+            raise ContractError(f"{key}: n_sectors applies only to kind direction",
+                                config_key=f"{key}.n_sectors")
+        if self.edges is not None and self.quantiles is not None:
+            raise ContractError(f"{key}: declare either fixed edges or training quantiles, not "
+                                "both", config_key=f"{key}.edges")
+        if self.edges is not None:
+            object.__setattr__(self, "edges", _edges(self.edges, key=key, field="edges"))
+            if self.training_start or self.training_end:
+                raise ContractError(f"{key}: training_start/end apply only to quantiles",
+                                    config_key=f"{key}.training_start")
+        if self.quantiles is not None:
+            object.__setattr__(self, "quantiles", _edges(self.quantiles, key=key,
+                                                         field="quantiles",
+                                                         closed_range=(0.0, 1.0)))
+            for f in ("training_start", "training_end"):
+                if not getattr(self, f):
+                    raise ContractError(
+                        f"{key}: quantile bins need a declared training period ({f}); bins are "
+                        "never taken from the data being scored", config_key=f"{key}.{f}")
+                object.__setattr__(self, f, _iso_date(getattr(self, f), key=key, field=f))
+            if self.training_start > self.training_end:  # type: ignore[operator]
+                raise ContractError(f"{key}: training_start is after training_end",
+                                    config_key=f"{key}.training_start")
+
+
+@dataclass(frozen=True)
+class DiagnosticsSpec:
+    """Closure, coverage and environmental diagnostics of declared comparisons (guide step 12).
+
+    - ``metric_set``: tolerances and the metric list; ``metrics`` (a subset of it,
+      from :data:`DIAGNOSTIC_METRICS`) are summarised per bin with
+      ``etcompare.metrics.compute_metrics``.
+    - ``min_bin_days``: a bin with fewer days has status ``sparse_bin`` and no value.
+    - ``bootstrap``: optional; paired intervals per bin with the step-10 scheme
+      (every block length side by side).
+    - ``variables``: declared conditioning variables (:class:`DiagnosticVariableSpec`).
+    - ``calendar``: calendar conditions (``season``, ``month``).
+    - ``gap_filled_fraction_edges``: bins of the per-month gap-filled share of a
+      cohort's days (a conditioning variable; None: not analysed).
+    - ``provenance_subsets``: observation-dominated (``corrected_from_raw``) and
+      gap-filled days compared with all accepted days of the same cohort.
+    - ``closure`` / ``closure_metadata``: correction magnitude on
+      ``corrected_from_raw`` days, plus the named declared station variables.
+    - ``sensible_heat_variable``, ``net_radiation_variable``,
+      ``wind_direction_variable``: variables of the process diagnostics; when
+      None the diagnostic is reported ``not_available``.
+    """
+
+    diagnostics_id: str
+    metric_set: str
+    min_bin_days: int
+    variables: Mapping[str, DiagnosticVariableSpec] = field(default_factory=dict)
+    metrics: tuple[str, ...] = ("mbe", "mae", "rmse")
+    bootstrap: str | None = None
+    calendar: tuple[str, ...] = CALENDAR_CONDITIONS
+    gap_filled_fraction_edges: tuple[float, ...] | None = None
+    provenance_subsets: bool = True
+    closure: bool = True
+    closure_metadata: tuple[str, ...] = ()
+    sensible_heat_variable: str | None = None
+    net_radiation_variable: str | None = None
+    wind_direction_variable: str | None = None
+    comparisons: tuple[str, ...] | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        did = self.diagnostics_id
+        _require(did, input="diagnostics", field="diagnostics_id",
+                 config_key="diagnostics[].diagnostics_id")
+        key = f"diagnostics.{did}"
+        if not _METHOD_ID.match(str(did)):
+            raise ContractError(f"{key}: diagnostics_id must be snake_case", config_key=key)
+        _require(self.metric_set, input=key, field="metric_set", config_key=f"{key}.metric_set")
+        if self.min_bin_days is None:
+            raise ContractError(f"{key}: min_bin_days not declared (bins with fewer days get "
+                                "status sparse_bin, not a value)", config_key=f"{key}.min_bin_days")
+        _positive_int(self.min_bin_days, key=key, field="min_bin_days")
+        for f in ("metrics", "calendar", "closure_metadata"):
+            object.__setattr__(self, f, tuple(getattr(self, f) or ()))
+        if self.comparisons is not None:
+            object.__setattr__(self, "comparisons", tuple(self.comparisons))
+        if not self.metrics:
+            raise ContractError(f"{key}: no metrics", config_key=f"{key}.metrics")
+        for f, allowed in (("metrics", DIAGNOSTIC_METRICS), ("calendar", CALENDAR_CONDITIONS)):
+            values = getattr(self, f)
+            if len(set(values)) != len(values):
+                raise ContractError(f"{key}: duplicate {f}", config_key=f"{key}.{f}")
+            for v in values:
+                _choice(v, allowed, input=key, field=f, config_key=f"{key}.{f}")
+        variables = {}
+        for name, v in (self.variables or {}).items():
+            if not isinstance(v, DiagnosticVariableSpec):
+                _check_keys(v, set(DiagnosticVariableSpec.__dataclass_fields__) - {"name"},
+                            f"{key}.variables.{name}")
+                kw: dict[str, Any] = {f: v.get(f) for f in ("source", "column", "units",
+                                                            "meaning", "status")}
+                kw.update({k: x for k, x in v.items() if k not in kw})
+                v = DiagnosticVariableSpec(name=name, **kw)
+            elif v.name != name:
+                raise ContractError(f"{key}: variable {name!r} is declared as {v.name!r}",
+                                    config_key=f"{key}.variables.{name}")
+            if name in CALENDAR_CONDITIONS or name in ("reference_provenance",
+                                                       "gap_filled_fraction"):
+                raise ContractError(f"{key}: variable name {name!r} is reserved",
+                                    config_key=f"{key}.variables.{name}")
+            variables[name] = v
+        object.__setattr__(self, "variables", MappingProxyType(variables))
+        if self.gap_filled_fraction_edges is not None:
+            object.__setattr__(self, "gap_filled_fraction_edges", _edges(
+                self.gap_filled_fraction_edges, key=key, field="gap_filled_fraction_edges",
+                closed_range=(0.0, 1.0)))
+        for f in ("provenance_subsets", "closure"):
+            if not isinstance(getattr(self, f), bool):
+                raise ContractError(f"{key}: {f} must be true or false", config_key=f"{key}.{f}")
+        for name in self.closure_metadata:
+            v = variables.get(name)
+            if v is None or v.source != "station":
+                raise ContractError(f"{key}: closure_metadata {name!r} is not a declared station "
+                                    "variable", config_key=f"{key}.closure_metadata")
+        if self.closure_metadata and not self.closure:
+            raise ContractError(f"{key}: closure_metadata given with closure: false",
+                                config_key=f"{key}.closure_metadata")
+        for f, kind in (("sensible_heat_variable", "continuous"),
+                        ("net_radiation_variable", "continuous"),
+                        ("wind_direction_variable", "direction")):
+            name = getattr(self, f)
+            if name is None:
+                continue
+            v = variables.get(name)
+            if v is None:
+                raise ContractError(f"{key}: {f} {name!r} is not a declared variable",
+                                    config_key=f"{key}.{f}")
+            if v.kind != kind:
+                raise ContractError(f"{key}: {f} {name!r} must be of kind {kind}",
+                                    config_key=f"{key}.{f}")
+        sh = self.sensible_heat_variable
+        if sh is not None:
+            edges = variables[sh].edges
+            if variables[sh].quantiles is not None or (edges is not None and 0.0 not in edges):
+                raise ContractError(f"{key}: sensible_heat_variable {sh!r} needs fixed edges that "
+                                    "include 0, so the negative daily-mean bin is explicit",
+                                    config_key=f"{key}.variables.{sh}.edges")
+
+
 @dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
@@ -1325,6 +1578,7 @@ class Config:
     metric_sets: tuple[MetricSpec, ...] = ()
     bootstrap: tuple[BootstrapSpec, ...] = ()
     rankings: tuple[RankingSpec, ...] = ()
+    diagnostics: tuple[DiagnosticsSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -1358,6 +1612,44 @@ class Config:
         self._check_metric_sets()
         self._check_bootstrap()
         self._check_rankings()
+        self._check_diagnostics()
+
+    def _check_diagnostics(self) -> None:
+        dids = [d.diagnostics_id for d in self.diagnostics]
+        if len(set(dids)) != len(dids):
+            raise ContractError(f"duplicate diagnostics_id in {dids}", config_key="diagnostics")
+        sets = {m.metric_set_id: m for m in self.metric_sets}
+        boots = {b.bootstrap_id: b for b in self.bootstrap}
+        cids = {c.comparison_id for c in self.comparisons}
+        for d in self.diagnostics:
+            key = f"diagnostics.{d.diagnostics_id}"
+            ms = sets.get(d.metric_set)
+            if ms is None:
+                raise ContractError(f"{key}: metric_set {d.metric_set!r} not declared in "
+                                    "metric_sets", config_key=f"{key}.metric_set")
+            missing = set(d.metrics) - set(ms.metrics)
+            if missing:
+                raise ContractError(f"{key}: metrics {sorted(missing)} are not computed by metric "
+                                    f"set {ms.metric_set_id}", config_key=f"{key}.metrics")
+            if d.bootstrap is not None:
+                b = boots.get(d.bootstrap)
+                if b is None:
+                    raise ContractError(f"{key}: bootstrap {d.bootstrap!r} not declared",
+                                        config_key=f"{key}.bootstrap")
+                if b.metric_set != d.metric_set:
+                    raise ContractError(f"{key}: bootstrap {b.bootstrap_id} resamples metric set "
+                                        f"{b.metric_set}, not {d.metric_set}",
+                                        config_key=f"{key}.bootstrap")
+            unknown = set(d.comparisons or ()) - cids
+            if unknown:
+                raise ContractError(f"{key}: comparisons {sorted(unknown)} not declared",
+                                    config_key=f"{key}.comparisons")
+
+    def diagnostics_spec(self, diagnostics_id: str) -> DiagnosticsSpec:
+        for d in self.diagnostics:
+            if d.diagnostics_id == diagnostics_id:
+                return d
+        raise KeyError(diagnostics_id)
 
     def _check_rankings(self) -> None:
         rids = [r.ranking_id for r in self.rankings]
@@ -1595,7 +1887,8 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
     top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
            "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
            "footprint_aggregations", "comparisons", "period_aggregations",
-           "crop_height_tables", "metric_sets", "bootstrap", "rankings", "output_dir"}
+           "crop_height_tables", "metric_sets", "bootstrap", "rankings", "diagnostics",
+           "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -1747,6 +2040,14 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         kw.update({k: v for k, v in body.items() if k not in kw})
         rankings.append(RankingSpec(**kw))
 
+    diagnostics = []
+    dg_fields = set(DiagnosticsSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("diagnostics") or []):
+        _check_keys(body, dg_fields, f"diagnostics[{i}]")
+        kw = {f: body.get(f) for f in ("diagnostics_id", "metric_set", "min_bin_days")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        diagnostics.append(DiagnosticsSpec(**kw))
+
     return Config(
         stations=stations,
         products=products,
@@ -1764,6 +2065,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         metric_sets=tuple(metric_sets),
         bootstrap=tuple(bootstraps),
         rankings=tuple(rankings),
+        diagnostics=tuple(diagnostics),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 

@@ -260,7 +260,25 @@ Keep context stable. Update it when verified input semantics or scope changes, i
 
 Do not claim the source raster paths are accessible until checked in the user's runtime. Do not expose or package private station data publicly without permission. Use small synthetic fixtures for distributable tests and keep user-supplied examples as local integration inputs unless authorized otherwise.
 
-**Current handoff (updated 2026-10-16, after step 11):** Guide steps 1–11 are implemented, and step 12 (closure, coverage and environmental diagnostics) is next.
+**Current handoff (updated 2026-10-16, after step 12):** Guide steps 1–12 are implemented, and step 13 (landscape representativeness and satellite support) is next.
+- **Diagnostics (step 12):** `etcompare.diagnostics.diagnose_comparison` (D-051) describes one frozen cohort.
+  - **Closure:** correction magnitude from the existing columns (`ET_corr − ET`, the ratio, `ebc_cf`), on `corrected_from_raw` days only. It is labelled reference sensitivity, not uncertainty.
+  - **Provenance:** observation-dominated vs gap-filled subsets with identical days across models, and the gap-filled fraction per period.
+  - **Conditional errors** per model and declared bin, via `compute_metrics`. Bins are fixed before any error exists, and sparse bins carry a status instead of a value.
+  - **Process diagnostics:** a labelled negative daily-mean H bin; wind sectors wrapping at 0/360; net-radiation regressions, corrected (coupled) and raw.
+  - **`not_available` rows with reasons:** undeclared or unverified variables, satellite support (D-011), and wind direction for US-UTJ.
+  - **Rank changes between reference variants** are taken from `ranking_sensitivity`, never re-ranked. Settings are in the `diagnostics:` section (Provisional).
+  - **US-UTJ run (D-052):**
+    - Closure (raw vs corrected, same days) moves 6 of 7 models by up to 5 positions, more than adding gap-filled days does.
+    - Gap-filled days are concentrated in May–August 2025 and share gridMET drivers (D-005).
+    - 28-day blocks give no bin interval, and the 7- and 14-day intervals are probably too narrow (D-048).
+    - Station meteorology units were confirmed by the user, with `US-UTJ.ini` as support (D-053). The `.ini`'s hPa VPD is the half-hourly input; the daily export is kPa. The subdaily gap columns remain unverified.
+  - Conditional errors are associations, not causes.
+  - **Open:**
+    - the closure window behind `ebr` and `ebr_5day_clim`;
+    - a daily wind direction, which exists only half-hourly;
+    - the diagnostic defaults (`min_bin_days` 20, bin edges);
+    - the carried-over decisions below.
 - **Rankings (step 11):** `etcompare.ranking.rank_comparison` (D-049) ranks models only inside frozen `all_models`/`pairwise` cohorts, per context, and only on score metrics. Directions are declared once, in `config.RANKING_DIRECTIONS`.
   - Rank stability and model-contrast intervals come from the step-10 replicates, at every block length side by side.
   - A unique leader is declared only when intervals separate the best model from all others.
@@ -280,4 +298,4 @@ Do not claim the source raster paths are accessible until checked in the user's 
   - The US-UTJ run (D-048) found strong, long residual autocorrelation (lag 14 up to 0.54). The 7- and 14-day intervals are probably too narrow, while 28-day blocks mostly lack support. How to handle this is an open user decision.
   - Intervals are not rankings; step 11 builds rankings on them.
 
-Background from steps 1–8: Period totals (matched-day partial sums, complete-calendar totals, optional estimated totals) are built from cohorts by `etcompare.aggregation.aggregate_cohort` and declared in `period_aggregations:` (D-041). Estimated totals use paired `reference_et_fraction` imputation (gridMET ETr) kept in separate `*_estimated_mm` columns, and growing seasons come from the zone-E crop-height model `US-UTJ_20240101_20251230.csv` (D-042). Primary footprints are NLDAS-grass-ETo weighted (`US-UTJ_nldas_eto_20261014`), built by etcompare from a per-timestep fluxfootprints stack; a measured-LE-weighted set from the same stack is the sensitivity case. The existing set A/B `etw` files were shown to be NLDAS-ETo weighted (D-036). Comparison cohorts are declared in the config's `comparisons:` section and built by `etcompare.cohorts.build_cohort` (D-039, D-040). `IMPLEMENTATION_STATUS.md` holds the details. Station-level metrics, intervals and rankings exist for US-UTJ. Its network summaries cover one site only.
+Background from steps 1–8: Period totals (matched-day partial sums, complete-calendar totals, optional estimated totals) are built from cohorts by `etcompare.aggregation.aggregate_cohort` and declared in `period_aggregations:` (D-041). Estimated totals use paired `reference_et_fraction` imputation (gridMET ETr) kept in separate `*_estimated_mm` columns, and growing seasons come from the zone-E crop-height model `US-UTJ_20240101_20251230.csv` (D-042). Primary footprints are NLDAS-grass-ETo weighted (`US-UTJ_nldas_eto_20261014`), built by etcompare from a per-timestep fluxfootprints stack; a measured-LE-weighted set from the same stack is the sensitivity case. The existing set A/B `etw` files were shown to be NLDAS-ETo weighted (D-036). Comparison cohorts are declared in the config's `comparisons:` section and built by `etcompare.cohorts.build_cohort` (D-039, D-040). `IMPLEMENTATION_STATUS.md` holds the details. Station-level metrics, intervals, rankings and diagnostics exist for US-UTJ. Its network summaries cover one site only.

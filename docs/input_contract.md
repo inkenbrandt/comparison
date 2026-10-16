@@ -96,14 +96,22 @@ These columns are mapped by name only; their units are **unresolved** unless the
 | `flux`, `energy`, `flux_corr`, `ebr`, `ebr_corr`, `ebr_5day_clim` | Closure diagnostics |
 | `sw_in_1_1_1`, `sw_out_1_1_1`, `lw_in_1_1_1`, `lw_out_1_1_1`, `rso` | Radiation |
 | `ta_final`, `t_min`, `t_max`, `t_dew` | Temperatures (range consistent with °C) |
-| `rh` | 11.7–80.2 (consistent with %) |
-| `es`, `vp_final`, `vpd` | `vpd` 0.14–3.91 (consistent with kPa) |
+| `rh` | 11.7–80.2; % (user-confirmed 2026-10-16, D-053) |
+| `es`, `vp_final`, `vpd` | `vpd` 0.14–3.91; kPa (user-confirmed, D-053) |
 | `ws_1_1_1` | Wind speed |
 | `p_1_1_1` | Station precipitation (237 non-null) |
 | `gridMET_ETr`, `gridMET_ETo`, `gridMET_prcp` | gridMET reference ET and precipitation; complete |
 | `DOY` | Not used for joins |
 
 Wind direction is absent. The 67 negative daily `h_1_1_1` values cannot indicate daytime advection.
+
+**Step-12 declarations (2026-10-16, D-051, D-053).** The diagnostics read these columns through their `src_` names, with units declared in `diagnostics.variables`:
+- **Verified (user-confirmed 2026-10-16, supported by `US-UTJ.ini`):** `gridMET_ETo` (mm/day), `vpd` (kPa; the `.ini`'s hPa is the half-hourly input), `ws_1_1_1` (m s⁻¹; height unrecorded), `h_1_1_1` and `netrad_1_1_1_final` (W m⁻², daily means), `rh` (%), and `ebr_corr` (= 1/`ebc_cf`).
+- **Provisional:** `ebr` and `ebr_5day_clim` (dimensionless; closure method and window unresolved).
+- **Declared unverified, so not used:** `H_subday_gaps` and `LE_subday_gaps` (definitions unresolved, §10).
+- **Wind direction** (`WD`) exists only in the half-hourly input; the daily table has none.
+
+A confirmed unit or meaning changes a variable's `status`. A unit found to be wrong requires its bin edges to be redeclared.
 
 ## 5. Extracted OpenET table
 
@@ -237,6 +245,7 @@ Validation runs before any join or calculation. A missing mandatory item raises 
 | Metric near-zero tolerances (`metric_sets[].daily_tolerance`; `period_tolerance` when period totals are scored) | Mandatory when metrics are computed | `metric_sets.<id>: daily_tolerance (mean, std in mm d-1) not declared` (D-044) |
 | Bootstrap settings (`bootstrap[]`: block lengths, seed, replicate count, confidence level, `min_blocks`, `segment_boundary`) | Mandatory when intervals are computed | `bootstrap.<id>: seed not declared; intervals must be reproducible`; too few disjoint blocks give `status=insufficient_support`, not an interval (D-047) |
 | Ranking settings (`rankings[]`: metric set, bootstrap, ranked metrics with directions matching `RANKING_DIRECTIONS`; `multiplicity` when `formal_tests` is true) | Mandatory when rankings are computed | `rankings.<id>: metric 'bias_corrected_rmse' cannot be ranked`; `formal_tests needs an explicit multiplicity policy`; a coverage comparison gives `has ranking scope 'none'`. Equivalence margins are optional: without one, equivalence is `not_assessed` (D-049) |
+| Diagnostics settings (`diagnostics[]`: metric set, `min_bin_days`; for every conditioning variable its `source`, `column`, `units`, `meaning`, `status` and bins, i.e. fixed `edges`, training `quantiles` with `training_start`/`training_end`, or `n_sectors` for directions) | Mandatory when diagnostics are computed; each variable optional | `diagnostics.<id>: min_bin_days not declared`; `diagnostics.variables.vpd: units not declared`; `quantile bins need a declared training period`. An undeclared, `unverified`, missing, non-numeric or all-null variable gives `status=not_available` with a reason in `diagnostic_availability`, and only its diagnostic is skipped (D-051) |
 | Coordinates, land cover, product/model version, closure method, gap-fill method, original capture, acquisition flags | Optional | `unknown`; dependent analyses report `not_available` |
 
 A filename date gives a label, never temporal support. Pandas metadata in a Parquet file is serialisation metadata, not scientific provenance.
