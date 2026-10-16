@@ -259,4 +259,24 @@ metric_sets:
     period_products: [partial_sum, complete_total, estimated_total]
     cumulative_error: true
 
+# Paired moving-block bootstrap intervals (guide step 10; D-047, D-048). All values are
+# Provisional defaults fixed before any interval was computed; no block length is adopted.
+# Every declared length is reported side by side as a sensitivity comparison, and none is
+# to be chosen because its intervals are tighter. Station level only.
+bootstrap:
+  - bootstrap_id: utj_block_bootstrap
+    metric_set: utj_metrics
+    block_lengths: [7, 14, 28]        # daily samples; sensitivity candidates, not standards
+    period_block_lengths: [1]         # whole periods (months etc.) resampled as units
+    seed: 20261016
+    n_replicates: 2000
+    confidence_level: 0.95
+    interval_methods: [percentile]
+    min_blocks: 10                    # disjoint full-length blocks needed for an interval
+    min_valid_fraction: 0.9
+    segment_boundary: water_year      # blocks never span WY boundaries (as utj_periods)
+    water_year_start_month: 10
+    acf_max_lag: 28
+    contrasts: true
+
 output_dir: ../outputs

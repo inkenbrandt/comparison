@@ -30,6 +30,7 @@ from etcompare.config import ET_UNIT as ET_UNIT
 from etcompare.config import (
     FOOTPRINT_VALUE_SEMANTICS,
     INTERVAL_LABELS,
+    INTERVAL_METHODS,
     PERIOD_TYPES,
     PRODUCT_DAY_DEFINITIONS,
     STATION_DAY_DEFINITIONS,
@@ -70,6 +71,11 @@ METRIC_PRODUCTS: Final = ("daily_pairs", *TOTAL_PRODUCTS)
 #: MAPE); descriptive: regression coefficients; component: parts of a composite (KGE).
 METRIC_ROLES: Final = ("score", "diagnostic", "descriptive", "component")
 RANKING_SCOPES: Final = ("all_models", "pairwise", "none")
+#: Bootstrap intervals (``etcompare.bootstrap``).
+BLOCK_UNITS: Final = ("site_day", "period")
+CONTRAST_DIMENSIONS: Final = ("none", "extraction_side", "reference_variant", "model")
+INTERVAL_STATUSES: Final = ("ok", "insufficient_support", "estimate_undefined",
+                            "insufficient_valid_replicates")
 
 
 @dataclass(frozen=True)
@@ -500,24 +506,93 @@ CUMULATIVE_ERROR = TableSchema(
 )
 
 INTERVALS = TableSchema(
-    "intervals", "1", "Resampling intervals for metrics and contrasts.",
+    "intervals", "2",
+    "Paired block-bootstrap intervals of station-level metrics and paired contrasts of one "
+    "cohort. One row per target, metric, block length and interval method; null bounds carry "
+    "a status. Intervals are sampling intervals for one station, not rankings.",
     (
         _key("comparison_id", "string", "Comparison identifier"),
-        _key("metric", "string", "Metric identifier"),
-        _key("target", "string", "Model name or contrast label (e.g. 'eemetric-ssebop')"),
-        _c("estimate", "float", "Point estimate"),
-        _c("lower", "float", "Lower bound"),
-        _c("upper", "float", "Upper bound"),
-        _c("confidence_level", "float", "Nominal level", unit=FRACTION, nullable=False),
-        _c("method", "string", "Interval method", nullable=False),
-        _c("seed", "int", "Random seed"),
-        _c("block_length", "int", "Block length in daily samples"),
-        _c("n_replicates_requested", "int", "Requested replicates"),
-        _c("n_replicates_valid", "int", "Replicates with a defined statistic"),
-        _c("n_segments", "int", "Independent uninterrupted segments"),
-        _c("status", "string", "ok / insufficient_support / ...", nullable=False),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("bootstrap_id", "string", "Declared bootstrap settings"),
+        _key("metric_set_id", "string", "Metric set whose metrics are resampled"),
+        _key("scope", "string", "Site ID the interval refers to (station level only)"),
+        _c("scope_type", "string", "'site' (network summaries are step 11)", nullable=False,
+           allowed=("site",)),
+        _key("temporal_scale", "string", "daily pairs or period totals", allowed=TEMPORAL_SCALES),
+        _key("period_type", "string", "Period type of period totals; 'none' for daily",
+             allowed=("none", *PERIOD_TYPES)),
+        _key("aggregation_id", "string", "Period aggregation; 'none' for daily"),
+        _key("product", "string", "daily_pairs, or the period product", allowed=METRIC_PRODUCTS),
+        _key("model", "string", "Model (the minuend of a contrast)"),
+        _key("reference_variant", "string", "Reference variant (minuend of a contrast)",
+             allowed=REFERENCE_VARIANTS),
+        _key("extraction_method", "string", "Extraction method (minuend of a contrast)"),
+        _key("footprint_set_id", "string", "Footprint set (minuend of a contrast) or 'none'"),
+        _key("contrast_dimension", "string", "'none' for a metric; otherwise the dimension in "
+             "which the contrast's two sides differ", allowed=CONTRAST_DIMENSIONS),
+        _key("contrast_baseline", "string", "'none', or the subtrahend: a side label "
+             "(method@footprint_set), reference variant or model"),
+        _key("metric", "string", "Stable metric identifier (etcompare.metrics)"),
+        _key("interval_method", "string", "percentile or basic", allowed=INTERVAL_METHODS),
+        _key("block_unit", "string", "Resampling unit: site_day (daily pairs) or period",
+             allowed=BLOCK_UNITS),
+        _key("block_length", "int", "Nominal block length in block units (1 = iid units)"),
+        _c("estimate", "float", "Step-9 point estimate on the cohort (for a contrast: "
+           "metric(target) - metric(baseline)); null when undefined"),
+        _c("lower", "float", "Lower bound; null unless status is ok"),
+        _c("upper", "float", "Upper bound; null unless status is ok"),
+        _c("units", "string", "Units of estimate and bounds", nullable=False),
+        _c("confidence_level", "float", "Nominal two-sided level", unit=FRACTION,
+           nullable=False),
+        _c("seed", "int", "Declared random seed", nullable=False),
+        _c("n_replicates_requested", "int", "Requested replicates", nullable=False),
+        _c("n_replicates_valid", "int", "Replicates with a defined statistic", nullable=False),
+        _c("n_segments", "int", "Independent uninterrupted segments of the resampled sample",
+           nullable=False),
+        _c("n_blocks", "int", "Disjoint full-length blocks the segments hold (the support "
+           "compared with min_blocks)", nullable=False),
+        _c("n_days", "int", "Days in the scored sample (matched days for period totals)",
+           nullable=False),
+        _c("n_periods", "int", "Periods in the scored sample (period totals only)"),
+        _c("status", "string", "ok, or why no interval is given", nullable=False,
+           allowed=INTERVAL_STATUSES),
+        _c("status_detail", "string", "Reason behind a non-ok status"),
+        _c("metric_role", "string", "Role of the metric (etcompare.metrics)", nullable=False,
+           allowed=METRIC_ROLES),
+        _c("ranking_scope", "string", "Rankings the cohort supports", nullable=False,
+           allowed=RANKING_SCOPES),
+        _c("flags", "string", "';'-joined flags (metric flags plus resampling flags)"),
     ),
-    primary_key=("comparison_id", "metric", "target"),
+    primary_key=("comparison_id", "cohort_id", "bootstrap_id", "metric_set_id", "scope",
+                 "temporal_scale", "period_type", "aggregation_id", "product", "model",
+                 "reference_variant", "extraction_method", "footprint_set_id",
+                 "contrast_dimension", "contrast_baseline", "metric", "interval_method",
+                 "block_unit", "block_length"),
+)
+
+RESIDUAL_AUTOCORRELATION = TableSchema(
+    "residual_autocorrelation", "1",
+    "Autocorrelation of daily errors e = modeled - observed of one cohort, at exact calendar "
+    "lags (pairs of cohort days k days apart; missing days are never compressed). A "
+    "diagnostic for choosing bootstrap block lengths, not a selection rule.",
+    (
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("site_id", "string", "Station"),
+        _key("model", "string", "Canonical model name"),
+        _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
+        _key("extraction_method", "string", "Extraction method"),
+        _key("footprint_set_id", "string", "Footprint set of the extraction (or 'none')"),
+        _key("lag", "int", "Calendar lag in days"),
+        _c("n_days", "int", "Cohort days of the series", nullable=False),
+        _c("n_pairs", "int", "Pairs of cohort days exactly lag days apart", nullable=False),
+        _c("autocorrelation", "float", "mean over pairs of d_t*d_(t+lag) / mean(d**2), "
+           "d = e - mean(e); null without pairs or with constant errors", unit=FRACTION),
+        _c("white_noise_bound", "float", "1.96 / sqrt(n_pairs): approximate 95% bound for an "
+           "uncorrelated series", unit=FRACTION),
+    ),
+    primary_key=("comparison_id", "cohort_id", "site_id", "model", "reference_variant",
+                 "extraction_method", "footprint_set_id", "lag"),
 )
 
 EXCLUSIONS = TableSchema(
@@ -536,7 +611,7 @@ SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
     s.name: s for s in (STATIONS, STATION_DAILY, MODEL_MANIFEST, ASSET_SITES,
                         FOOTPRINT_MANIFEST, EXTRACTIONS, PAIRED, COHORT_MEMBERSHIP,
                         PERIOD_TOTALS, DAILY_ESTIMATES, CROP_HEIGHT, METRICS,
-                        CUMULATIVE_ERROR, INTERVALS, EXCLUSIONS)
+                        CUMULATIVE_ERROR, INTERVALS, RESIDUAL_AUTOCORRELATION, EXCLUSIONS)
 })
 
 

@@ -40,7 +40,8 @@ Interpretation
   the prediction of O, is ``nse``); a biased model can have
   ``pearson_r_squared = 1``.
 - ``ols_slope`` / ``ols_intercept`` describe the regression of P on O; they are
-  descriptive and carry no uncertainty (intervals are step 10).
+  descriptive and carry no uncertainty of their own (sampling intervals:
+  :mod:`etcompare.bootstrap`).
 - ``kge_2009`` is the original Kling-Gupta efficiency (Gupta et al. 2009,
   J. Hydrol. 377:80-91) with the standard-deviation ratio ``alpha``. The
   modified KGE (Kling et al. 2012, coefficient-of-variation ratio) and later

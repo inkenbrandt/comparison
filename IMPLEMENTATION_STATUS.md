@@ -12,9 +12,113 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 6 — Footprint aggregation sensitivity | **Done** 2026-10-14 (NLDAS-ETo primary and measured-LE sensitivity footprints built from one per-timestep stack) |
 | 7 — Comparison cohorts | **Done** 2026-10-14 |
 | 8 — Temporal aggregation and completeness | **Done** 2026-10-15; imputed estimated totals and crop-height growing season added the same day. The US-UTJ real-data run was completed on 2026-10-15 (see "Steps 5–6 outputs regenerated" below) |
-| 9 — Performance metrics | **Done** 2026-10-15 (US-UTJ growing-season metrics not run: crop-height file absent from this checkout) |
-| 10 — Paired block-bootstrap intervals | Not started (next) |
-| 11–18 | Not started |
+| 9 — Performance metrics | **Done** 2026-10-15; US-UTJ growing-season metrics run 2026-10-16 (D-046) |
+| 10 — Paired block-bootstrap intervals | **Done** 2026-10-16 (station level; defaults Provisional, no block length adopted) |
+| 11 — Ranking and paired contrasts | Not started (next) |
+| 12–18 | Not started |
+
+## Step 10 — Paired block-bootstrap intervals (2026-10-16)
+
+**Run it**
+```bash
+uv run python -m pytest                           # 308 passed, 3 skipped (opt-in Drive raster tests)
+uv run ruff check src tests tools/run_cohorts.py && uv run mypy   # clean
+uv run python tools/run_cohorts.py examples/us_utj.yaml           # cohorts, totals, metrics, intervals (~80 s)
+uv run --isolated --resolution lowest-direct --python 3.11 --with pytest \
+    python -W error::FutureWarning -m pytest tests/test_bootstrap.py tests/test_metrics.py \
+    tests/test_aggregation.py tests/test_cohorts.py tests/test_schemas.py tests/test_config.py \
+    tests/test_imputation.py                      # oldest stack: 201 passed
+```
+Use `python -m pytest` in this checkout: the `.venv/Scripts/pytest.exe` launcher has a baked-in path to the OneDrive clone's interpreter, so the plain `pytest` command runs the wrong code.
+
+### API
+- **`etcompare.bootstrap.bootstrap_comparison(cohort, metric_spec, bootstrap_spec, *, products, period_totals=(), metric_results=None)`** returns an immutable `BootstrapResult` with:
+  - `intervals` (the `intervals` schema, now v2);
+  - `autocorrelation` (new `residual_autocorrelation` v1);
+  - `replicates()`: an index frame plus a (series × replicate) array, drawn on shared indices, kept for step 11;
+  - `report` and `summary()`.
+- **Building blocks** (public, tested on their own):
+  - `segment_bounds` and `season_year`;
+  - `block_support` (disjoint full-length blocks);
+  - `draw_blocks` / `block_indices`;
+  - `daily_samples` / `period_samples` (paired samples with one common mask);
+  - `sample_rng` (per-sample streams from the declared seed);
+  - `residual_autocorrelation`.
+- **Config:**
+  - `BootstrapSpec` in a new `bootstrap:` YAML section.
+  - Mandatory fields: `block_lengths`, `seed`, `n_replicates`, `confidence_level`, `min_blocks` and `segment_boundary` (`none`, `year` or `water_year`).
+  - Optional fields: `interval_methods` (`percentile`, the default, or `basic`), `period_block_lengths`, `water_year_start_month`, `min_valid_fraction` (0.9), `acf_max_lag` (default: the longest block), `contrasts` and `comparisons`.
+  - The loader checks that the metric set and comparisons exist, and that period block lengths are given only when the metric set scores period products.
+  - New constants: `INTERVAL_METHODS` and `SEGMENT_BOUNDARIES`.
+
+### Delivered
+- **[src/etcompare/bootstrap.py](src/etcompare/bootstrap.py)** implements segment-truncated moving blocks. The estimand, edge handling and limitations are in the module docstring and D-047.
+  - **Resampling unit:** the cohort day. Whole paired rows are resampled, with identical indices for every model, side and variant of a cohort and site.
+  - **Blocks** stay inside segments: they split at missing days, at sites and at the season-year boundary, never span a gap and never wrap.
+  - **Metrics** are recomputed with `compute_metrics` in every replicate. Point estimates come from `score_comparison`.
+  - **Period metrics** resample whole periods. They are never rebuilt from daily blocks.
+  - **Contrasts** are `metric(target) − metric(baseline)` for paired sides, paired reference variants and pairwise models. Model contrasts of the all-model cohorts are left to step 11.
+  - **Statuses:** `ok`, `insufficient_support` (with counts in `status_detail`), `estimate_undefined` and `insufficient_valid_replicates`.
+  - **Flags:** `short_segments=<k>`, `undefined_replicates=<k>` and `estimate_outside_interval`, plus the metric flags.
+  - **Residual autocorrelation** at exact calendar lags, with a white-noise bound.
+- **Schemas:** `intervals` v1 → v2. It is keyed by cohort, bootstrap, metric set, scope, sample, series, contrast, metric, interval method, block unit and block length. Columns: estimate, bounds, units, level, seed, requested and valid replicates, `n_segments`, `n_blocks`, `n_days`, `n_periods`, status, status detail, role, ranking scope and flags. Nothing wrote v1. `residual_autocorrelation` v1 is new.
+- **Example config:** `utj_block_bootstrap` with block lengths 7/14/28, period block length 1, seed 20261016, 2,000 replicates, 95 % percentile intervals, `min_blocks` 10, `water_year` segments and lags to 28. All are **Provisional** (D-047).
+- **[tools/run_cohorts.py](tools/run_cohorts.py)** writes `<id>__utj_block_bootstrap_{intervals,autocorrelation}.{parquet,csv}` at every declared block length. The report shows statuses, MBE/RMSE intervals side by side per block length, and an autocorrelation summary. `--no-bootstrap` skips this step.
+- **Docs:** D-046 (step 9 growing-season run), D-047 (rules and defaults), D-048 (US-UTJ run); a new contract §9 row.
+
+### Gate checks, in [tests/test_bootstrap.py](tests/test_bootstrap.py) (46 tests)
+Expected values are independent: block geometry from the dates, Monte Carlo with `scipy.signal.lfilter`, explicit numpy loops, and `numpy.quantile` on the returned replicates.
+- **Identical predictions:** two models with identical predictions in a pairwise cohort give a contrast of exactly 0 in every replicate, with zero bounds for all metrics. Identical sides give a zero method contrast.
+- **Seed:** the same seed gives identical tables and replicates; another seed gives different bounds.
+- **AR(1) errors** (φ = 0.8, n = 1000):
+  - The Monte Carlo 95 % width of the mean error (4,000 series) matches the AR(1) theory to 10 %.
+  - iid-day resampling (b = 1) gives an MBE interval narrower than half that width (theory: one third).
+  - 28-day blocks give 0.7–1.3× the true width.
+  - The lag-1 autocorrelation diagnostic recovers φ (±0.06).
+- **Too few blocks:** 30 days at b = 7 with `min_blocks` 10 give `insufficient_support`, with null bounds, 0 valid replicates and the counts in `status_detail`; the estimate is still reported. Five 6-day segments give 0 blocks of 7 days.
+- **Gaps are never bridged:** for 200 draws at b = 1, 3, 7 and 28 over a gappy record, every block consists of consecutive calendar days in one water year, and the lengths sum to n. The documented `min(j + 1, b)` edge weighting is reproduced. b = 1 is iid.
+- **Paired removal:** a day missing from one side is absent from both sides' samples. A 500 mm outlier on the other side never enters a replicate, and the contrast is 0 in every replicate.
+- **Parquet:** intervals and autocorrelation tables round-trip identically, with their attributes.
+- **Also tested:**
+  - `compute_metrics` is called exactly replicates × series × block lengths times, and estimates equal `score_comparison`.
+  - Percentile and basic bounds match `numpy.quantile`.
+  - Undefined estimates and invalid replicates.
+  - An empty cohort.
+  - Contrast signs: window − footprint MAE > 0 when the footprint error is smaller; percentage-point units; corrected − raw.
+  - Period resampling: 13 complete months split by a missing month into 5 + 8, giving 6 blocks at b = 2.
+  - Exact-lag autocorrelation across gaps.
+- **Config:** 23 rejection cases, plus duplicate IDs and a metric-set mismatch.
+- **Segments** split at gaps and at year and water-year boundaries, and month periods continue across consecutive months.
+
+### US-UTJ run (D-048; local outputs)
+- **All 7 comparisons** produced intervals. Every estimate equals its step-9 metric, and only `ok` rows carry bounds.
+- **Independent check:** segment and block counts recomputed from the paired files with pandas match every daily row.
+- **Support at `min_blocks` = 10:**
+  - 7-day intervals exist for every cohort.
+  - 14-day intervals exist for every cohort except set A (9 blocks).
+  - 28-day intervals exist only for the three long-record models of the coverage cohort; elsewhere there are 2–9 blocks.
+  - Period intervals exist only for monthly products with at least 10 periods (mostly partial sums).
+- **Residual autocorrelation is strong and long:**
+  - lag 1: 0.43–0.93;
+  - lag 14: up to 0.54;
+  - 13 of 58 series never fall inside the white-noise bound by lag 28.
+- **Block-length sensitivity:** intervals widen by a median factor of 1.09–1.27 from 7- to 14-day blocks. The 7- and 14-day intervals are therefore probably too narrow for many series.
+- **No block length is chosen.**
+
+### Assumptions and limitations
+- **Station level only.** A fixed network differs from a site population, which would need hierarchical site × block resampling with common calendar blocks. Network summaries and rankings are step 11.
+- **Stationarity.** The moving-block bootstrap assumes stationary, short-memory dependence. US-UTJ errors vary by season (D-048), which violates this.
+- **Edge effect.** The first b − 1 days of each segment are under-sampled.
+- **Shared drivers.** Gap-filled and imputed days are resampled like measured days; their shared drivers are not modelled (D-005, D-042).
+- **Partial-sum period intervals** inherit the descriptive status of partial sums (months with unequal matched days).
+- **Inputs copied:** this checkout lacked the step 5–6 extraction outputs. They were copied byte-identically from the other local clone (`OneDrive/Documents/github/comparison`), which is one commit behind, and cohort sizes reproduce D-040.
+
+### Open (user decisions)
+- **Block length and support:** whether to accept that 28-day blocks are unsupported at `min_blocks` = 10, to lower `min_blocks`, or to address seasonal non-stationarity (for example seasonal strata, or a block length fixed from the autocorrelation diagnostic before scoring). Never by interval width.
+- **Period block length** (1, i.e. months treated as independent) and the other Provisional defaults (D-047).
+- Carried over: the quality threshold (D-008), the measured-LE coverage minimum (D-038), the metric tolerances (D-044) and the imputation driver (D-042).
+
+**Next:** step 11. Station-level rankings and paired model contrasts on the all-model cohorts, using the shared-index replicates (`BootstrapResult.replicates()`); equal-site network summaries; a declared practical-equivalence margin; and ranking-stability reporting. Intervals are not to be turned into a unique winner.
 
 ## Step 9 — Transparent performance metrics (2026-10-15)
 
@@ -89,12 +193,13 @@ uv run python tools/run_cohorts.py examples/us_utj.yaml --skip-missing-crop-heig
   - An independent numpy/scipy recomputation from the written paired and period-total files deviates at most 3.6e-15.
   - No metric is null because of a tolerance.
 
-### Not run here
-- **Crop-height file:** `US-UTJ_20240101_20251230.csv` is not in this checkout (it is git-ignored; a search of the user profile found no copy). As a result:
-  - `test_us_utj_crop_height.py` and the crop-height test in `test_us_utj.py` skip (2 of the 5 skips);
-  - the runner was run with `--skip-missing-crop-height`, so **no growing-season totals or metrics** were produced.
-  - Restore the file and rerun without the flag.
-- The other skips are the opt-in Drive raster tests.
+### Not run here (resolved 2026-10-16)
+- **Crop-height file:** it was absent on 2026-10-15, so the growing-season periods were skipped. The user restored `US-UTJ_20240101_20251230.csv` at the repository root (SHA-256 matches D-042).
+  - Both crop-height tests now run and pass: `test_us_utj_crop_height.py` and `test_us_utj.py::test_set_a_period_totals`. The suite gives 261 passed and 3 skipped before step 10; the remaining skips are the opt-in Drive raster tests.
+  - `tools/run_cohorts.py examples/us_utj.yaml` was rerun **without** `--skip-missing-crop-height`.
+  - **Growing-season period:** GS2024 = 2024-03-15..12-06 and GS2025 = 2025-03-15..12-06 (267 days each). Both extend past the record, so only matched-day partial sums exist. There is no complete or estimated season total in any cohort (D-046).
+  - **GS2025 partial sums, inclusive ranking** (208 of 267 days matched, 86 gap-filled): observed 805.9 mm; modeled 571.3 to 961.3 mm; percent bias −29.1 % to +19.3 %. One-period samples give `singleton_sample` for the spread-based metrics.
+  - **Independent checks:** sums and metrics recomputed with numpy from the paired files and the crop windows match exactly. The daily metrics reproduce D-045.
 
 ### Assumptions and limitations
 - **Tolerances are provisional.** They were set before scoring and decide only when a denominator counts as zero; the user should confirm or replace them.
@@ -105,7 +210,7 @@ uv run python tools/run_cohorts.py examples/us_utj.yaml --skip-missing-crop-heig
 - **Every US-UTJ row is flagged `day_alignment=unverified`** (OpenET day boundary undeclared).
 - **The 93 gap-filled reference days** of the inclusive cohort share gridMET drivers (D-005) and are counted in `n_days_reference_filled`.
 
-**Next:** step 10, paired block-bootstrap intervals that resample whole paired rows of a cohort and recompute these metrics in each replicate.
+**Next (at the time):** step 10. Superseded by the Step 10 entry above.
 
 ## Steps 5–6 outputs regenerated; all cohorts and period totals (2026-10-15)
 

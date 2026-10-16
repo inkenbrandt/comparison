@@ -71,6 +71,11 @@ DEFAULT_METRICS: Final = (
 OPTIONAL_METRICS: Final = ("nrmse_mean_percent", "nse", "kge_2009", "mape")
 METRIC_IDS: Final = DEFAULT_METRICS + OPTIONAL_METRICS
 
+#: Bootstrap interval methods (guide step 10; ``etcompare.bootstrap``).
+INTERVAL_METHODS: Final = ("percentile", "basic")
+#: Season-year boundaries that close a resampling segment.
+SEGMENT_BOUNDARIES: Final = ("none", "year", "water_year")
+
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
 #: Unit of a period total: depth summed over the period's station days.
@@ -1047,6 +1052,117 @@ class MetricSpec:
             raise ContractError(f"{key}: nothing to compute", config_key=key)
 
 
+def _positive_int(value: object, *, key: str, field: str, minimum: int = 1) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ContractError(f"{key}: {field} must be an integer >= {minimum}, got {value!r}",
+                            config_key=f"{key}.{field}")
+    return value
+
+
+@dataclass(frozen=True)
+class BootstrapSpec:
+    """Paired moving-block bootstrap intervals for one metric set (guide step 10).
+
+    ``etcompare.bootstrap`` resamples whole cohort days (every model, side and
+    reference variant with identical indices) in blocks of consecutive calendar
+    days that never cross a missing day, a site or a ``segment_boundary``, and
+    recomputes the metric set's metrics in every replicate.
+
+    - ``block_lengths`` (daily samples) are sensitivity candidates, never a
+      standard; 1 is the iid-day bootstrap. ``period_block_lengths`` (whole
+      periods) resample period-total metrics; when empty, period metrics get no
+      intervals.
+    - ``seed``, ``n_replicates``, ``confidence_level`` and ``min_blocks`` (the
+      minimum number of disjoint full-length blocks) are mandatory.
+    - ``segment_boundary``: ``none``, ``year`` or ``water_year``
+      (``water_year_start_month``) closes a segment at that boundary.
+    - ``min_valid_fraction``: the share of replicates whose metric is defined
+      below which no interval is given.
+    - ``acf_max_lag``: lags of the residual autocorrelation diagnostic
+      (default: the longest block length).
+    - ``contrasts``: paired side, reference-variant and pairwise-model contrasts.
+    """
+
+    bootstrap_id: str
+    metric_set: str
+    block_lengths: tuple[int, ...]
+    seed: int
+    n_replicates: int
+    confidence_level: float
+    min_blocks: int
+    segment_boundary: str
+    interval_methods: tuple[str, ...] = ("percentile",)
+    period_block_lengths: tuple[int, ...] = ()
+    water_year_start_month: int = 10
+    min_valid_fraction: float = 0.9
+    acf_max_lag: int | None = None
+    contrasts: bool = True
+    comparisons: tuple[str, ...] | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        bid = self.bootstrap_id
+        _require(bid, input="bootstrap", field="bootstrap_id",
+                 config_key="bootstrap[].bootstrap_id")
+        key = f"bootstrap.{bid}"
+        if not _METHOD_ID.match(str(bid)):
+            raise ContractError(f"{key}: bootstrap_id must be snake_case", config_key=key)
+        _require(self.metric_set, input=key, field="metric_set", config_key=f"{key}.metric_set")
+        for f in ("block_lengths", "period_block_lengths", "interval_methods"):
+            object.__setattr__(self, f, tuple(getattr(self, f) or ()))
+        if self.comparisons is not None:
+            object.__setattr__(self, "comparisons", tuple(self.comparisons))
+        if not self.block_lengths:
+            raise ContractError(f"{key}: no block_lengths declared (daily samples; candidates "
+                                "such as 7, 14, 28 are compared, not adopted as standards)",
+                                config_key=f"{key}.block_lengths")
+        for f in ("block_lengths", "period_block_lengths", "interval_methods"):
+            values = getattr(self, f)
+            if len(set(values)) != len(values):
+                raise ContractError(f"{key}: duplicate {f}", config_key=f"{key}.{f}")
+        for f in ("block_lengths", "period_block_lengths"):
+            for b in getattr(self, f):
+                _positive_int(b, key=key, field=f)
+        if not self.interval_methods:
+            raise ContractError(f"{key}: no interval_methods", config_key=f"{key}.interval_methods")
+        for m in self.interval_methods:
+            _choice(m, INTERVAL_METHODS, input=key, field="interval_methods",
+                    config_key=f"{key}.interval_methods")
+        if self.seed is None:
+            raise ContractError(f"{key}: seed not declared; intervals must be reproducible",
+                                config_key=f"{key}.seed")
+        _positive_int(self.seed, key=key, field="seed", minimum=0)
+        if self.n_replicates is None:
+            raise ContractError(f"{key}: n_replicates not declared",
+                                config_key=f"{key}.n_replicates")
+        _positive_int(self.n_replicates, key=key, field="n_replicates")
+        if self.min_blocks is None:
+            raise ContractError(f"{key}: min_blocks not declared (minimum disjoint full-length "
+                                "blocks for an interval)", config_key=f"{key}.min_blocks")
+        _positive_int(self.min_blocks, key=key, field="min_blocks")
+        lvl = self.confidence_level
+        if isinstance(lvl, bool) or not isinstance(lvl, int | float) or not 0 < lvl < 1:
+            raise ContractError(f"{key}: confidence_level must be in (0, 1), got {lvl!r}",
+                                config_key=f"{key}.confidence_level")
+        v = self.min_valid_fraction
+        if isinstance(v, bool) or not isinstance(v, int | float) or not 0 < v <= 1:
+            raise ContractError(f"{key}: min_valid_fraction must be in (0, 1], got {v!r}",
+                                config_key=f"{key}.min_valid_fraction")
+        _choice(self.segment_boundary, SEGMENT_BOUNDARIES, input=key, field="segment_boundary",
+                config_key=f"{key}.segment_boundary")
+        wy = self.water_year_start_month
+        if isinstance(wy, bool) or not isinstance(wy, int) or not 1 <= wy <= 12:
+            raise ContractError(f"{key}: water_year_start_month must be 1..12",
+                                config_key=f"{key}.water_year_start_month")
+        if self.acf_max_lag is not None:
+            _positive_int(self.acf_max_lag, key=key, field="acf_max_lag")
+
+    @property
+    def max_lag(self) -> int:
+        """Largest lag of the residual autocorrelation diagnostic."""
+        return self.acf_max_lag or max(self.block_lengths)
+
+
 @dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
@@ -1065,6 +1181,7 @@ class Config:
     period_aggregations: tuple[PeriodAggregationSpec, ...] = ()
     crop_height_tables: tuple[CropHeightTableSpec, ...] = ()
     metric_sets: tuple[MetricSpec, ...] = ()
+    bootstrap: tuple[BootstrapSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -1096,6 +1213,40 @@ class Config:
         self._check_comparisons(ids)
         self._check_period_aggregations()
         self._check_metric_sets()
+        self._check_bootstrap()
+
+    def _check_bootstrap(self) -> None:
+        bids = [b.bootstrap_id for b in self.bootstrap]
+        if len(set(bids)) != len(bids):
+            raise ContractError(f"duplicate bootstrap_id in {bids}", config_key="bootstrap")
+        sets = {m.metric_set_id: m for m in self.metric_sets}
+        cids = {c.comparison_id for c in self.comparisons}
+        for b in self.bootstrap:
+            key = f"bootstrap.{b.bootstrap_id}"
+            ms = sets.get(b.metric_set)
+            if ms is None:
+                raise ContractError(f"{key}: metric_set {b.metric_set!r} not declared in "
+                                    "metric_sets", config_key=f"{key}.metric_set")
+            unknown = set(b.comparisons or ()) - cids
+            if unknown:
+                raise ContractError(f"{key}: comparisons {sorted(unknown)} not declared",
+                                    config_key=f"{key}.comparisons")
+            if ms.comparisons is not None and b.comparisons is not None:
+                outside = set(b.comparisons) - set(ms.comparisons)
+                if outside:
+                    raise ContractError(f"{key}: comparisons {sorted(outside)} are not scored by "
+                                        f"metric set {ms.metric_set_id}",
+                                        config_key=f"{key}.comparisons")
+            if b.period_block_lengths and not ms.period_products:
+                raise ContractError(f"{key}: period_block_lengths given but metric set "
+                                    f"{ms.metric_set_id} scores no period products",
+                                    config_key=f"{key}.period_block_lengths")
+
+    def bootstrap_spec(self, bootstrap_id: str) -> BootstrapSpec:
+        for b in self.bootstrap:
+            if b.bootstrap_id == bootstrap_id:
+                return b
+        raise KeyError(bootstrap_id)
 
     def _check_metric_sets(self) -> None:
         mids = [m.metric_set_id for m in self.metric_sets]
@@ -1250,7 +1401,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
     top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
            "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
            "footprint_aggregations", "comparisons", "period_aggregations",
-           "crop_height_tables", "metric_sets", "output_dir"}
+           "crop_height_tables", "metric_sets", "bootstrap", "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -1384,6 +1535,16 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         kw.update({k: v for k, v in body.items() if k not in kw})
         metric_sets.append(MetricSpec(**kw))
 
+    bootstraps = []
+    bs_fields = set(BootstrapSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("bootstrap") or []):
+        _check_keys(body, bs_fields, f"bootstrap[{i}]")
+        kw = {f: body.get(f) for f in ("bootstrap_id", "metric_set", "block_lengths", "seed",
+                                       "n_replicates", "confidence_level", "min_blocks",
+                                       "segment_boundary")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        bootstraps.append(BootstrapSpec(**kw))
+
     return Config(
         stations=stations,
         products=products,
@@ -1399,6 +1560,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         period_aggregations=tuple(period_aggs),
         crop_height_tables=tuple(crop_tables),
         metric_sets=tuple(metric_sets),
+        bootstrap=tuple(bootstraps),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 
