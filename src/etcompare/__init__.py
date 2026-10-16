@@ -13,6 +13,7 @@ submodules:
 - :mod:`etcompare.adapters` -- upstream product mappings
 - :mod:`etcompare.cohorts` -- explicit comparison cohorts (paired rows plus membership)
 - :mod:`etcompare.aggregation` -- period totals and calendar completeness of a cohort
+- :mod:`etcompare.metrics` -- performance metrics on a cohort's common mask
 """
 
 from etcompare.errors import (

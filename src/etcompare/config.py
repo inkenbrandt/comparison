@@ -56,8 +56,20 @@ ESTIMATION_METHODS: Final = ("mean_daily_scaling", "linear_interpolation",
                               "reference_et_fraction")
 #: Estimators that impute daily values (and so need ``estimation_max_gap_days``).
 IMPUTATION_METHODS: Final = ("linear_interpolation", "reference_et_fraction")
+#: The three period products of guide step 8 (``etcompare.aggregation``).
+TOTAL_PRODUCTS: Final = ("partial_sum", "complete_total", "estimated_total")
 #: Supported crop-height units and their factor to centimetres.
 HEIGHT_UNITS: Final = {"cm": 1.0, "m": 100.0}
+
+#: Metrics computed when a metric set lists none (guide step 9; definitions in
+#: ``etcompare.metrics``). Daily MAPE is deliberately not a default.
+DEFAULT_METRICS: Final = (
+    "mbe", "mae", "rmse", "bias_corrected_rmse", "percent_bias", "nrmse_mean",
+    "pearson_r", "pearson_r_squared", "ols_slope", "ols_intercept",
+)
+#: Metrics computed only when listed. ``kge_2009`` also emits its three components.
+OPTIONAL_METRICS: Final = ("nrmse_mean_percent", "nse", "kge_2009", "mape")
+METRIC_IDS: Final = DEFAULT_METRICS + OPTIONAL_METRICS
 
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
@@ -932,6 +944,110 @@ class PeriodAggregationSpec:
 
 
 @dataclass(frozen=True)
+class NearZeroTolerance:
+    """Absolute near-zero tolerances for metric denominators, in the scored values' unit.
+
+    - ``mean``: a sample whose ``|mean(O)|`` is at most this has a near-zero
+      observed mean (equivalently a near-zero observed total ``sum(O)``);
+      percent bias, normalized RMSE and the KGE mean ratio are then undefined.
+    - ``std``: a series whose population standard deviation is at most this is
+      treated as constant; correlation, regression, NSE and the KGE
+      standard-deviation ratio are then undefined.
+
+    The unit is ``mm d-1`` for daily pairs and ``mm`` for period totals.
+    """
+
+    mean: float
+    std: float
+
+    def check(self, key: str) -> None:
+        for f in ("mean", "std"):
+            v = getattr(self, f)
+            if isinstance(v, bool) or not isinstance(v, int | float) or not v >= 0:
+                raise ContractError(f"{key}.{f} must be a non-negative number",
+                                    config_key=f"{key}.{f}")
+
+
+@dataclass(frozen=True)
+class MetricSpec:
+    """Which performance metrics are computed and how undefinedness is decided (guide step 9).
+
+    Metrics are computed by ``etcompare.metrics`` on a cohort's common mask only:
+    daily paired rows and, per declared ``period_aggregations``, each period
+    product (``partial_sum``, ``complete_total``, ``estimated_total``) separately.
+
+    - ``metrics``: stable IDs from :data:`METRIC_IDS`; :data:`DEFAULT_METRICS`
+      when omitted. Optional metrics (NSE, original KGE, MAPE, NRMSE x 100) are
+      computed only when listed.
+    - ``daily_tolerance`` (``mm d-1``) is mandatory; ``period_tolerance`` (``mm``)
+      is mandatory when period products are scored. Both are declared before
+      scoring; they decide only when a denominator is too close to zero.
+    - ``comparisons`` limits which comparisons runners score (all when omitted).
+    - ``cumulative_error`` writes the running sum of daily errors with gap flags.
+    """
+
+    metric_set_id: str
+    daily_tolerance: NearZeroTolerance
+    metrics: tuple[str, ...] = DEFAULT_METRICS
+    period_tolerance: NearZeroTolerance | None = None
+    daily: bool = True
+    period_aggregations: tuple[str, ...] = ()
+    period_products: tuple[str, ...] = ()
+    period_types: tuple[str, ...] | None = None
+    comparisons: tuple[str, ...] | None = None
+    cumulative_error: bool = True
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        mid = self.metric_set_id
+        _require(mid, input="metric set", field="metric_set_id",
+                 config_key="metric_sets[].metric_set_id")
+        key = f"metric_sets.{mid}"
+        if not _METHOD_ID.match(str(mid)):
+            raise ContractError(f"{key}: metric_set_id must be snake_case", config_key=key)
+        for f in ("metrics", "period_aggregations", "period_products"):
+            object.__setattr__(self, f, tuple(getattr(self, f) or ()))
+        for f in ("period_types", "comparisons"):
+            if getattr(self, f) is not None:
+                object.__setattr__(self, f, tuple(getattr(self, f)))
+        if not self.metrics:
+            object.__setattr__(self, "metrics", DEFAULT_METRICS)
+        for f, values, allowed in (("metrics", self.metrics, METRIC_IDS),
+                                   ("period_products", self.period_products, TOTAL_PRODUCTS),
+                                   ("period_types", self.period_types or (), PERIOD_TYPES)):
+            if len(set(values)) != len(values):
+                raise ContractError(f"{key}: duplicate {f}", config_key=f"{key}.{f}")
+            for v in values:
+                _choice(v, allowed, input=key, field=f, config_key=f"{key}.{f}")
+        for f in ("daily_tolerance", "period_tolerance"):
+            tol = getattr(self, f)
+            if isinstance(tol, Mapping):
+                _check_keys(tol, {"mean", "std"}, f"{key}.{f}")
+                given: dict[str, Any] = {k: tol.get(k) for k in ("mean", "std")}
+                tol = NearZeroTolerance(**given)
+                object.__setattr__(self, f, tol)
+            if tol is not None:
+                tol.check(f"{key}.{f}")
+        if self.daily_tolerance is None:
+            raise ContractError(f"{key}: daily_tolerance (mean, std in mm d-1) not declared; "
+                                "near-zero denominators need a tolerance declared before scoring",
+                                config_key=f"{key}.daily_tolerance")
+        periods = bool(self.period_aggregations)
+        if periods != bool(self.period_products):
+            raise ContractError(f"{key}: declare period_aggregations and period_products together",
+                                config_key=f"{key}.period_products")
+        if periods and self.period_tolerance is None:
+            raise ContractError(f"{key}: period_tolerance (mean, std in mm) not declared; "
+                                "period totals need their own near-zero tolerance",
+                                config_key=f"{key}.period_tolerance")
+        if not periods and self.period_types is not None:
+            raise ContractError(f"{key}: period_types without period_aggregations",
+                                config_key=f"{key}.period_types")
+        if not (self.daily or periods or self.cumulative_error):
+            raise ContractError(f"{key}: nothing to compute", config_key=key)
+
+
+@dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
 
@@ -948,6 +1064,7 @@ class Config:
     comparisons: tuple[ComparisonSpec, ...] = ()
     period_aggregations: tuple[PeriodAggregationSpec, ...] = ()
     crop_height_tables: tuple[CropHeightTableSpec, ...] = ()
+    metric_sets: tuple[MetricSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -978,6 +1095,35 @@ class Config:
                                     config_key="products")
         self._check_comparisons(ids)
         self._check_period_aggregations()
+        self._check_metric_sets()
+
+    def _check_metric_sets(self) -> None:
+        mids = [m.metric_set_id for m in self.metric_sets]
+        if len(set(mids)) != len(mids):
+            raise ContractError(f"duplicate metric_set_id in {mids}", config_key="metric_sets")
+        cids = {c.comparison_id for c in self.comparisons}
+        aggs = {a.aggregation_id: a for a in self.period_aggregations}
+        for m in self.metric_sets:
+            key = f"metric_sets.{m.metric_set_id}"
+            for f, unknown, where in (
+                    ("comparisons", set(m.comparisons or ()) - cids, "comparisons"),
+                    ("period_aggregations", set(m.period_aggregations) - set(aggs),
+                     "period_aggregations")):
+                if unknown:
+                    raise ContractError(f"{key}: {f} {sorted(unknown)} not declared in {where}",
+                                        config_key=f"{key}.{f}")
+            for p in m.period_products:
+                if p == "estimated_total" and not any(
+                        aggs[a].estimation_method for a in m.period_aggregations):
+                    raise ContractError(f"{key}: estimated_total requested but no listed "
+                                        "aggregation declares an estimation_method",
+                                        config_key=f"{key}.period_products")
+
+    def metric_set(self, metric_set_id: str) -> MetricSpec:
+        for m in self.metric_sets:
+            if m.metric_set_id == metric_set_id:
+                return m
+        raise KeyError(metric_set_id)
 
     def _check_period_aggregations(self) -> None:
         aids = [a.aggregation_id for a in self.period_aggregations]
@@ -1104,7 +1250,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
     top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
            "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
            "footprint_aggregations", "comparisons", "period_aggregations",
-           "crop_height_tables", "output_dir"}
+           "crop_height_tables", "metric_sets", "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -1230,6 +1376,14 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         kw["path"] = _path(kw.get("path"), base_dir)
         crop_tables.append(CropHeightTableSpec(**kw))
 
+    metric_sets = []
+    ms_fields = set(MetricSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("metric_sets") or []):
+        _check_keys(body, ms_fields, f"metric_sets[{i}]")
+        kw = {f: body.get(f) for f in ("metric_set_id", "daily_tolerance")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        metric_sets.append(MetricSpec(**kw))
+
     return Config(
         stations=stations,
         products=products,
@@ -1244,6 +1398,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         comparisons=tuple(comparisons),
         period_aggregations=tuple(period_aggs),
         crop_height_tables=tuple(crop_tables),
+        metric_sets=tuple(metric_sets),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 

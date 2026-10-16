@@ -407,3 +407,81 @@ The footprints environment was missing its declared `pyarrow` dependency. Versio
 
 Measured-reference cohorts have no estimates for 2025-04 to 08 because raw station ET is missing for long runs (all of May 2025), well beyond 14 days. GS2025 and calendar 2025 cannot be complete or estimated, because the record ends on 2025-10-09, before the season end (12-06). 2024 periods start mid-year, on 2024-06-05.
 
+---
+
+**Revision 2026-10-15 (k):** Step 9 implemented. D-044 and D-045 added.
+
+### D-044 — Performance metrics (Adopted; US-UTJ tolerances Provisional)
+`etcompare.metrics.score_comparison(cohort, metric_spec, products=, period_totals=)` scores a cohort under a `MetricSpec` (`metric_sets:` in the config). The output is a `metrics` table (schema v2). `compute_metrics(O, P, tolerance=, metrics=)` is the core for one sample.
+
+**Definitions.** `P` is modeled ET, `O` is station ET, `e = P − O`, `dX = X − mean(X)`, and `std` is the population standard deviation (`ddof=0`; it cancels in every ratio).
+
+| ID | Definition | Units | Role |
+|---|---|---|---|
+| `mbe` | `mean(e)` | value | score |
+| `mae` | `mean(abs(e))` | value | score |
+| `rmse` | `sqrt(mean(e²))` | value | score |
+| `bias_corrected_rmse` | `sqrt(mean((e − mean(e))²))` | value | diagnostic |
+| `percent_bias` | `100·Σe / ΣO` | % | score |
+| `nrmse_mean` | `RMSE / mean(O)` | 1 (fraction) | score |
+| `nrmse_mean_percent` (optional) | `100·RMSE / mean(O)` | % | score |
+| `pearson_r` | `ΣdO·dP / sqrt(ΣdO²·ΣdP²)` | 1 | score |
+| `pearson_r_squared` | `pearson_r²` | 1 | score |
+| `ols_slope`, `ols_intercept` | OLS of P on O: `ΣdO·dP / ΣdO²`; `mean(P) − slope·mean(O)` | 1; value | descriptive |
+| `nse` (optional) | `1 − Σe² / ΣdO²` | 1 | score |
+| `kge_2009` (optional) | `1 − sqrt((r−1)² + (α−1)² + (β−1)²)`, emitted with `kge_2009_r` (= `pearson_r`), `kge_2009_alpha` (= `std(P)/std(O)`), `kge_2009_beta` (= `mean(P)/mean(O)`) | 1 | score; the three are components |
+| `mape` (optional) | `100·mean(abs(e)/abs(O))` | % | diagnostic |
+
+"value" units are those of the sample: `mm d-1` for daily pairs, `mm` for period totals.
+- **KGE:** only the original Gupta et al. (2009) form with the standard-deviation ratio is implemented. The modified KGE (Kling et al. 2012, coefficient-of-variation ratio) and later variants are not, so they cannot be mixed. *The citation should be checked before formal method documentation (guide §Sources).*
+- **Labels that prevent misreading:**
+  - `pearson_r_squared` is not the predictive coefficient of determination `1 − SSE/SST`. With P predicting O that quantity is `nse`; a biased model can have `pearson_r_squared = 1` with negative NSE (tested). No metric is called `r2`.
+  - `bias_corrected_rmse` removes the in-sample mean error. It is a diagnostic (role `diagnostic`), not evidence that a bias-corrected product has been validated.
+  - OLS coefficients are descriptive and carry no uncertainty.
+- **Defaults:** `DEFAULT_METRICS` = MBE, MAE, RMSE, bias-corrected RMSE, percent bias, `nrmse_mean`, r, r², slope and intercept. NSE, KGE, `nrmse_mean_percent` and MAPE are computed only when listed. MAPE is never a default and never a ranking basis (role `diagnostic`).
+
+**Undefined values are null with a reason;** nothing is clipped or dropped to make a metric defined:
+
+| Reason | When | Affected |
+|---|---|---|
+| `empty_cohort` | no pairs | all |
+| `no_available_periods` | the period product is unavailable in every period | all |
+| `singleton_sample` | n = 1 | bias-corrected RMSE, r, r², slope, intercept, NSE, KGE |
+| `constant_observed` / `constant_modeled` | `std ≤ tolerance.std` | r, r², KGE; slope, intercept and NSE only for constant O (a constant P has slope 0) |
+| `near_zero_observed_mean` | `abs(mean(O)) ≤ tolerance.mean`, equivalently a near-zero observed total | percent bias, NRMSE, KGE β and KGE |
+| `near_zero_observation` | some `abs(O_i) ≤ tolerance.mean` | MAPE |
+
+`pearson_r` is clipped to [−1, 1] only to absorb floating-point round-off. Non-finite input raises an error instead of being dropped.
+
+**Tolerances are mandatory and declared before scoring:** `daily_tolerance` `{mean, std}` in `mm d-1`, plus `period_tolerance` in `mm` when period totals are scored. They decide only when a denominator counts as zero. US-UTJ uses `daily {mean: 0.01, std: 0.001}` and `period {mean: 0.1, std: 0.01}` (**Provisional**: chosen before scoring, not tuned on agreement). In the US-UTJ run neither binds: no metric is null for a tolerance reason (D-045).
+
+**Samples:**
+- **Daily pairs:** the cohort's paired rows, one sample per cohort × site × model × side (extraction method + footprint set) × reference variant. Before scoring, every model, side and variant inside a cohort and site must cover the same dates; if not, the call raises.
+- **Period totals:** each product (`partial_sum`, `complete_total`, `estimated_total`) is scored separately, never pooled. Its sample is the periods where that product is available, as decided by the step-8 aggregation rules (D-041, D-042). The same availability must hold across every model, side and variant of the cohort, or the call raises.
+  - The `PeriodTotals` must come from the same cohort (fingerprint check).
+  - Partial-sum metrics combine periods with different numbers of matched days. They are labelled with `n_periods` and `n_days` and are descriptive.
+- **Units and support:** daily values (`mm d-1`) and period totals (`mm`) are never pooled; the units come from each table's schema. Every model needs a declared temporal support. Models of a ranking cohort (`freeze_models`) must share one support, or `ContractError` is raised. Each row records its `temporal_support`.
+- **Counts per row:** `n_sites`, `n_days` (matched days for period totals), `n_days_reference_filled`, `n_days_imputed` (estimated totals only), `n_periods`, `period_completeness` (matched / expected days over the scored periods), `valid`, `validity_reason`, `metric_role`, `ranking_scope` (copied from the cohort) and the union of row `flags`.
+- **Scope:** station-level only (`scope_type=site`). Network summaries are step 11.
+
+**Cumulative error** (`cumulative_error` schema v1) holds running sums of O, P and e over cohort days only, per site, model, side and variant. Missing days are never filled. The first day after a gap has `missing_days_before > 0`, the flag `missing_period_before` and a new `segment` number, so plots can break the curve there.
+
+**Schema change:** `metrics` v1 → v2. New keys: `metric_set_id`, `period_type`, `aggregation_id`, `product` and `footprint_set_id`; without them, paired footprint sets or period products would collide. Nothing wrote v1.
+
+### D-045 — US-UTJ metrics run (Information)
+From `tools/run_cohorts.py examples/us_utj.yaml --skip-missing-crop-height` on 2026-10-15 (local outputs `outputs/cohorts/*__utj_metrics_*`).
+- **Growing-season periods were not scored.** The crop-height file `US-UTJ_20240101_20251230.csv` (D-042) is not in this checkout, so the runner was told to leave out `growing_season` periods, and every report says so. Month, year and water-year products were scored.
+- **Samples reproduce D-040 and D-043:**
+  - Daily: 281 days (`utj_rank_corrected_inclusive`), 188 (`_measured`, closure), 303 (pairwise; long-record models in footprint vs window), 260 (set A).
+  - Complete months: 8 for the inclusive ranking (2025-01 to 07, 09), 1 for the measured cohorts (2025-09), 0 for set A.
+  - Estimated months: 9 for the inclusive ranking (1 imputed day), 4 for measured (7 imputed), 8 for set A.
+- **Independent check:** recomputing MBE, MAE, RMSE, percent bias, r, OLS slope/intercept and NSE from the paired Parquet files with numpy/scipy, and RMSE/MBE for every period product from the `period_totals` files, gives a maximum deviation of 3.6e-15.
+- **Undefined metrics** are only `singleton_sample` (single-period products, e.g. the one complete month of the measured cohorts and every one-year partial sum) and `no_available_periods` (no complete or estimated year or water year, because the record ends on 2025-10-09). No tolerance-based null occurs.
+- **Daily, inclusive ranking cohort (281 days, 2025):**
+  - RMSE ranges from 1.04 (SIMS) to 1.63 (geeSEBAL) mm d⁻¹; ensemble 1.15.
+  - MBE ranges from −0.90 (SSEBop) to +0.63 (SIMS) mm d⁻¹; percent bias from −30.6 % to +21.6 %.
+  - Pearson r² ranges from 0.72 to 0.92.
+
+  These are point estimates without intervals, on gap-filled-inclusive reference days (93 of 281 gap-filled; D-005). They are not rankings (steps 10–11).
+- **Flags:** every row carries `day_alignment=unverified` (the OpenET day boundary is undeclared, D-002/D-023), and rows for periods that extend past the record also carry `period_outside_inputs`.
+

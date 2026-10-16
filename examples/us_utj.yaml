@@ -246,4 +246,17 @@ period_aggregations:
     estimation_max_gap_days: 14                # adopted default (user, 2026-10-15; D-042)
     estimation_min_completeness: 0.5           # adopted default (user, 2026-10-15; D-042)
 
+# Performance metrics (guide step 9; D-044) on each cohort's common mask: daily pairs and,
+# separately, every period product of utj_periods. Near-zero tolerances are Provisional
+# (D-044): they decide only when a denominator counts as zero, and were set before scoring.
+metric_sets:
+  - metric_set_id: utj_metrics
+    metrics: [mbe, mae, rmse, bias_corrected_rmse, percent_bias, nrmse_mean, nrmse_mean_percent,
+              pearson_r, pearson_r_squared, ols_slope, ols_intercept, nse, kge_2009]
+    daily_tolerance: {mean: 0.01, std: 0.001}    # mm d-1
+    period_tolerance: {mean: 0.1, std: 0.01}     # mm
+    period_aggregations: [utj_periods]
+    period_products: [partial_sum, complete_total, estimated_total]
+    cumulative_error: true
+
 output_dir: ../outputs

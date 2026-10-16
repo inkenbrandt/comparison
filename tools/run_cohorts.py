@@ -1,4 +1,4 @@
-"""Build the comparison cohorts declared in a config and their period totals (steps 7-8).
+"""Build the declared comparison cohorts, their period totals and metrics (steps 7-9).
 
 Stand-in until the step-17 CLI. For each comparison (all by default), loads its
 ``sources`` (raster extractions from <output_dir>/<name>_extractions.parquet,
@@ -20,15 +20,29 @@ and, for every declared period aggregation that applies to the comparison:
                                 daily values with imputations in separate columns
                                 (imputation methods only)
 
+and, for every declared metric set that applies to the comparison (step 9):
+
+  <id>__<set>_metrics.parquet / .csv
+                                metrics rows: daily pairs and each period product of
+                                the listed aggregations, kept apart (metrics schema)
+  <id>__<set>_metrics_wide.csv  one row per scored sample, one column per metric
+  <id>__<set>_cumulative_error.parquet / .csv
+                                running daily error sums with missing-period flags
+
+plus metric_definitions.csv (exact formulas, units and roles).
+
 Growing seasons declared with ``growing_season_source`` are read from the named
 crop-height table; reference ET for ``reference_et_fraction`` comes from the
-station tables' ``reference_et_column``.
+station tables' ``reference_et_column``. A missing crop-height file stops the
+run unless --skip-missing-crop-height is given; then only the growing-season
+periods are left out, and every report says so.
 
     uv run python tools/run_cohorts.py examples/us_utj.yaml [comparison_id ...]
 """
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 
 from etcompare.adapters.crop_height import adapt_crop_height, growing_season_windows
 from etcompare.adapters.extracted import adapt_extracted_table
@@ -37,6 +51,7 @@ from etcompare.aggregation import aggregate_cohort
 from etcompare.cohorts import build_cohort
 from etcompare.config import load_config
 from etcompare.io.tables import read_table, write_table
+from etcompare.metrics import definitions_frame, score_comparison
 from etcompare.registry import SiteRegistry
 
 
@@ -44,6 +59,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("config")
     ap.add_argument("comparisons", nargs="*", help="comparison ids (default: all declared)")
+    ap.add_argument("--skip-missing-crop-height", action="store_true",
+                    help="leave out growing-season periods whose crop-height file is absent")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -70,13 +87,24 @@ def main() -> None:
         stations[t.site_id] = adapt_station_daily(t.path, t, cfg.stations[t.site_id]).table  # type: ignore[arg-type]
 
     aggregations = []
+    skipped: list[str] = []
     for agg in cfg.period_aggregations:
         if agg.growing_season_source and "growing_season" in agg.periods:
             crop = cfg.crop_height_table(agg.growing_season_source)
-            r = adapt_crop_height(crop.path, crop)  # type: ignore[arg-type]
-            print(r.report.summary())
-            agg = agg.with_growing_seasons(growing_season_windows(r))
+            if args.skip_missing_crop_height and not crop.path.exists():  # type: ignore[union-attr]
+                note = (f"{agg.aggregation_id}: growing_season periods SKIPPED; crop-height file "
+                        f"{crop.path} not found (--skip-missing-crop-height)")
+                print("WARNING", note)
+                skipped.append(note)
+                agg = replace(agg, periods=tuple(p for p in agg.periods if p != "growing_season"),
+                              growing_season_source=None)
+            else:
+                r = adapt_crop_height(crop.path, crop)  # type: ignore[arg-type]
+                print(r.report.summary())
+                agg = agg.with_growing_seasons(growing_season_windows(r))
         aggregations.append(agg)
+    if cfg.metric_sets:
+        definitions_frame().to_csv(out / "metric_definitions.csv", index=False)
 
     for spec in specs:
         if not spec.sources:
@@ -97,10 +125,14 @@ def main() -> None:
                 f"status {c.status}; membership sha256 {c.fingerprint}\n\n"
                 f"{c.report.summary()}\n\n{summary.to_string(index=False)}\n\n"
                 f"exclusions by reason:\n{reasons.to_string()}")
+        for note in skipped:
+            text += f"\n\nWARNING {note}"
+        totals = []
         for agg in aggregations:
             if agg.comparisons is not None and cid not in agg.comparisons:
                 continue
             t = aggregate_cohort(c, agg, products=cfg.products, reference_et=obs)
+            totals.append(t)
             stem = f"{cid}__{agg.aggregation_id}"
             write_table(t.table, out / f"{stem}_periods.parquet")
             t.table.frame.to_csv(out / f"{stem}_periods.csv", index=False)
@@ -111,6 +143,23 @@ def main() -> None:
                 t.daily_estimates.frame.to_csv(out / f"{stem}_daily_estimates.csv", index=False)
             text += (f"\n\nperiod totals {agg.aggregation_id}:\n{t.report.summary()}\n"
                      f"{s.to_string(index=False)}")
+        for ms in cfg.metric_sets:
+            if ms.comparisons is not None and cid not in ms.comparisons:
+                continue
+            res = score_comparison(c, ms, products=cfg.products, period_totals=totals)
+            stem = f"{cid}__{ms.metric_set_id}"
+            write_table(res.table, out / f"{stem}_metrics.parquet")
+            res.table.frame.to_csv(out / f"{stem}_metrics.csv", index=False)
+            wide = res.wide()
+            wide.to_csv(out / f"{stem}_metrics_wide.csv", index=False)
+            if res.cumulative is not None:
+                write_table(res.cumulative, out / f"{stem}_cumulative_error.parquet")
+                res.cumulative.frame.to_csv(out / f"{stem}_cumulative_error.csv", index=False)
+            daily = wide[wide["product"] == "daily_pairs"].drop(
+                columns=["scope", "temporal_scale", "period_type", "aggregation_id", "product",
+                         "n_periods"])
+            text += (f"\n\nmetrics {ms.metric_set_id}:\n{res.report.summary()}\n"
+                     f"daily pairs:\n{daily.to_string(index=False)}")
         (out / f"{cid}_report.txt").write_text(text + "\n", encoding="utf-8")
         print(text, "\n", "-" * 78)
 

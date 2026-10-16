@@ -11,9 +11,101 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 5 — Spatial extraction | **Done** 2026-10-13 (footprint set B; polygon area-weighted mode not implemented: no field polygons) |
 | 6 — Footprint aggregation sensitivity | **Done** 2026-10-14 (NLDAS-ETo primary and measured-LE sensitivity footprints built from one per-timestep stack) |
 | 7 — Comparison cohorts | **Done** 2026-10-14 |
-| 8 — Temporal aggregation and completeness | **Done** 2026-10-15; imputed estimated totals and crop-height growing season added the same day (US-UTJ daily/Parquet run pending: inputs not in this checkout) |
-| 9 — Performance metrics | Not started (next) |
-| 10–18 | Not started |
+| 8 — Temporal aggregation and completeness | **Done** 2026-10-15; imputed estimated totals and crop-height growing season added the same day. The US-UTJ real-data run was completed on 2026-10-15 (see "Steps 5–6 outputs regenerated" below) |
+| 9 — Performance metrics | **Done** 2026-10-15 (US-UTJ growing-season metrics not run: crop-height file absent from this checkout) |
+| 10 — Paired block-bootstrap intervals | Not started (next) |
+| 11–18 | Not started |
+
+## Step 9 — Transparent performance metrics (2026-10-15)
+
+**Run it**
+```bash
+uv run pytest                                     # 259 passed, 5 skipped (see "Not run here")
+uv run ruff check src tests && uv run mypy        # clean
+uv run python tools/run_cohorts.py examples/us_utj.yaml --skip-missing-crop-height
+```
+
+### API
+- **`etcompare.metrics.compute_metrics(observed, modeled, *, tolerance, metrics=DEFAULT_METRICS)`** works on one already-masked sample.
+  - It returns `{metric_id: MetricResult(value, reason)}`.
+  - Non-finite values raise; they are never dropped.
+- **`score_comparison(cohort, metric_spec, *, products, period_totals=())`** returns an immutable `MetricResults`:
+  - `table` (`metrics` v2), `cumulative` (`cumulative_error` v1), `report`, and `wide()` (one column per metric, for reading).
+- **`cumulative_error(cohort)`** returns running sums over cohort days with missing-period flags.
+- **Supporting definitions:** `METRIC_DEFINITIONS`, `definitions_frame()` and `output_metrics()` (which expands `kge_2009` into its components).
+- **Config:**
+  - New `MetricSpec` and `NearZeroTolerance`, in a new `metric_sets:` YAML section.
+  - Fields: `metrics`, a mandatory `daily_tolerance`, `period_tolerance`, `period_aggregations`, `period_products`, `period_types`, `comparisons`, `daily` and `cumulative_error`.
+  - Constants `DEFAULT_METRICS`, `OPTIONAL_METRICS` and `METRIC_IDS`; `TOTAL_PRODUCTS` moved to `config` and is re-exported by `schemas`.
+  - The loader checks that referenced comparisons and aggregations exist, and that `estimated_total` is requested only where an estimator is declared.
+
+### Delivered
+- **[src/etcompare/metrics.py](src/etcompare/metrics.py)** computes:
+  - by default: MBE, MAE, RMSE, bias-corrected RMSE, percent bias, NRMSE (`nrmse_mean`, a fraction), Pearson r and `pearson_r_squared`, and the OLS slope and intercept of P on O;
+  - when listed: `nrmse_mean_percent`, NSE, the original KGE (`kge_2009` plus `_r`, `_alpha` and `_beta` components) and MAPE.
+  - Exact formulas, units and roles are in the module docstring, `metric_definitions.csv` and D-044.
+- **Roles** keep diagnostics out of rankings: bias-corrected RMSE and MAPE are `diagnostic`, OLS coefficients are `descriptive`, and KGE parts are `component`.
+- **Undefined metrics** are null with a reason: `empty_cohort`, `no_available_periods`, `singleton_sample`, `constant_observed`, `constant_modeled`, `near_zero_observed_mean` or `near_zero_observation`.
+- **Samples:**
+  - Daily pairs and each period product (`partial_sum`, `complete_total`, `estimated_total`) are separate rows, labelled by `temporal_scale`, `period_type`, `aggregation_id` and `product`.
+  - The common mask is verified across models, sides and variants.
+  - Period totals must carry the cohort's fingerprint.
+  - Mixed temporal support inside a ranking cohort raises an error.
+- **Schemas:** `metrics` v1 → v2 adds the keys `metric_set_id`, `period_type`, `aggregation_id`, `product` and `footprint_set_id`, plus `valid`, `metric_role`, `ranking_scope`, `n_days_reference_filled`, `n_days_imputed`, `temporal_support` and `flags`. A new `cumulative_error` v1 schema was added. Nothing had written v1.
+- **Example config:** the `utj_metrics` set uses the default metrics plus `nrmse_mean_percent`, NSE and KGE 2009. It scores daily pairs and all three products of `utj_periods`. Tolerances are daily `{mean 0.01, std 0.001}` mm d⁻¹ and period `{mean 0.1, std 0.01}` mm (Provisional, D-044).
+- **[tools/run_cohorts.py](tools/run_cohorts.py)** also writes:
+  - `<id>__utj_metrics_metrics.{parquet,csv}`, `_metrics_wide.csv` and `_cumulative_error.{parquet,csv}`;
+  - `metric_definitions.csv`.
+  - A new flag, `--skip-missing-crop-height`, leaves out only the growing-season periods when the crop file is absent, and the reports say so. Without the flag the run still stops, as before.
+- **Docs:** D-044 (rules) and D-045 (US-UTJ run); a contract §9 row for the mandatory tolerances.
+
+### Checks
+- **[tests/test_metrics.py](tests/test_metrics.py)**, 40 tests; expected values come from the guide and from numpy/scipy computed in the tests only:
+  - **Guide fixture:** O=[1,2,3], P=[2,3,4] gives MBE = MAE = RMSE = 1, bias-corrected RMSE = 0, slope = 1, intercept = 1, r² = 1 and percent bias = 50. It is also cross-checked with `scipy.stats.linregress`.
+  - **Random samples (3 seeds):** every metric matches numpy/scipy (`pearsonr`, `linregress`, `polyfit`, explicit NSE and KGE) to 1e-10 relative, and RMSE² = MBE² + bias-corrected RMSE².
+  - **Undefined cases:**
+    - Constant observed and modeled series; with a constant P, the slope is 0 and the intercept equals P.
+    - An empty sample and a singleton.
+    - A near-zero observed total (percent bias, NRMSE and KGE null; MAPE `near_zero_observation`).
+    - Both tolerances change the outcome when changed.
+    - NaN raises.
+  - **Labels:** a biased, perfectly correlated model has r² = 1 and negative NSE, and no metric is called `r2`. Bias-corrected RMSE and MAPE are diagnostics; MAPE, NSE and KGE are not defaults; KGE components cannot be requested alone.
+  - **Cohorts:**
+    - Two models in a common-date cohort are scored on the same 57 frozen days.
+    - An empty cohort gives null rows (`empty_cohort`).
+    - Paired methods give separate rows, with a day dropped on both sides.
+    - Mixed or undeclared temporal support raises, and an unequal mask raises.
+    - Flags carry through, and the tables round-trip through Parquet.
+  - **Periods:**
+    - Partial, complete and estimated monthly products are scored separately and match numpy on the `period_totals` rows (`n_periods`, `n_days`, `n_days_imputed`, completeness).
+    - A product with no available period gives `no_available_periods`.
+    - Totals from another cohort are refused by fingerprint.
+    - `period_types` filtering works, and an unsupplied aggregation is reported.
+  - **Cumulative error:** gaps are flagged, segments increment and nothing is filled.
+  - **Config:** 13 rejection cases.
+- **Oldest dependency stack** (Python 3.11, lowest-direct, `FutureWarning` as error): metrics, aggregation, cohorts, schemas and config tests pass (138).
+- **US-UTJ run (D-045):**
+  - Daily cohort sizes reproduce D-040, and complete and estimated month counts reproduce D-043.
+  - An independent numpy/scipy recomputation from the written paired and period-total files deviates at most 3.6e-15.
+  - No metric is null because of a tolerance.
+
+### Not run here
+- **Crop-height file:** `US-UTJ_20240101_20251230.csv` is not in this checkout (it is git-ignored; a search of the user profile found no copy). As a result:
+  - `test_us_utj_crop_height.py` and the crop-height test in `test_us_utj.py` skip (2 of the 5 skips);
+  - the runner was run with `--skip-missing-crop-height`, so **no growing-season totals or metrics** were produced.
+  - Restore the file and rerun without the flag.
+- The other skips are the opt-in Drive raster tests.
+
+### Assumptions and limitations
+- **Tolerances are provisional.** They were set before scoring and decide only when a denominator counts as zero; the user should confirm or replace them.
+- **Station-level only.** Network summaries, weighting and contrasts are step 11. No intervals are given (step 10). The metric values are point estimates, not rankings.
+- **Partial-sum metrics are descriptive.** They mix periods with unequal matched days and are labelled with `n_days`/`n_periods`.
+- **One-period products are singletons.** Yearly partial sums and a single complete month give `singleton_sample` for spread-based metrics.
+- **`utj_coverage` is scored per model on unequal days.** Its rows carry `ranking_scope=none` and must not be ranked.
+- **Every US-UTJ row is flagged `day_alignment=unverified`** (OpenET day boundary undeclared).
+- **The 93 gap-filled reference days** of the inclusive cohort share gridMET drivers (D-005) and are counted in `n_days_reference_filled`.
+
+**Next:** step 10, paired block-bootstrap intervals that resample whole paired rows of a cohort and recompute these metrics in each replicate.
 
 ## Steps 5–6 outputs regenerated; all cohorts and period totals (2026-10-15)
 
@@ -126,7 +218,7 @@ uv run python tools/run_cohorts.py examples/us_utj.yaml   # cohorts + period tot
 - **Pandas versions:** passes on the oldest dependency stack (Python 3.11, lowest direct) with `FutureWarning` as an error.
 - **Runner smoke test** on synthetic US-UTJ-shaped inputs (scratch only): Dec–Mar gives 4 months. One missing SIMS day leaves 3 complete months for all 7 models; WY2025 has 120 of 365 days.
 
-### Not run here
+### Not run here (resolved later on 2026-10-15: the inputs were supplied, the integration tests ran and the full runner was run; see the entries above)
 - **US-UTJ real-data run:** `US-UTJ_daily.csv`, `station_oet_US-UTJ.parquet` and the earlier `outputs/` are not in this git checkout, so the integration tests skip. A new integration test, `test_set_a_period_totals`, is ready. It checks that months, years and water years each partition the 260 common days (88 gap-filled), that yearly sums equal daily sums, and that neither calendar year is complete. Run it with `ETCOMPARE_DATA_DIR=<folder with both files> uv run pytest tests/integration`. Then run `tools/run_cohorts.py` where the step-5/6 extraction outputs exist.
 
 ### Open (user decisions)

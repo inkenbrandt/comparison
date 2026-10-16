@@ -36,6 +36,7 @@ from etcompare.config import (
     TEMPORAL_SUPPORTS,
 )
 from etcompare.config import REFERENCE_VARIANTS as REFERENCE_VARIANTS
+from etcompare.config import TOTAL_PRODUCTS as TOTAL_PRODUCTS
 from etcompare.errors import DuplicateKeyError, SchemaError
 
 Kind = Literal["string", "date", "float", "int", "bool"]
@@ -60,10 +61,15 @@ DAY_ALIGNMENT: Final = ("declared", "unverified")
 PERIODS: Final = ("day", "month")
 SEVERITY: Final = ("error", "warning", "info")
 SCALING_SOURCES: Final = ("declared", "from_header", "not_read")
-#: The three period products of guide step 8 (``etcompare.aggregation``).
-TOTAL_PRODUCTS: Final = ("partial_sum", "complete_total", "estimated_total")
 #: Where a daily estimate comes from: a real cohort pair, an imputation, or nothing.
 VALUE_SOURCES: Final = ("cohort", "imputed", "not_imputed")
+#: Metric rows: daily pairs or period totals (``etcompare.metrics``).
+TEMPORAL_SCALES: Final = ("daily", "period")
+METRIC_PRODUCTS: Final = ("daily_pairs", *TOTAL_PRODUCTS)
+#: score: may support rankings; diagnostic: never a ranking basis (bias-corrected RMSE,
+#: MAPE); descriptive: regression coefficients; component: parts of a composite (KGE).
+METRIC_ROLES: Final = ("score", "diagnostic", "descriptive", "component")
+RANKING_SCOPES: Final = ("all_models", "pairwise", "none")
 
 
 @dataclass(frozen=True)
@@ -411,28 +417,86 @@ DAILY_ESTIMATES = TableSchema(
 )
 
 METRICS = TableSchema(
-    "metrics", "1", "Metric values with explicit sample counts and validity.",
+    "metrics", "2",
+    "Performance metrics of one cohort on its common mask, with explicit sample counts and "
+    "validity. Daily pairs and each period product are separate rows, never pooled.",
     (
         _key("comparison_id", "string", "Comparison identifier"),
         _key("cohort_id", "string", "Cohort identifier"),
+        _key("metric_set_id", "string", "Declared metric set (tolerances, metric list)"),
         _key("scope", "string", "Site ID or group label the metric summarizes"),
         _c("scope_type", "string", "'site' or 'group'", nullable=False,
            allowed=("site", "group")),
-        _key("temporal_scale", "string", "e.g. daily, monthly"),
+        _key("temporal_scale", "string", "daily pairs or period totals",
+             allowed=TEMPORAL_SCALES),
+        _key("period_type", "string", "Period type of period totals; 'none' for daily",
+             allowed=("none", *PERIOD_TYPES)),
+        _key("aggregation_id", "string", "Period aggregation scored; 'none' for daily"),
+        _key("product", "string", "daily_pairs, or the period product scored",
+             allowed=METRIC_PRODUCTS),
         _key("model", "string", "Canonical model name"),
         _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
         _key("extraction_method", "string", "Extraction method"),
-        _key("metric", "string", "Stable metric identifier"),
+        _key("footprint_set_id", "string", "Footprint set of the extraction (or 'none')"),
+        _key("metric", "string", "Stable metric identifier (etcompare.metrics)"),
         _c("value", "float", "Metric value; null when undefined"),
-        _c("units", "string", "Units of value"),
-        _c("n_sites", "int", "Sites contributing", nullable=False),
-        _c("n_days", "int", "Days contributing"),
-        _c("n_periods", "int", "Periods contributing (for aggregated scales)"),
-        _c("period_completeness", "float", "Accepted/expected days", unit=FRACTION),
+        _c("units", "string", "Units of value", nullable=False),
+        _c("valid", "bool", "value is defined", nullable=False),
         _c("validity_reason", "string", "Why value is null, if it is"),
+        _c("metric_role", "string", "score / diagnostic / descriptive / component",
+           nullable=False, allowed=METRIC_ROLES),
+        _c("ranking_scope", "string", "Rankings the cohort supports (all_models / pairwise / "
+           "none)", nullable=False, allowed=RANKING_SCOPES),
+        _c("n_sites", "int", "Sites contributing", nullable=False),
+        _c("n_days", "int", "Days contributing (matched days for period totals)",
+           nullable=False),
+        _c("n_days_reference_filled", "int", "Contributing days with gap-filled reference",
+           nullable=False),
+        _c("n_days_imputed", "int", "Imputed days inside scored estimated totals"),
+        _c("n_periods", "int", "Periods contributing (period totals only)"),
+        _c("period_completeness", "float", "Matched / expected days over the scored periods",
+           unit=FRACTION),
+        _c("temporal_support", "string", "Declared temporal support of the model product",
+           allowed=TEMPORAL_SUPPORTS),
+        _c("flags", "string", "';'-joined flags of the scored rows"),
     ),
-    primary_key=("comparison_id", "cohort_id", "scope", "temporal_scale", "model",
-                 "reference_variant", "extraction_method", "metric"),
+    primary_key=("comparison_id", "cohort_id", "metric_set_id", "scope", "temporal_scale",
+                 "period_type", "aggregation_id", "product", "model", "reference_variant",
+                 "extraction_method", "footprint_set_id", "metric"),
+)
+
+CUMULATIVE_ERROR = TableSchema(
+    "cumulative_error", "1",
+    "Running sums of a cohort's paired daily values and errors (e = modeled - observed) over "
+    "cohort days only; days outside the cohort are never filled, and the first day after a "
+    "run of missing days is flagged.",
+    (
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("site_id", "string", "Station"),
+        _key("model", "string", "Canonical model name"),
+        _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
+        _key("extraction_method", "string", "Extraction method"),
+        _key("footprint_set_id", "string", "Footprint set of the extraction (or 'none')"),
+        _key("date", "date", "Station-day label"),
+        _c("observed_mm", "float", "Station reference ET", unit=ET_UNIT, nullable=False),
+        _c("modeled_mm", "float", "Model ET", unit=ET_UNIT, nullable=False),
+        _c("error_mm", "float", "modeled_mm - observed_mm", unit=ET_UNIT, nullable=False),
+        _c("cumulative_observed_mm", "float", "Sum of observed_mm over cohort days so far",
+           unit=ET_TOTAL_UNIT, nullable=False),
+        _c("cumulative_modeled_mm", "float", "Sum of modeled_mm over cohort days so far",
+           unit=ET_TOTAL_UNIT, nullable=False),
+        _c("cumulative_error_mm", "float", "Sum of error_mm over cohort days so far",
+           unit=ET_TOTAL_UNIT, nullable=False),
+        _c("n_days_cumulated", "int", "Cohort days summed so far", nullable=False),
+        _c("missing_days_before", "int", "Calendar days missing since the previous cohort "
+           "day (0 when consecutive; null on the first day)"),
+        _c("segment", "int", "Uninterrupted run number, starting at 1; increments after "
+           "every missing period", nullable=False),
+        _c("flags", "string", "';'-joined flags; missing_period_before marks a gap"),
+    ),
+    primary_key=("comparison_id", "cohort_id", "site_id", "model", "reference_variant",
+                 "extraction_method", "footprint_set_id", "date"),
 )
 
 INTERVALS = TableSchema(
@@ -472,7 +536,7 @@ SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
     s.name: s for s in (STATIONS, STATION_DAILY, MODEL_MANIFEST, ASSET_SITES,
                         FOOTPRINT_MANIFEST, EXTRACTIONS, PAIRED, COHORT_MEMBERSHIP,
                         PERIOD_TOTALS, DAILY_ESTIMATES, CROP_HEIGHT, METRICS,
-                        INTERVALS, EXCLUSIONS)
+                        CUMULATIVE_ERROR, INTERVALS, EXCLUSIONS)
 })
 
 

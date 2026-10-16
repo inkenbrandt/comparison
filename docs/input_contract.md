@@ -234,6 +234,7 @@ Validation runs before any join or calculation. A missing mandatory item raises 
 | Extraction-method label for each pre-extracted column | Mandatory | `column 'ET_mean' needs an extraction_method label` |
 | Crop-height table (growing season): date, height and units, season start/end columns, site | Mandatory when `growing_season_source` is declared | `crop_height_tables.<name>: height_units=... is not one of ['cm', 'm']`; season inconsistencies raise `DataValidationError` (D-042) |
 | Station reference ET column and units (`reference_et_fraction` imputation) | Mandatory for that method | `ET units for column 'gridMET_ETr' not declared; magnitude is not evidence` |
+| Metric near-zero tolerances (`metric_sets[].daily_tolerance`; `period_tolerance` when period totals are scored) | Mandatory when metrics are computed | `metric_sets.<id>: daily_tolerance (mean, std in mm d-1) not declared` (D-044) |
 | Coordinates, land cover, product/model version, closure method, gap-fill method, original capture, acquisition flags | Optional | `unknown`; dependent analyses report `not_available` |
 
 A filename date gives a label, never temporal support. Pandas metadata in a Parquet file is serialisation metadata, not scientific provenance.
