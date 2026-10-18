@@ -9,6 +9,8 @@
   negative cells whose total mass is at most ``negative_tolerance`` times
   the positive mass are set to zero, and the adjustment is reported.
 - A footprint with no positive contribution is rejected.
+- Values no footprint can hold (a normalized weight above 1, or a total that is not
+  finite) are rejected as ``invalid_values`` (e.g. storage corruption, D-043, D-054).
 
 The denominator of every retained fraction is the footprint grid total, named
 by value semantics: for normalized weights this is the domain-truncated,
@@ -38,7 +40,7 @@ class PreparedFootprint:
 
     contribution: np.ndarray | None
     grid: Grid
-    status: str  # ok | negative_weights | no_positive_weight
+    status: str  # ok | negative_weights | no_positive_weight | invalid_values
     weight_total: float
     denominator: str
     n_missing_cells: int
@@ -56,6 +58,8 @@ class PreparedFootprint:
                     f"{self.negative_mass_ratio:.3g} exceeds the round-off tolerance")
         if self.status == "no_positive_weight":
             return f"no positive contribution ({self.n_missing_cells} missing cells)"
+        if self.status == "invalid_values":
+            return "values no footprint can hold (a normalized weight above 1 or an infinite sum)"
         if self.negatives_zeroed:
             return (f"{self.n_negative_cells} round-off negative cell(s) zeroed "
                     f"(mass ratio {self.negative_mass_ratio:.3g})")
@@ -85,6 +89,17 @@ def prepare_footprint(
             raise GridError("density_per_m2 footprints need a projected CRS in metres to "
                             "convert density to cell contribution")
         w = w * grid.cell_area
+    with np.errstate(over="ignore", invalid="ignore"):
+        # Values no footprint can hold (e.g. storage corruption, D-043): a cell above 1
+        # in normalized weights, or a total that overflows.
+        impossible = not math.isfinite(float(np.abs(w).sum())) or (
+            value_semantics == "normalized_cell_weight" and float(w.max()) > 1 + 1e-9)
+    if impossible:
+        return PreparedFootprint(None, grid=grid, status="invalid_values", weight_total=math.nan,
+                                 denominator=DENOMINATOR[value_semantics],
+                                 n_missing_cells=int(missing.sum()),
+                                 n_negative_cells=int((w < 0).sum()),
+                                 negative_mass_ratio=math.nan, negatives_zeroed=False)
     neg = w < 0
     pos_mass = float(w[w > 0].sum())
     neg_mass = float(-w[neg].sum())

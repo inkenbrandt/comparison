@@ -110,6 +110,60 @@ CALENDAR_CONDITIONS: Final = ("season", "month")
 DIAGNOSTIC_METRICS: Final = ("mbe", "mae", "rmse", "bias_corrected_rmse", "percent_bias",
                              "pearson_r")
 
+#: Landscape layers (guide step 13; ``etcompare.representativeness``): a categorical
+#: land-cover map or a continuous vegetation index.
+LAYER_KINDS: Final = ("categorical", "continuous")
+#: How a layer's reference period is matched to a footprint day. ``previous_only`` never
+#: uses information from after the day; the others can, and such rows are retrospective.
+MATCHING_POLICIES: Final = ("nearest", "previous_only", "within_n_days")
+#: Supports whose landscape is described: the footprint, and the fixed supports of D-029
+#: (pixel window and nearest pixel of the model grid) and declared polygons.
+LANDSCAPE_METHODS: Final = ("footprint", "pixel_window", "nearest_tower_pixel", "polygon")
+#: Satellite-support sources (``etcompare.satellite``). Only authoritative product
+#: metadata; scene-level cloud cover is never a clear-observation flag (D-011).
+SUPPORT_KINDS: Final = ("per_pixel_flag", "per_site_flag", "per_site_count")
+#: Binned acquisition-timing variables of the satellite-support analysis.
+ACQUISITION_GAP_VARIABLES: Final = ("days_to_nearest_clear", "days_since_previous_clear",
+                                    "enclosing_gap_days")
+
+#: Station event logs (guide step 14; ``etcompare.adapters.event_log``). Only
+#: ``management`` events can be analysed as events. ``instrument`` events (station visits,
+#: program updates, sensor moves) and ``confounder`` events (e.g. weather notes) stay
+#: visible as overlaps and are never analysed as treatments.
+EVENT_CATEGORIES: Final = ("management", "instrument", "confounder")
+#: Kinds of management event. A cutting is never an irrigation cutoff.
+MANAGEMENT_KINDS: Final = ("cutting", "irrigation", "irrigation_cutoff", "planting", "other")
+#: What an event's ``event_source`` is evidence of:
+#: ``management_record``: a farm or management record (only when confirmed as such);
+#: ``photo_observation``: a camera or site photo; ``remote_sensing_inference``: inferred
+#: from satellite imagery (Planet, Sentinel); ``station_log``: the station team's record of
+#: an action on the station (e.g. the logger a program update went to); ``unknown``: the
+#: source is unlabelled. An unlabelled source is always ``unknown``.
+EVIDENCE_CLASSES: Final = ("management_record", "photo_observation",
+                           "remote_sensing_inference", "station_log", "unknown")
+#: How a log timestamp becomes a station-day label. ``station_local_date``: the timestamp is
+#: declared to be in the station's own timezone, and its calendar date is the station day.
+#: No other rule exists, so a log in another timezone is refused rather than shifted.
+EVENT_DAY_RULES: Final = ("station_local_date",)
+#: Columns an event table must map (``end_timestamp`` is optional: without it an event
+#: lasts one station day).
+EVENT_COLUMNS: Final = ("event_id", "site", "timestamp", "event_type", "event_source",
+                        "observer", "notes")
+EVENT_OPTIONAL_COLUMNS: Final = ("end_timestamp",)
+#: What happens to events whose date the log calls approximate.
+APPROXIMATE_POLICIES: Final = ("flag", "exclude")
+#: How a weather variable is summarised over an event window.
+WINDOW_AGGREGATIONS: Final = ("mean", "sum")
+#: Anomaly methods (``etcompare.anomalies``). ``held_out_climatology``: a day-of-year
+#: climatology fitted on the other years and applied to the held-out year.
+#: ``exploratory_moving_mean``: an in-sample centred moving mean; exploratory only, never a
+#: claim of seasonal generalisation.
+ANOMALY_METHODS: Final = ("held_out_climatology", "exploratory_moving_mean")
+#: Hold-out unit of the climatology folds.
+FOLD_UNITS: Final = ("year", "water_year")
+#: Leap-day rule: 29 February takes 28 February's day of year in a 365-day calendar.
+LEAP_DAY_RULES: Final = ("as_feb28",)
+
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
 #: Unit of a period total: depth summed over the period's station days.
@@ -1558,6 +1612,982 @@ class DiagnosticsSpec:
                                     config_key=f"{key}.variables.{sh}.edges")
 
 
+def _iso_day(value: object, *, key: str, field: str) -> str:
+    out = _iso_date(value, key=key, field=field)
+    if out is None:
+        raise ContractError(f"{key}: {field} not declared", config_key=f"{key}.{field}")
+    return out
+
+
+@dataclass(frozen=True)
+class LayerAssetSpec:
+    """One file of a landscape layer and the period it describes.
+
+    A categorical map declares its ``vintage`` (year); its reference period is that
+    calendar year unless ``reference_start``/``reference_end`` say otherwise. A
+    continuous index declares the ``acquisition_date`` of its scene (reference period
+    = that day). A filename date is never read as either.
+    """
+
+    path: Path
+    vintage: int | None = None
+    acquisition_date: str | None = None
+    reference_start: str | None = None
+    reference_end: str | None = None
+
+    @property
+    def period(self) -> tuple[str, str]:
+        assert self.reference_start is not None and self.reference_end is not None
+        return self.reference_start, self.reference_end
+
+
+@dataclass(frozen=True)
+class LandscapeLayerSpec:
+    """A land-cover map or vegetation index used to describe footprints (guide step 13).
+
+    Every semantic is declared; nothing is read from magnitude or filenames:
+
+    - ``crs``: checked against every file header (a mismatch is an error).
+    - ``nodata``: mandatory (``.nan`` when only NaN marks missing values). Contribution
+      on nodata cells is reported, never redistributed.
+    - categorical: a class ``legend`` (code -> name) or ``legend_csv`` (columns
+      ``code,name``), and a ``vintage`` per asset. A class found in the data but not
+      in the legend is an error. Classes are never resampled.
+    - continuous: ``units``, ``scale_factor``, ``add_offset``, an ``acquisition_date``
+      per asset and ``acquisition_date_source`` (where those dates come from).
+    """
+
+    layer_id: str
+    kind: str
+    source: str
+    crs: str
+    nodata: float
+    assets: tuple[LayerAssetSpec, ...]
+    legend: Mapping[int, str] | None = None
+    legend_csv: Path | None = None
+    units: str | None = None
+    scale_factor: float | None = None
+    add_offset: float | None = None
+    acquisition_date_source: str | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        lid = self.layer_id
+        _require(lid, input="landscape layer", field="layer_id", config_key="layers.<id>")
+        key = f"representativeness.layers.{lid}"
+        if not _METHOD_ID.match(str(lid)):
+            raise ContractError(f"{key}: layer_id must be snake_case", config_key=key)
+        _choice(self.kind, LAYER_KINDS, input=key, field="kind", config_key=f"{key}.kind")
+        for f in ("source", "crs"):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        if self.nodata is None:
+            raise ContractError(f"{key}: nodata not declared (use .nan when only NaN marks "
+                                "missing values)", config_key=f"{key}.nodata")
+        if isinstance(self.nodata, bool) or not isinstance(self.nodata, int | float):
+            raise ContractError(f"{key}: nodata must be a number", config_key=f"{key}.nodata")
+        object.__setattr__(self, "nodata", float(self.nodata))
+        assets = []
+        for i, a in enumerate(self.assets or ()):
+            akey = f"{key}.assets[{i}]"
+            if not isinstance(a, LayerAssetSpec):
+                _check_keys(a, set(LayerAssetSpec.__dataclass_fields__), akey)
+                _require(a.get("path"), input=akey, field="path", config_key=f"{akey}.path")
+                a = LayerAssetSpec(**{**a, "path": Path(str(a["path"]))})
+            assets.append(self._asset(a, akey))
+        if not assets:
+            raise ContractError(f"{key}: no assets declared", config_key=f"{key}.assets")
+        spans = sorted(a.period for a in assets)
+        for (s0, e0), (s1, _) in zip(spans, spans[1:], strict=False):
+            if s1 <= e0:
+                raise ContractError(f"{key}: asset reference periods overlap ({s0}..{e0} and "
+                                    f"{s1}..); matching would be ambiguous",
+                                    config_key=f"{key}.assets")
+        object.__setattr__(self, "assets", tuple(assets))
+        if self.kind == "categorical":
+            if self.legend is None and self.legend_csv is None:
+                raise ContractError(f"{key}: a categorical layer needs a class legend (legend or "
+                                    "legend_csv)", config_key=f"{key}.legend")
+            if self.legend is not None and self.legend_csv is not None:
+                raise ContractError(f"{key}: declare legend or legend_csv, not both",
+                                    config_key=f"{key}.legend")
+            if self.legend is not None:
+                legend = {}
+                for code, name in dict(self.legend).items():
+                    if isinstance(code, bool) or not isinstance(code, int) or not name:
+                        raise ContractError(f"{key}: legend entries must be integer code -> name",
+                                            config_key=f"{key}.legend")
+                    legend[code] = str(name)
+                if not legend:
+                    raise ContractError(f"{key}: empty legend", config_key=f"{key}.legend")
+                if not math.isnan(self.nodata) and int(self.nodata) in legend:
+                    raise ContractError(f"{key}: nodata {self.nodata:g} is also a legend class",
+                                        config_key=f"{key}.legend")
+                object.__setattr__(self, "legend", MappingProxyType(legend))
+            for f in ("units", "scale_factor", "add_offset", "acquisition_date_source"):
+                if getattr(self, f) is not None:
+                    raise ContractError(f"{key}: {f} applies to continuous layers only",
+                                        config_key=f"{key}.{f}")
+        else:
+            if self.legend is not None or self.legend_csv is not None:
+                raise ContractError(f"{key}: a continuous layer has no legend",
+                                    config_key=f"{key}.legend")
+            for f in ("units", "scale_factor", "add_offset", "acquisition_date_source"):
+                v = getattr(self, f)
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    raise ContractError(f"{key}: {f} not declared", config_key=f"{key}.{f}")
+            for f in ("scale_factor", "add_offset"):
+                v = getattr(self, f)
+                if isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v):
+                    raise ContractError(f"{key}: {f} must be a finite number",
+                                        config_key=f"{key}.{f}")
+
+    def _asset(self, a: LayerAssetSpec, akey: str) -> LayerAssetSpec:
+        if self.kind == "categorical":
+            if a.acquisition_date is not None:
+                raise ContractError(f"{akey}: a categorical map declares a vintage, not an "
+                                    "acquisition_date", config_key=f"{akey}.vintage")
+            if a.vintage is None:
+                raise ContractError(f"{akey}: vintage not declared; a land-cover map without a "
+                                    "vintage cannot be matched to footprint days",
+                                    config_key=f"{akey}.vintage")
+            _positive_int(a.vintage, key=akey, field="vintage", minimum=1900)
+            start = _iso_date(a.reference_start, key=akey, field="reference_start") or \
+                f"{a.vintage:04d}-01-01"
+            end = _iso_date(a.reference_end, key=akey, field="reference_end") or \
+                f"{a.vintage:04d}-12-31"
+        else:
+            if a.vintage is not None or a.reference_start or a.reference_end:
+                raise ContractError(f"{akey}: a continuous index declares its acquisition_date "
+                                    "only", config_key=f"{akey}.acquisition_date")
+            if a.acquisition_date is None:
+                raise ContractError(f"{akey}: acquisition_date not declared; a vegetation index "
+                                    "without an acquisition date cannot be matched",
+                                    config_key=f"{akey}.acquisition_date")
+            start = end = _iso_day(a.acquisition_date, key=akey, field="acquisition_date")
+        if start > end:
+            raise ContractError(f"{akey}: reference_start is after reference_end",
+                                config_key=f"{akey}.reference_start")
+        return LayerAssetSpec(a.path, a.vintage, a.acquisition_date and start, start, end)
+
+
+@dataclass(frozen=True)
+class MatchingPolicySpec:
+    """How a layer asset is matched to a footprint day (guide step 13).
+
+    ``days_from_layer`` = day - reference_end for a past asset (> 0), 0 when the day lies
+    in the asset's reference period, and day - reference_start for a future asset (< 0).
+
+    - ``previous_only``: assets whose reference period ends on or before the day.
+    - ``nearest``: the smallest ``|days_from_layer|``; ties go to the past asset.
+    - ``within_n_days``: ``nearest`` among assets with ``|days_from_layer| <= n_days``.
+
+    A row whose asset's reference period ends after the day uses later information and
+    is labelled retrospective. A day without an admissible asset is ``not_available``.
+    """
+
+    policy: str
+    n_days: int | None = None
+
+    @property
+    def policy_id(self) -> str:
+        return f"within_{self.n_days}_days" if self.policy == "within_n_days" else self.policy
+
+    def __post_init__(self) -> None:
+        key = "representativeness.matching_policies"
+        _choice(self.policy, MATCHING_POLICIES, input=key, field="policy",
+                config_key=f"{key}[].policy")
+        if self.policy == "within_n_days":
+            if self.n_days is None:
+                raise ContractError(f"{key}: within_n_days needs n_days",
+                                    config_key=f"{key}[].n_days")
+            _positive_int(self.n_days, key=key, field="n_days", minimum=0)
+        elif self.n_days is not None:
+            raise ContractError(f"{key}: n_days applies only to within_n_days",
+                                config_key=f"{key}[].n_days")
+
+
+@dataclass(frozen=True)
+class PolygonLayerSpec:
+    """A declared polygon (e.g. the tower field) whose landscape is described.
+
+    ``crs`` is mandatory because a file may carry none; ``vintage`` is mandatory but
+    may be ``unknown``. ``feature_id`` selects one feature by ``id_column``.
+    """
+
+    polygon_id: str
+    path: Path
+    crs: str
+    id_column: str
+    feature_id: str
+    source: str
+    vintage: str
+    layer: str | None = None
+
+    @property
+    def method_id(self) -> str:
+        return f"polygon_{self.polygon_id}"
+
+    def __post_init__(self) -> None:
+        key = f"representativeness.polygons.{self.polygon_id}"
+        _require(self.polygon_id, input="polygon", field="polygon_id", config_key=key)
+        if not _METHOD_ID.match(str(self.polygon_id)):
+            raise ContractError(f"{key}: polygon_id must be snake_case", config_key=key)
+        for f in ("path", "crs", "id_column", "feature_id", "source", "vintage"):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        object.__setattr__(self, "feature_id", str(self.feature_id))
+        object.__setattr__(self, "vintage", str(self.vintage))
+
+
+@dataclass(frozen=True)
+class RepresentativenessSpec:
+    """Footprint-weighted landscape composition of one station (guide step 13).
+
+    - ``footprint_sets``: declared footprint sets whose daily footprints are described.
+    - ``layers``: land-cover maps and vegetation indices (:class:`LandscapeLayerSpec`).
+    - ``matching_policies``: every declared policy is run and keyed separately; none
+      is adopted.
+    - ``contour_levels``: cumulative-contribution contours in (0, 1); contour rows are
+      a separate product from full-domain rows and never replace them.
+    - ``methods``: ``footprint`` plus the compared fixed supports (``pixel_window`` of
+      ``window_sizes``, ``nearest_tower_pixel``, ``polygon``). Pixel supports live on
+      the model grid of ``reference_grid_raster`` (checked against
+      ``reference_grid_id`` when given).
+    - ``fluxfootprints_labels``: optional ``{layers, radii, alpha}`` for the upstream
+      HIGH/MEDIUM/LOW labels, stored as labels only.
+    """
+
+    representativeness_id: str
+    site_id: str
+    footprint_sets: tuple[str, ...]
+    layers: Mapping[str, LandscapeLayerSpec]
+    matching_policies: tuple[MatchingPolicySpec, ...]
+    contour_levels: tuple[float, ...] = ()
+    methods: tuple[str, ...] = ("footprint",)
+    window_sizes: tuple[int, ...] = (3,)
+    reference_grid_raster: Path | None = None
+    reference_grid_id: str | None = None
+    polygons: tuple[PolygonLayerSpec, ...] = ()
+    fluxfootprints_labels: Mapping[str, Any] | None = None
+    negative_weight_tolerance: float = 1e-9
+    start: str | None = None
+    end: str | None = None
+    description: str | None = None
+
+    def method_ids(self) -> list[str]:
+        """Stable IDs of the compared fixed supports (D-029 naming)."""
+        out: list[str] = []
+        if "pixel_window" in self.methods:
+            out += [f"pixel_window_{n}x{n}" for n in self.window_sizes]
+        if "nearest_tower_pixel" in self.methods:
+            out.append("nearest_tower_pixel")
+        if "polygon" in self.methods:
+            out += [p.method_id for p in self.polygons]
+        return out
+
+    def __post_init__(self) -> None:
+        rid = self.representativeness_id
+        _require(rid, input="representativeness", field="representativeness_id",
+                 config_key="representativeness[].representativeness_id")
+        key = f"representativeness.{rid}"
+        if not _METHOD_ID.match(str(rid)):
+            raise ContractError(f"{key}: representativeness_id must be snake_case",
+                                config_key=key)
+        _require(self.site_id, input=key, field="site_id", config_key=f"{key}.site_id")
+        for f in ("footprint_sets", "methods", "window_sizes", "contour_levels"):
+            object.__setattr__(self, f, tuple(getattr(self, f) or ()))
+        if not self.footprint_sets:
+            raise ContractError(f"{key}: no footprint_sets declared",
+                                config_key=f"{key}.footprint_sets")
+        layers = {}
+        for name, v in (self.layers or {}).items():
+            if not isinstance(v, LandscapeLayerSpec):
+                _check_keys(v, set(LandscapeLayerSpec.__dataclass_fields__) - {"layer_id"},
+                            f"{key}.layers.{name}")
+                kw: dict[str, Any] = {f: v.get(f) for f in ("kind", "source", "crs", "nodata",
+                                                            "assets")}
+                kw.update({k: x for k, x in v.items() if k not in kw})
+                kw["assets"] = tuple(kw["assets"] or ())
+                if kw.get("legend_csv") is not None:
+                    kw["legend_csv"] = Path(str(kw["legend_csv"]))
+                v = LandscapeLayerSpec(layer_id=name, **kw)
+            elif v.layer_id != name:
+                raise ContractError(f"{key}: layer {name!r} is declared as {v.layer_id!r}",
+                                    config_key=f"{key}.layers.{name}")
+            layers[name] = v
+        if not layers:
+            raise ContractError(f"{key}: no layers declared", config_key=f"{key}.layers")
+        object.__setattr__(self, "layers", MappingProxyType(layers))
+        policies = []
+        for p in self.matching_policies or ():
+            if not isinstance(p, MatchingPolicySpec):
+                if isinstance(p, str):
+                    p = {"policy": p}
+                _check_keys(p, set(MatchingPolicySpec.__dataclass_fields__),
+                            f"{key}.matching_policies")
+                p = MatchingPolicySpec(policy=p.get("policy"), n_days=p.get("n_days"))
+            policies.append(p)
+        if not policies:
+            raise ContractError(f"{key}: no matching policy declared; how layer dates are "
+                                "matched to footprint days must be explicit",
+                                config_key=f"{key}.matching_policies")
+        ids = [p.policy_id for p in policies]
+        if len(set(ids)) != len(ids):
+            raise ContractError(f"{key}: duplicate matching policies {ids}",
+                                config_key=f"{key}.matching_policies")
+        object.__setattr__(self, "matching_policies", tuple(policies))
+        for lv in self.contour_levels:
+            if isinstance(lv, bool) or not isinstance(lv, int | float) or not 0 < lv < 1:
+                raise ContractError(f"{key}: contour level {lv!r} must lie in (0, 1)",
+                                    config_key=f"{key}.contour_levels")
+        if len(set(self.contour_levels)) != len(self.contour_levels):
+            raise ContractError(f"{key}: duplicate contour levels",
+                                config_key=f"{key}.contour_levels")
+        object.__setattr__(self, "contour_levels",
+                           tuple(sorted(float(x) for x in self.contour_levels)))
+        bad = set(self.methods) - set(LANDSCAPE_METHODS)
+        if bad or "footprint" not in self.methods:
+            raise ContractError(f"{key}: methods must include footprint and come from "
+                                f"{list(LANDSCAPE_METHODS)}; got {list(self.methods)}",
+                                config_key=f"{key}.methods")
+        if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 or n % 2 == 0
+               for n in self.window_sizes):
+            raise ContractError(f"{key}: window sizes must be odd and positive",
+                                config_key=f"{key}.window_sizes")
+        if {"pixel_window", "nearest_tower_pixel"} & set(self.methods) and \
+                self.reference_grid_raster is None:
+            raise ContractError(f"{key}: pixel supports need reference_grid_raster (a model "
+                                "raster whose grid defines the pixels)",
+                                config_key=f"{key}.reference_grid_raster")
+        polys = []
+        for pg in self.polygons or ():
+            if not isinstance(pg, PolygonLayerSpec):
+                _check_keys(pg, set(PolygonLayerSpec.__dataclass_fields__), f"{key}.polygons")
+                kw = {f: pg.get(f) for f in ("polygon_id", "path", "crs", "id_column",
+                                             "feature_id", "source", "vintage")}
+                kw.update({k: x for k, x in pg.items() if k not in kw})
+                if kw["path"] is not None:
+                    kw["path"] = Path(str(kw["path"]))
+                pg = PolygonLayerSpec(**kw)
+            polys.append(pg)
+        object.__setattr__(self, "polygons", tuple(polys))
+        if ("polygon" in self.methods) != bool(polys):
+            raise ContractError(f"{key}: the polygon method and polygons must be declared "
+                                "together", config_key=f"{key}.polygons")
+        flux = self.fluxfootprints_labels
+        if flux is not None:
+            _check_keys(flux, {"layers", "radii", "alpha"}, f"{key}.fluxfootprints_labels")
+            fl = tuple(flux.get("layers") or ())
+            for name in fl:
+                if name not in layers or layers[name].kind != "categorical":
+                    raise ContractError(f"{key}: fluxfootprints_labels layer {name!r} is not a "
+                                        "declared categorical layer",
+                                        config_key=f"{key}.fluxfootprints_labels.layers")
+            radii = tuple(float(r) for r in (flux.get("radii") or ()))
+            alpha = flux.get("alpha")
+            if not fl or not radii or any(r <= 0 for r in radii) or alpha is None \
+                    or not 0 < float(alpha) < 1:
+                raise ContractError(f"{key}: fluxfootprints_labels needs layers, positive radii "
+                                    "and alpha in (0, 1)",
+                                    config_key=f"{key}.fluxfootprints_labels")
+            object.__setattr__(self, "fluxfootprints_labels", MappingProxyType(
+                {"layers": fl, "radii": radii, "alpha": float(alpha)}))
+        if not 0 <= self.negative_weight_tolerance < 1:
+            raise ContractError(f"{key}: negative_weight_tolerance must be in [0, 1)",
+                                config_key=f"{key}.negative_weight_tolerance")
+        object.__setattr__(self, "start", _iso_date(self.start, key=key, field="start"))
+        object.__setattr__(self, "end", _iso_date(self.end, key=key, field="end"))
+        if self.start and self.end and self.start > self.end:
+            raise ContractError(f"{key}: start {self.start} is after end {self.end}",
+                                config_key=f"{key}.start")
+
+
+@dataclass(frozen=True)
+class SupportSourceSpec:
+    """Authoritative clear-observation metadata for one or more models (guide step 13).
+
+    A table (CSV or Parquet) with ``site_column``, ``date_column`` and ``value_column``
+    (and ``model_column`` unless the flag applies to every listed model). ``kind``:
+
+    - ``per_pixel_flag`` / ``per_site_flag``: boolean; True = clear observation that
+      day, False = no clear observation (the value is interpolated).
+    - ``per_site_count``: count of clear observations; ``min_clear_count`` (declared)
+      makes a day clear.
+
+    ``authority`` (the product metadata the flags come from) and ``meaning`` are
+    mandatory. A day absent from the table has unknown support: missing rows are not
+    cloud evidence, filename and scene dates are labels, and a non-null interpolated ET
+    value is not a clear observation. Scene-level cloud cover is not a flag (D-011).
+    """
+
+    source_id: str
+    kind: str
+    path: Path
+    models: tuple[str, ...]
+    authority: str
+    meaning: str
+    site_column: str
+    date_column: str
+    value_column: str
+    model_column: str | None = None
+    min_clear_count: int | None = None
+
+    def __post_init__(self) -> None:
+        key = f"satellite_support.sources.{self.source_id}"
+        _require(self.source_id, input="support source", field="source_id", config_key=key)
+        if self.kind in ("scene_cloud_cover", "scene_metadata"):
+            raise ContractError(f"{key}: scene-level cloud cover is a labelled scene diagnostic, "
+                                "never a clear-observation flag (D-011)",
+                                config_key=f"{key}.kind")
+        _choice(self.kind, SUPPORT_KINDS, input=key, field="kind", config_key=f"{key}.kind")
+        for f in ("path", "authority", "meaning", "site_column", "date_column", "value_column"):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        object.__setattr__(self, "models", tuple(self.models or ()))
+        if not self.models:
+            raise ContractError(f"{key}: no models declared", config_key=f"{key}.models")
+        if self.kind == "per_site_count":
+            if self.min_clear_count is None:
+                raise ContractError(f"{key}: per_site_count needs min_clear_count",
+                                    config_key=f"{key}.min_clear_count")
+            _positive_int(self.min_clear_count, key=key, field="min_clear_count")
+        elif self.min_clear_count is not None:
+            raise ContractError(f"{key}: min_clear_count applies to per_site_count only",
+                                config_key=f"{key}.min_clear_count")
+
+
+@dataclass(frozen=True)
+class SatelliteSupportSpec:
+    """Errors on clear-observation versus interpolated days of frozen cohorts (guide step 13).
+
+    - ``metric_set`` / ``metrics`` (from :data:`DIAGNOSTIC_METRICS`): metrics come from
+      ``etcompare.metrics.compute_metrics``.
+    - ``min_subset_days``: a subset or bin with fewer days has a status, not a value.
+    - ``sources``: :class:`SupportSourceSpec`; each model needs at most one source.
+    - ``gap_variables``: optional ``{name: edges}`` for :data:`ACQUISITION_GAP_VARIABLES`
+      (bins from the configuration, never from errors). ``days_to_nearest_clear`` and
+      ``enclosing_gap_days`` use later acquisitions and are retrospective.
+    """
+
+    satellite_support_id: str
+    metric_set: str
+    min_subset_days: int
+    sources: tuple[SupportSourceSpec, ...] = ()
+    metrics: tuple[str, ...] = ("mbe", "mae", "rmse")
+    gap_variables: Mapping[str, tuple[float, ...]] = field(default_factory=dict)
+    comparisons: tuple[str, ...] | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        sid = self.satellite_support_id
+        _require(sid, input="satellite support", field="satellite_support_id",
+                 config_key="satellite_support[].satellite_support_id")
+        key = f"satellite_support.{sid}"
+        if not _METHOD_ID.match(str(sid)):
+            raise ContractError(f"{key}: satellite_support_id must be snake_case",
+                                config_key=key)
+        _require(self.metric_set, input=key, field="metric_set", config_key=f"{key}.metric_set")
+        if self.min_subset_days is None:
+            raise ContractError(f"{key}: min_subset_days not declared",
+                                config_key=f"{key}.min_subset_days")
+        _positive_int(self.min_subset_days, key=key, field="min_subset_days")
+        object.__setattr__(self, "metrics", tuple(self.metrics or ()))
+        if not self.metrics or len(set(self.metrics)) != len(self.metrics):
+            raise ContractError(f"{key}: metrics must be a non-empty list without duplicates",
+                                config_key=f"{key}.metrics")
+        for m in self.metrics:
+            _choice(m, DIAGNOSTIC_METRICS, input=key, field="metrics", config_key=f"{key}.metrics")
+        if self.comparisons is not None:
+            object.__setattr__(self, "comparisons", tuple(self.comparisons))
+        sources = []
+        for s in self.sources or ():
+            if not isinstance(s, SupportSourceSpec):
+                _check_keys(s, set(SupportSourceSpec.__dataclass_fields__), f"{key}.sources")
+                kw = {f: s.get(f) for f in ("source_id", "kind", "path", "models", "authority",
+                                            "meaning", "site_column", "date_column",
+                                            "value_column")}
+                kw.update({k: x for k, x in s.items() if k not in kw})
+                if kw["path"] is not None:
+                    kw["path"] = Path(str(kw["path"]))
+                s = SupportSourceSpec(**kw)
+            sources.append(s)
+        seen: dict[str, str] = {}
+        for s in sources:
+            for m in s.models:
+                if m in seen:
+                    raise ContractError(f"{key}: model {m} has two support sources "
+                                        f"({seen[m]}, {s.source_id})",
+                                        config_key=f"{key}.sources")
+                seen[m] = s.source_id
+        object.__setattr__(self, "sources", tuple(sources))
+        gaps = {}
+        for name, edges in (self.gap_variables or {}).items():
+            _choice(name, ACQUISITION_GAP_VARIABLES, input=key, field="gap_variables",
+                    config_key=f"{key}.gap_variables")
+            gaps[name] = _edges(edges, key=key, field=f"gap_variables.{name}")
+            if gaps[name][0] < 0:
+                raise ContractError(f"{key}: gap_variables.{name} edges must be >= 0 days",
+                                    config_key=f"{key}.gap_variables.{name}")
+        object.__setattr__(self, "gap_variables", MappingProxyType(gaps))
+
+
+@dataclass(frozen=True)
+class EventTypeSpec:
+    """How one source ``event_type`` value is treated (guide step 14).
+
+    ``category`` is one of :data:`EVENT_CATEGORIES`. Management types also declare their
+    ``management_kind`` (:data:`MANAGEMENT_KINDS`); other categories must not.
+    """
+
+    category: str
+    management_kind: str | None = None
+
+    def check(self, key: str) -> None:
+        _choice(self.category, EVENT_CATEGORIES, input=key, field="category",
+                config_key=f"{key}.category")
+        if self.category == "management":
+            _choice(self.management_kind, MANAGEMENT_KINDS, input=key, field="management_kind",
+                    config_key=f"{key}.management_kind")
+        elif self.management_kind is not None:
+            raise ContractError(f"{key}: management_kind applies to management events only; "
+                                f"this type is {self.category!r}",
+                                config_key=f"{key}.management_kind")
+
+
+@dataclass(frozen=True)
+class ManagementRecordSpec:
+    """Events that a management record (e.g. farm records) confirms (guide step 14).
+
+    ``record`` names the record, ``confirmed_by`` who stated the confirmation and
+    ``confirmed_on`` when (ISO date). A confirmation adds the ``management_record`` label to
+    the listed events; their logged ``event_source`` and evidence class stay as logged.
+    """
+
+    record: str
+    confirmed_by: str
+    confirmed_on: str
+    event_ids: tuple[str, ...]
+    note: str | None = None
+
+    def check(self, key: str) -> None:
+        for f in ("record", "confirmed_by"):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        day = _iso_date(self.confirmed_on, key=key, field="confirmed_on")
+        if day is None:
+            raise ContractError(f"{key}: confirmed_on not declared",
+                                config_key=f"{key}.confirmed_on")
+        object.__setattr__(self, "confirmed_on", day)
+        ids = tuple(str(e) for e in (self.event_ids or ()))
+        if not ids or len(set(ids)) != len(ids):
+            raise ContractError(f"{key}: event_ids must be a non-empty list without duplicates",
+                                config_key=f"{key}.event_ids")
+        object.__setattr__(self, "event_ids", ids)
+
+    @property
+    def label(self) -> str:
+        return f"{self.record} (confirmed by {self.confirmed_by}, {self.confirmed_on})"
+
+
+@dataclass(frozen=True)
+class EventTableSpec:
+    """A station event log (guide step 14; ``etcompare.adapters.event_log``).
+
+    Events are defined only from this table, never from model residuals or agreement.
+
+    - ``columns``: ``{canonical: source column}`` for every name in :data:`EVENT_COLUMNS`
+      (``end_timestamp`` optional).
+    - ``timestamp_format``, ``timestamp_timezone`` and ``day_rule``
+      (:data:`EVENT_DAY_RULES`): how a timestamp becomes a station-day label. The declared
+      timezone must equal each mapped station's timezone (checked by :class:`Config` and by
+      the adapter), because no conversion is implemented and dates are never shifted.
+    - ``site_mapping``: ``{source station ID: site_id}``. Rows of other stations are
+      excluded with a reason, not read.
+    - ``site_windows``: ``{site_id: {start, end}}``, the declared station record of every
+      mapped site. Events dated outside it are rejected with a reason (exclusion log).
+    - ``event_types``: ``{source event_type: {category, management_kind}}``. Every type
+      found for a mapped station must be declared.
+    - ``evidence_classes``: ``{source event_source: class}`` (:data:`EVIDENCE_CLASSES`).
+      Every non-null source found for a mapped station must be declared; an unlabelled
+      (null) source is always ``unknown``.
+    - ``approximate_date_patterns``: case-insensitive regular expressions searched in the
+      notes. An event is ``approximate`` only when one matches. Mandatory; ``[]`` declares
+      that no note marks a date as approximate.
+    - ``management_records``: optional :class:`ManagementRecordSpec` entries. Listed events
+      get the ``management_record`` label; nothing else does.
+    """
+
+    name: str
+    path: Path | None
+    columns: Mapping[str, str]
+    timestamp_format: str
+    timestamp_timezone: str
+    day_rule: str
+    site_mapping: Mapping[str, str]
+    site_windows: Mapping[str, Mapping[str, str]]
+    event_types: Mapping[str, EventTypeSpec]
+    evidence_classes: Mapping[str, str]
+    approximate_date_patterns: tuple[str, ...]
+    management_records: tuple[ManagementRecordSpec, ...] = ()
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        self._check_management_records()
+        _require(self.name, input="event table", field="name",
+                 config_key="event_tables[].name")
+        key = f"event_tables.{self.name}"
+        if not _METHOD_ID.match(str(self.name)):
+            raise ContractError(f"{key}: name must be snake_case", config_key=key)
+        _require(self.path, input=key, field="path", config_key=f"{key}.path")
+        cols = dict(self.columns or {})
+        for c in EVENT_COLUMNS:
+            _require(cols.get(c), input=key, field=f"columns.{c}", config_key=f"{key}.columns.{c}")
+        extra = set(cols) - set(EVENT_COLUMNS) - set(EVENT_OPTIONAL_COLUMNS)
+        if extra:
+            raise ContractError(f"{key}: unknown column mapping(s) {sorted(extra)}; allowed: "
+                                f"{list(EVENT_COLUMNS + EVENT_OPTIONAL_COLUMNS)}",
+                                config_key=f"{key}.columns")
+        object.__setattr__(self, "columns", MappingProxyType(cols))
+        _require(self.timestamp_format, input=key, field="timestamp_format",
+                 config_key=f"{key}.timestamp_format")
+        object.__setattr__(self, "timestamp_timezone", validate_timezone(
+            self.timestamp_timezone, input=key, config_key=f"{key}.timestamp_timezone"))
+        _choice(self.day_rule, EVENT_DAY_RULES, input=key, field="day_rule",
+                config_key=f"{key}.day_rule")
+
+        mapping = {str(k): str(v) for k, v in (self.site_mapping or {}).items()}
+        if not mapping:
+            raise ContractError(f"{key}: site_mapping declares no station",
+                                config_key=f"{key}.site_mapping")
+        object.__setattr__(self, "site_mapping", MappingProxyType(mapping))
+        windows = {}
+        for site in sorted(set(mapping.values())):
+            w = (self.site_windows or {}).get(site)
+            wkey = f"{key}.site_windows.{site}"
+            if not isinstance(w, Mapping):
+                raise ContractError(f"{key}: no station record window declared for {site}; "
+                                    "events outside it cannot be rejected", config_key=wkey)
+            _check_keys(w, {"start", "end"}, wkey)
+            start, end = (_iso_date(w.get(f), key=wkey, field=f) for f in ("start", "end"))
+            if start is None or end is None:
+                raise ContractError(f"{wkey}: start and end are required", config_key=wkey)
+            if start > end:
+                raise ContractError(f"{wkey}: start {start} is after end {end}", config_key=wkey)
+            windows[site] = MappingProxyType({"start": start, "end": end})
+        extra = set(self.site_windows or {}) - set(windows)
+        if extra:
+            raise ContractError(f"{key}: site_windows for unmapped site(s) {sorted(extra)}",
+                                config_key=f"{key}.site_windows")
+        object.__setattr__(self, "site_windows", MappingProxyType(windows))
+
+        types = {}
+        for name, body in (self.event_types or {}).items():
+            tkey = f"{key}.event_types.{name}"
+            if not isinstance(body, EventTypeSpec):
+                _check_keys(body, set(EventTypeSpec.__dataclass_fields__), tkey)
+                body = EventTypeSpec(category=body.get("category"),
+                                     management_kind=body.get("management_kind"))
+            body.check(tkey)
+            types[str(name)] = body
+        if not types:
+            raise ContractError(f"{key}: no event_types declared", config_key=f"{key}.event_types")
+        object.__setattr__(self, "event_types", MappingProxyType(types))
+
+        evidence = {}
+        for src, cls in (self.evidence_classes or {}).items():
+            _choice(cls, EVIDENCE_CLASSES, input=key, field=f"evidence_classes.{src}",
+                    config_key=f"{key}.evidence_classes")
+            evidence[str(src)] = cls
+        object.__setattr__(self, "evidence_classes", MappingProxyType(evidence))
+
+        if self.approximate_date_patterns is None:
+            raise ContractError(f"{key}: approximate_date_patterns not declared; declare the "
+                                "text rule that marks an event date as approximate ([] for none)",
+                                config_key=f"{key}.approximate_date_patterns")
+        if isinstance(self.approximate_date_patterns, str):
+            raise ContractError(f"{key}: approximate_date_patterns must be a list",
+                                config_key=f"{key}.approximate_date_patterns")
+        patterns = tuple(str(p) for p in self.approximate_date_patterns)
+        for p in patterns:
+            try:
+                re.compile(p, re.IGNORECASE)
+            except re.error as exc:
+                raise ContractError(f"{key}: approximate_date_patterns {p!r} is not a valid "
+                                    f"regular expression: {exc}",
+                                    config_key=f"{key}.approximate_date_patterns") from exc
+        object.__setattr__(self, "approximate_date_patterns", patterns)
+
+    def _check_management_records(self) -> None:
+        key = f"event_tables.{self.name}.management_records"
+        records, seen = [], {}
+        for i, r in enumerate(self.management_records or ()):
+            if not isinstance(r, ManagementRecordSpec):
+                _check_keys(r, set(ManagementRecordSpec.__dataclass_fields__), f"{key}[{i}]")
+                r = ManagementRecordSpec(**{f: r.get(f) for f in
+                                            ManagementRecordSpec.__dataclass_fields__})
+            r.check(f"{key}[{i}]")
+            for e in r.event_ids:
+                if e in seen:
+                    raise ContractError(f"{key}: event {e} is confirmed by two entries",
+                                        config_key=key)
+                seen[e] = i
+            records.append(r)
+        object.__setattr__(self, "management_records", tuple(records))
+
+    def confirmed_events(self) -> Mapping[str, ManagementRecordSpec]:
+        """``{event_id: confirming record}`` for every declared management-record event."""
+        return MappingProxyType({e: r for r in self.management_records for e in r.event_ids})
+
+    def check_stations(self, stations: Mapping[str, StationSpec]) -> None:
+        """Every mapped site is declared, with the log's timezone (dates are never shifted)."""
+        key = f"event_tables.{self.name}"
+        for site in sorted(set(self.site_mapping.values())):
+            if site not in stations:
+                raise ContractError(f"{key}: station {site} not declared",
+                                    config_key=f"stations.{site}")
+            tz = stations[site].timezone
+            if tz != self.timestamp_timezone:
+                raise ContractError(
+                    f"{key}: timestamps are declared in {self.timestamp_timezone} but station "
+                    f"{site} uses {tz}; day_rule {self.day_rule} takes the calendar date in the "
+                    "station's own timezone, and no conversion is implemented (dates are never "
+                    "shifted silently)", config_key=f"{key}.timestamp_timezone")
+
+
+def _fraction(value: object, *, key: str, field: str, open_zero: bool = True) -> float:
+    if value is None or isinstance(value, bool):
+        raise ContractError(f"{key}: {field} not declared", config_key=f"{key}.{field}")
+    try:
+        x = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"{key}: {field}={value!r} is not a number",
+                            config_key=f"{key}.{field}") from exc
+    if not (0 < x <= 1 if open_zero else 0 <= x <= 1):
+        raise ContractError(f"{key}: {field}={x} must lie in {'(0, 1]' if open_zero else '[0, 1]'}",
+                            config_key=f"{key}.{field}")
+    return x
+
+
+@dataclass(frozen=True)
+class WindowVariableSpec:
+    """A station variable summarised over event windows, to keep weather visible.
+
+    ``column`` is a ``station_daily`` column (e.g. ``src_gridMET_ETr``, D-020), ``units`` its
+    declared units and ``aggregation`` ``mean`` or ``sum`` over the window's days.
+    """
+
+    column: str
+    units: str
+    aggregation: str
+    meaning: str | None = None
+
+    def check(self, key: str) -> None:
+        for f in ("column", "units"):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        _choice(self.aggregation, WINDOW_AGGREGATIONS, input=key, field="aggregation",
+                config_key=f"{key}.aggregation")
+
+
+@dataclass(frozen=True)
+class EventAnalysisSpec:
+    """Before/after responses of a cohort to management events (guide step 14).
+
+    Day 0 is the event's station day. The windows are, relative to the event's start
+    (pre) and end (post) days:
+
+    - pre (baseline): days ``-pre_days .. -1``;
+    - post: days ``post_offset_days .. post_offset_days + post_days - 1``;
+    - recovery search: from the post window's start to day ``recovery_max_days``.
+
+    A window mean needs at least ``min_window_completeness`` of its calendar days in the
+    cohort; a cumulative response needs every post day. Relative change and recovery need
+    a baseline above ``baseline_min_mm`` (mm d-1). Recovery is the first day whose trailing
+    ``recovery_smoothing_days`` mean (all days present, all after the event) reaches
+    ``recovery_fraction`` of the baseline. ``weather_variables`` are summarised over the same
+    windows; ``normalize_by`` (a ``mean`` weather variable) adds the change in ET divided by
+    that variable. ``approximate_policy`` ``flag`` keeps events with approximate dates
+    (flagged), ``exclude`` leaves them out with a reason.
+    """
+
+    event_analysis_id: str
+    event_table: str
+    management_kinds: tuple[str, ...]
+    pre_days: int
+    post_offset_days: int
+    post_days: int
+    min_window_completeness: float
+    baseline_min_mm: float
+    recovery_fraction: float
+    recovery_max_days: int
+    recovery_smoothing_days: int
+    approximate_policy: str
+    weather_variables: Mapping[str, WindowVariableSpec] = field(default_factory=dict)
+    normalize_by: str | None = None
+    comparisons: tuple[str, ...] | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        aid = self.event_analysis_id
+        _require(aid, input="event analysis", field="event_analysis_id",
+                 config_key="event_analyses[].event_analysis_id")
+        key = f"event_analyses.{aid}"
+        if not _METHOD_ID.match(str(aid)):
+            raise ContractError(f"{key}: event_analysis_id must be snake_case", config_key=key)
+        _require(self.event_table, input=key, field="event_table",
+                 config_key=f"{key}.event_table")
+        kinds = tuple(self.management_kinds or ())
+        if not kinds or len(set(kinds)) != len(kinds):
+            raise ContractError(f"{key}: management_kinds must be a non-empty list without "
+                                "duplicates", config_key=f"{key}.management_kinds")
+        for k in kinds:
+            _choice(k, MANAGEMENT_KINDS, input=key, field="management_kinds",
+                    config_key=f"{key}.management_kinds")
+        object.__setattr__(self, "management_kinds", kinds)
+        for f, lo in (("pre_days", 1), ("post_offset_days", 0), ("post_days", 1),
+                      ("recovery_smoothing_days", 1), ("recovery_max_days", 1)):
+            v = getattr(self, f)
+            if v is None:
+                raise ContractError(f"{key}: {f} not declared", config_key=f"{key}.{f}")
+            object.__setattr__(self, f, _positive_int(v, key=key, field=f, minimum=lo))
+        if self.recovery_max_days < self.post_offset_days + self.recovery_smoothing_days - 1:
+            raise ContractError(f"{key}: recovery_max_days {self.recovery_max_days} leaves no "
+                                "complete smoothing window after the event",
+                                config_key=f"{key}.recovery_max_days")
+        object.__setattr__(self, "min_window_completeness", _fraction(
+            self.min_window_completeness, key=key, field="min_window_completeness"))
+        object.__setattr__(self, "recovery_fraction", _fraction(
+            self.recovery_fraction, key=key, field="recovery_fraction"))
+        if self.baseline_min_mm is None or isinstance(self.baseline_min_mm, bool):
+            raise ContractError(f"{key}: baseline_min_mm not declared (mm d-1)",
+                                config_key=f"{key}.baseline_min_mm")
+        b = float(self.baseline_min_mm)
+        if not math.isfinite(b) or b < 0:
+            raise ContractError(f"{key}: baseline_min_mm must be finite and >= 0",
+                                config_key=f"{key}.baseline_min_mm")
+        object.__setattr__(self, "baseline_min_mm", b)
+        _choice(self.approximate_policy, APPROXIMATE_POLICIES, input=key,
+                field="approximate_policy", config_key=f"{key}.approximate_policy")
+        variables = {}
+        for name, body in (self.weather_variables or {}).items():
+            vkey = f"{key}.weather_variables.{name}"
+            if not isinstance(body, WindowVariableSpec):
+                _check_keys(body, set(WindowVariableSpec.__dataclass_fields__), vkey)
+                body = WindowVariableSpec(**{f: body.get(f) for f in
+                                             WindowVariableSpec.__dataclass_fields__})
+            body.check(vkey)
+            variables[str(name)] = body
+        object.__setattr__(self, "weather_variables", MappingProxyType(variables))
+        if self.normalize_by is not None:
+            v = variables.get(self.normalize_by)
+            if v is None or v.aggregation != "mean":
+                raise ContractError(f"{key}: normalize_by must name a weather variable with "
+                                    "aggregation 'mean'", config_key=f"{key}.normalize_by")
+            if normalize_et_units(v.units, input=key, field=v.column,
+                                  config_key=f"{key}.weather_variables.{self.normalize_by}"
+                                  ) != ET_UNIT:
+                raise ContractError(f"{key}: normalize_by needs mm/day units")
+        if self.comparisons is not None:
+            object.__setattr__(self, "comparisons", tuple(self.comparisons))
+
+    @property
+    def windows(self) -> dict[str, tuple[int, int]]:
+        """Day offsets (inclusive) of each window; pre from the start, the rest from the end."""
+        post0 = self.post_offset_days
+        return {"pre": (-self.pre_days, -1), "post": (post0, post0 + self.post_days - 1),
+                "recovery": (post0, self.recovery_max_days)}
+
+
+@dataclass(frozen=True)
+class AnomalySpec:
+    """Anomaly skill of a cohort (guide step 14; ``etcompare.anomalies``).
+
+    The same declared method is fitted separately to the observed and the modeled series,
+    and raw-value metrics are reported on the same days next to the anomaly metrics
+    (demeaning removes part of the bias).
+
+    - ``held_out_climatology``: for each held-out ``fold_unit`` (``year`` or ``water_year``),
+      a day-of-year climatology is fitted on the other folds only: the mean of the training
+      values within ``climatology_half_window_days`` (circular, 365-day calendar,
+      ``leap_day: as_feb28``). A day's climatology needs ``min_training_values`` values from
+      ``min_training_years`` distinct training folds (the sparse-season rule); otherwise it
+      is unavailable, never filled.
+    - ``exploratory_moving_mean``: a centred ``window_days`` (odd) moving mean of the same
+      series over calendar days, needing ``min_window_completeness`` of the window. It is
+      fitted in sample: exploratory, with no claim of seasonal generalisation.
+
+    A metric sample with fewer than ``min_days`` days has a status and no value.
+    """
+
+    anomaly_id: str
+    metric_set: str
+    method: str
+    min_days: int
+    metrics: tuple[str, ...] = ("mbe", "mae", "rmse", "pearson_r")
+    fold_unit: str | None = None
+    water_year_start_month: int = 10
+    climatology_half_window_days: int | None = None
+    min_training_values: int | None = None
+    min_training_years: int | None = None
+    leap_day: str | None = None
+    window_days: int | None = None
+    min_window_completeness: float | None = None
+    comparisons: tuple[str, ...] | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        aid = self.anomaly_id
+        _require(aid, input="anomaly analysis", field="anomaly_id",
+                 config_key="anomalies[].anomaly_id")
+        key = f"anomalies.{aid}"
+        if not _METHOD_ID.match(str(aid)):
+            raise ContractError(f"{key}: anomaly_id must be snake_case", config_key=key)
+        _require(self.metric_set, input=key, field="metric_set", config_key=f"{key}.metric_set")
+        _choice(self.method, ANOMALY_METHODS, input=key, field="method",
+                config_key=f"{key}.method")
+        if self.min_days is None:
+            raise ContractError(f"{key}: min_days not declared", config_key=f"{key}.min_days")
+        object.__setattr__(self, "min_days", _positive_int(self.min_days, key=key,
+                                                           field="min_days"))
+        object.__setattr__(self, "metrics", tuple(self.metrics or ()))
+        if not self.metrics or len(set(self.metrics)) != len(self.metrics):
+            raise ContractError(f"{key}: metrics must be a non-empty list without duplicates",
+                                config_key=f"{key}.metrics")
+        for m in self.metrics:
+            _choice(m, DIAGNOSTIC_METRICS, input=key, field="metrics", config_key=f"{key}.metrics")
+        clim = ("fold_unit", "climatology_half_window_days", "min_training_values",
+                "min_training_years", "leap_day")
+        moving = ("window_days", "min_window_completeness")
+        own, other = (clim, moving) if self.method == "held_out_climatology" else (moving, clim)
+        for f in own:
+            if getattr(self, f) is None:
+                raise ContractError(f"{key}: {f} not declared for method {self.method}",
+                                    config_key=f"{key}.{f}")
+        for f in other:
+            if getattr(self, f) is not None:
+                raise ContractError(f"{key}: {f} does not apply to method {self.method}",
+                                    config_key=f"{key}.{f}")
+        if self.method == "held_out_climatology":
+            _choice(self.fold_unit, FOLD_UNITS, input=key, field="fold_unit",
+                    config_key=f"{key}.fold_unit")
+            _choice(self.leap_day, LEAP_DAY_RULES, input=key, field="leap_day",
+                    config_key=f"{key}.leap_day")
+            object.__setattr__(self, "climatology_half_window_days", _positive_int(
+                self.climatology_half_window_days, key=key, field="climatology_half_window_days",
+                minimum=0))
+            for f in ("min_training_values", "min_training_years"):
+                object.__setattr__(self, f, _positive_int(getattr(self, f), key=key, field=f))
+            if not 1 <= int(self.water_year_start_month) <= 12:
+                raise ContractError(f"{key}: water_year_start_month must be 1-12",
+                                    config_key=f"{key}.water_year_start_month")
+        else:
+            w = _positive_int(self.window_days, key=key, field="window_days", minimum=3)
+            if w % 2 == 0:
+                raise ContractError(f"{key}: window_days must be odd (a centred window)",
+                                    config_key=f"{key}.window_days")
+            object.__setattr__(self, "window_days", w)
+            object.__setattr__(self, "min_window_completeness", _fraction(
+                self.min_window_completeness, key=key, field="min_window_completeness"))
+        if self.comparisons is not None:
+            object.__setattr__(self, "comparisons", tuple(self.comparisons))
+
+
 @dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
@@ -1579,6 +2609,11 @@ class Config:
     bootstrap: tuple[BootstrapSpec, ...] = ()
     rankings: tuple[RankingSpec, ...] = ()
     diagnostics: tuple[DiagnosticsSpec, ...] = ()
+    representativeness: tuple[RepresentativenessSpec, ...] = ()
+    satellite_support: tuple[SatelliteSupportSpec, ...] = ()
+    event_tables: tuple[EventTableSpec, ...] = ()
+    event_analyses: tuple[EventAnalysisSpec, ...] = ()
+    anomalies: tuple[AnomalySpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -1613,6 +2648,111 @@ class Config:
         self._check_bootstrap()
         self._check_rankings()
         self._check_diagnostics()
+        self._check_representativeness(ids)
+        names = [e.name for e in self.event_tables]
+        if len(set(names)) != len(names):
+            raise ContractError(f"duplicate event table name in {names}",
+                                config_key="event_tables")
+        for e in self.event_tables:
+            e.check_stations(self.stations)
+        cids = {c.comparison_id for c in self.comparisons}
+        msets = {m.metric_set_id for m in self.metric_sets}
+        for section, specs, id_field in (("event_analyses", self.event_analyses,
+                                          "event_analysis_id"),
+                                         ("anomalies", self.anomalies, "anomaly_id")):
+            ids = [getattr(s, id_field) for s in specs]
+            if len(set(ids)) != len(ids):
+                raise ContractError(f"duplicate {id_field} in {ids}", config_key=section)
+            for s in specs:
+                key = f"{section}.{getattr(s, id_field)}"
+                unknown = set(s.comparisons or ()) - cids
+                if unknown:
+                    raise ContractError(f"{key}: comparisons {sorted(unknown)} not declared",
+                                        config_key=f"{key}.comparisons")
+        for a in self.event_analyses:
+            if a.event_table not in names:
+                raise ContractError(f"event_analyses.{a.event_analysis_id}: event table "
+                                    f"{a.event_table!r} not declared",
+                                    config_key=f"event_analyses.{a.event_analysis_id}.event_table")
+        for an in self.anomalies:
+            if an.metric_set not in msets:
+                raise ContractError(f"anomalies.{an.anomaly_id}: metric set {an.metric_set!r} "
+                                    "not declared",
+                                    config_key=f"anomalies.{an.anomaly_id}.metric_set")
+
+    def event_analysis(self, event_analysis_id: str) -> EventAnalysisSpec:
+        for a in self.event_analyses:
+            if a.event_analysis_id == event_analysis_id:
+                return a
+        raise KeyError(event_analysis_id)
+
+    def anomaly_spec(self, anomaly_id: str) -> AnomalySpec:
+        for a in self.anomalies:
+            if a.anomaly_id == anomaly_id:
+                return a
+        raise KeyError(anomaly_id)
+
+    def event_table(self, name: str) -> EventTableSpec:
+        for e in self.event_tables:
+            if e.name == name:
+                return e
+        raise KeyError(name)
+
+    def _check_representativeness(self, footprint_set_ids: list[str]) -> None:
+        rids = [r.representativeness_id for r in self.representativeness]
+        if len(set(rids)) != len(rids):
+            raise ContractError(f"duplicate representativeness_id in {rids}",
+                                config_key="representativeness")
+        for r in self.representativeness:
+            key = f"representativeness.{r.representativeness_id}"
+            if r.site_id not in self.stations:
+                raise ContractError(f"{key}: station {r.site_id} not declared",
+                                    config_key=f"stations.{r.site_id}")
+            unknown = set(r.footprint_sets) - set(footprint_set_ids)
+            if unknown:
+                raise ContractError(f"{key}: footprint sets {sorted(unknown)} not declared",
+                                    config_key=f"{key}.footprint_sets")
+        sids = [s.satellite_support_id for s in self.satellite_support]
+        if len(set(sids)) != len(sids):
+            raise ContractError(f"duplicate satellite_support_id in {sids}",
+                                config_key="satellite_support")
+        sets = {m.metric_set_id: m for m in self.metric_sets}
+        cids = {c.comparison_id: c for c in self.comparisons}
+        for s in self.satellite_support:
+            key = f"satellite_support.{s.satellite_support_id}"
+            ms = sets.get(s.metric_set)
+            if ms is None:
+                raise ContractError(f"{key}: metric_set {s.metric_set!r} not declared",
+                                    config_key=f"{key}.metric_set")
+            missing = set(s.metrics) - set(ms.metrics)
+            if missing:
+                raise ContractError(f"{key}: metrics {sorted(missing)} are not computed by metric "
+                                    f"set {ms.metric_set_id}", config_key=f"{key}.metrics")
+            for cid in s.comparisons or ():
+                c = cids.get(cid)
+                if c is None:
+                    raise ContractError(f"{key}: comparison {cid!r} not declared",
+                                        config_key=f"{key}.comparisons")
+                if not c.freeze_models:
+                    raise ContractError(f"{key}: comparison {cid} does not freeze days across "
+                                        "models; clear/interpolated subsets need one frozen cohort",
+                                        config_key=f"{key}.comparisons")
+            unknown = {m for src in s.sources for m in src.models} - set(self.products)
+            if unknown:
+                raise ContractError(f"{key}: support for undeclared models {sorted(unknown)}",
+                                    config_key=f"{key}.sources")
+
+    def representativeness_spec(self, representativeness_id: str) -> RepresentativenessSpec:
+        for r in self.representativeness:
+            if r.representativeness_id == representativeness_id:
+                return r
+        raise KeyError(representativeness_id)
+
+    def satellite_support_spec(self, satellite_support_id: str) -> SatelliteSupportSpec:
+        for s in self.satellite_support:
+            if s.satellite_support_id == satellite_support_id:
+                return s
+        raise KeyError(satellite_support_id)
 
     def _check_diagnostics(self) -> None:
         dids = [d.diagnostics_id for d in self.diagnostics]
@@ -1888,7 +3028,8 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
            "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
            "footprint_aggregations", "comparisons", "period_aggregations",
            "crop_height_tables", "metric_sets", "bootstrap", "rankings", "diagnostics",
-           "output_dir"}
+           "representativeness", "satellite_support", "event_tables", "event_analyses",
+           "anomalies", "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -2048,6 +3189,67 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         kw.update({k: v for k, v in body.items() if k not in kw})
         diagnostics.append(DiagnosticsSpec(**kw))
 
+    represent = []
+    rp_fields = set(RepresentativenessSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("representativeness") or []):
+        _check_keys(body, rp_fields, f"representativeness[{i}]")
+        kw = {f: body.get(f) for f in ("representativeness_id", "site_id", "footprint_sets",
+                                       "layers", "matching_policies")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        kw["reference_grid_raster"] = _path(kw.get("reference_grid_raster"), base_dir)
+        layers = {}
+        for name, lay in (kw.get("layers") or {}).items():
+            if isinstance(lay, Mapping):
+                lay = dict(lay)
+                lay["assets"] = [{**a, "path": _path(a.get("path"), base_dir)}
+                                 if isinstance(a, Mapping) else a
+                                 for a in (lay.get("assets") or [])]
+                if lay.get("legend_csv") is not None:
+                    lay["legend_csv"] = _path(lay["legend_csv"], base_dir)
+            layers[name] = lay
+        kw["layers"] = layers
+        kw["polygons"] = [{**p, "path": _path(p.get("path"), base_dir)} if isinstance(p, Mapping)
+                          else p for p in (kw.get("polygons") or [])]
+        represent.append(RepresentativenessSpec(**kw))
+
+    satellites = []
+    ss_fields = set(SatelliteSupportSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("satellite_support") or []):
+        _check_keys(body, ss_fields, f"satellite_support[{i}]")
+        kw = {f: body.get(f) for f in ("satellite_support_id", "metric_set", "min_subset_days")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        kw["sources"] = [{**s, "path": _path(s.get("path"), base_dir)} if isinstance(s, Mapping)
+                         else s for s in (kw.get("sources") or [])]
+        satellites.append(SatelliteSupportSpec(**kw))
+
+    events = []
+    ev_fields = set(EventTableSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("event_tables") or []):
+        _check_keys(body, ev_fields, f"event_tables[{i}]")
+        kw = {f: body.get(f) for f in ev_fields}
+        kw["path"] = _path(kw.get("path"), base_dir)
+        events.append(EventTableSpec(**kw))
+
+    event_analyses = []
+    ea_fields = set(EventAnalysisSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("event_analyses") or []):
+        _check_keys(body, ea_fields, f"event_analyses[{i}]")
+        kw = {f: body.get(f) for f in ("event_analysis_id", "event_table", "management_kinds",
+                                       "pre_days", "post_offset_days", "post_days",
+                                       "min_window_completeness", "baseline_min_mm",
+                                       "recovery_fraction", "recovery_max_days",
+                                       "recovery_smoothing_days", "approximate_policy")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        event_analyses.append(EventAnalysisSpec(**kw))
+
+    anomalies = []
+    an_fields = set(AnomalySpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("anomalies") or []):
+        _check_keys(body, an_fields, f"anomalies[{i}]")
+        kw = {f: body.get(f) for f in ("anomaly_id", "metric_set", "method", "min_days")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        anomalies.append(AnomalySpec(**kw))
+
     return Config(
         stations=stations,
         products=products,
@@ -2066,6 +3268,11 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         bootstrap=tuple(bootstraps),
         rankings=tuple(rankings),
         diagnostics=tuple(diagnostics),
+        representativeness=tuple(represent),
+        satellite_support=tuple(satellites),
+        event_tables=tuple(events),
+        event_analyses=tuple(event_analyses),
+        anomalies=tuple(anomalies),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 

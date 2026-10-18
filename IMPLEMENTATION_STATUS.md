@@ -16,8 +16,239 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 10 — Paired block-bootstrap intervals | **Done** 2026-10-16 (station level; defaults Provisional, no block length adopted) |
 | 11 — Ranking and paired contrasts | **Done** 2026-10-16 (station level; defaults Provisional; network summaries have n_sites = 1 for US-UTJ) |
 | 12 — Closure, coverage and environmental diagnostics | **Done** 2026-10-16 (station level; defaults Provisional; several diagnostics `not_available` for US-UTJ by design) |
-| 13 — Landscape representativeness and satellite support | Not started (next) |
-| 14–18 | Not started |
+| 13 — Landscape representativeness and satellite support | **Done** 2026-10-17 (station level; defaults Provisional; no matching policy adopted; satellite support `not_available` for US-UTJ, D-011) |
+| 14 — Anomalies and management events | **Done** 2026-10-17 (station level; defaults Provisional, chosen by the assistant at the user's request; uncontrolled before/after only; no held-out anomaly skill possible for US-UTJ) |
+| 15–18 | Not started |
+
+## Step 14, part 2 — Event responses and anomalies (2026-10-17)
+
+**Run it**
+```bash
+uv run python -m pytest                           # 587 passed, 3 skipped (opt-in Drive raster tests)
+uv run ruff check src tests tools/run_cohorts.py tools/run_representativeness.py tools/run_events.py && uv run mypy   # clean
+uv run python tools/run_events.py examples/us_utj.yaml   # ~4 s; outputs/events/
+UV_LINK_MODE=copy uv run --isolated --resolution lowest-direct --python 3.11 --with pytest \
+    python -W error::FutureWarning -m pytest tests/test_events.py tests/test_event_analysis.py \
+    tests/test_anomalies.py tests/test_import_gate.py tests/test_schemas.py tests/test_config.py \
+    tests/test_imputation.py tests/test_aggregation.py tests/test_cohorts.py tests/test_metrics.py
+    # oldest stack: 274 passed
+```
+
+### API
+- **`etcompare.events.analyse_events(cohort, events, spec, *, station_daily=None)`** returns an `EventAnalysisResult` with `responses` (`event_responses` v1), `overlaps` (`event_overlaps` v1), `conditions` (`event_conditions` v1), `report` and `tables()`. `recovery(values, end, baseline, spec, next_management)` is public and tested.
+- **`etcompare.anomalies.compute_anomalies(cohort, spec, metric_spec)`** returns an `AnomalyResult` with `daily` (`anomaly_daily` v1), `metrics` (`anomaly_metrics` v1) and `report`. Building blocks: `day_of_year_365`, `fold_labels`, `climatology` and `moving_mean`.
+- **Config:**
+  - `EventAnalysisSpec` (`event_analyses:`) with `WindowVariableSpec`;
+  - `AnomalySpec` (`anomalies:`);
+  - `ManagementRecordSpec` (`event_tables[].management_records`);
+  - accessors `Config.event_analysis()` and `anomaly_spec()`;
+  - constants `APPROXIMATE_POLICIES`, `WINDOW_AGGREGATIONS`, `ANOMALY_METHODS`, `FOLD_UNITS` and `LEAP_DAY_RULES`.
+- **`station_events`** v1 gains `management_record` and `management_record_source`.
+- **[tools/run_events.py](tools/run_events.py)** reads the event tables, builds only the cohorts these analyses list, and writes `outputs/events/`.
+
+### Delivered
+The rules are in the module docstrings and D-061:
+- Events come only from the adapter's table; anything else is refused.
+- Calendar windows hold cohort days only, with explicit completeness. A cumulative response needs every post day, and recovery is identifiable only without gaps.
+- Overlapping events of every category, weather conditions and gap-filled days are kept visible.
+- Every row is labelled an uncontrolled before/after design and not causal evidence.
+- Climatologies are held out by fold, with explicit leap-day and sparse-season rules. Exploratory detrending is in sample and labelled so.
+- Raw metrics are reported on the same days next to the anomaly metrics.
+
+### Checks
+- **[tests/test_event_analysis.py](tests/test_event_analysis.py)** (21 tests):
+  - **Gate:** a synthetic irrigation cutoff gives exactly −3 mm/day, −60 % and −21 mm;
+  - incomplete baselines and post windows;
+  - overlaps of management, instrument and confounder events, with their windows (instrument and confounder events are never analysed);
+  - recovery day and every recovery status;
+  - gap-filled flags, weather conditions and normalisation, and a missing weather column (skipped alone);
+  - the approximate policy, and shared days in frozen cohorts;
+  - forged or foreign event tables are refused, plus 11 declaration refusals.
+- **[tests/test_anomalies.py](tests/test_anomalies.py)** (18 tests):
+  - leap-day and water-year folds; the circular window and sparse rule;
+  - **Gate:** a perturbed held-out year leaves its own climatology unchanged;
+  - a constant bias vanishes from anomalies while raw MBE keeps it;
+  - metrics equal `compute_metrics`;
+  - two years give `insufficient_training_years`;
+  - the exploratory moving mean is analytic (+3 departure → 3 − 3/31) and keeps gaps;
+  - sparse samples and gap-filled flags; declaration refusals.
+- **[tests/test_events.py](tests/test_events.py)** (+9): management-record confirmations, and the `event_analyses` / `anomalies` config sections.
+- **Independent real-data check:** the 2025-07-05 and 2025-09-07 responses (means, change, ET/ETr change, cumulative response, recovery day) were recomputed from `US-UTJ_daily.csv` by hand and match exactly.
+
+### US-UTJ results (D-061; local outputs, git-ignored)
+- After every cutting with measured reference days, the station drops 1.8–3.8 mm/day in the following week. Every model drops less (modeled − observed change +0.15 to +2.70 mm/day), and several recover 16–18 days sooner after 2025-07-05.
+- **2025-05-28 cannot be assessed:** all 14 window days have gap-filled reference values (`gridMET_ETr × ETrF_filtered`), so the observed curve is the gap-fill, not the cut.
+- 2024-06-11 has no complete window. The 2024 cuttings are covered only by the eemetric/ssebop pair and the coverage cohorts.
+- **No held-out anomaly skill exists:** the record holds two or three partial water years. The exploratory anomalies are in sample only.
+- Uncontrolled before/after, one station: descriptive, not causal, and not a verdict on any model.
+
+### Open (user decisions; all current values Provisional)
+- The event-window, completeness and recovery defaults (7/1–7/0.7/0.9/3/28), and `baseline_min_mm` 0.5.
+- Whether cutting windows that are mostly gap-filled should be excluded rather than flagged.
+- The anomaly defaults (water-year folds, ±15 days, ≥ 20 values from ≥ 2 years; 31-day exploratory window).
+- A control site or period, if a BACI design is wanted.
+- Whether `station_log` is the right class for the `eddy`/`met`/`both` sources.
+
+## Step 14, part 1 — Station event tables (2026-10-17)
+
+**Run it**
+```bash
+uv run python -m pytest                           # 530 passed, 3 skipped (+4 local US-UTJ event checks)
+uv run ruff check src tests tools/run_cohorts.py tools/run_representativeness.py && uv run mypy   # clean
+UV_LINK_MODE=copy uv run --isolated --resolution lowest-direct --python 3.11 --with pytest \
+    python -W error::FutureWarning -m pytest tests/test_events.py tests/test_import_gate.py \
+    tests/test_schemas.py tests/test_config.py tests/test_imputation.py   # oldest stack: 136 passed
+```
+
+### API
+- **`etcompare.adapters.event_log.adapt_event_table(source, spec, *, stations)`** returns an `AdapterResult` with a `station_events` table (v1, key `site_id` + `event_id`), a validation report, and exclusions (stage `event_adapter`). `approximate_flags(notes, patterns)` applies the declared text rule.
+- **Config:** `EventTableSpec` (the `event_tables:` section) and `EventTypeSpec`; `Config.event_table(name)`. New constants: `EVENT_CATEGORIES`, `MANAGEMENT_KINDS`, `EVIDENCE_CLASSES`, `EVENT_DAY_RULES`, `EVENT_COLUMNS` and `EVENT_OPTIONAL_COLUMNS`. Schema constant `EVENT_ROLES`.
+
+### Delivered
+- Events come only from the log. The adapter takes no model, residual or cohort input (tested via its signature).
+- Refusals, exclusions, the day rule, the evidence classes and the approximate rule are as in D-060. Every event keeps `observer`, `event_source`, `event_notes` and all `src_` columns.
+- `examples/us_utj.yaml` declares `utj_station_events`.
+
+### Checks
+- **[tests/test_events.py](tests/test_events.py)** (46 tests, synthetic):
+  - the logged context is kept;
+  - only management events get `management_event`, and cuttings are never irrigation;
+  - the station day is the logged calendar date (23:59 and 00:01 are not moved);
+  - unmapped stations and out-of-record events are excluded with reasons, and edge-crossing events carry a warning;
+  - the approximate rule: "date approximate" and "approximate date" match; "depth approximate", "time estimated" and "dated approximately" do not;
+  - every refusal (duplicate IDs across stations, null ID, undeclared type, unmapped source, bad or blank timestamp, missing column or file, tz-aware stamps, timezone mismatch) and 17 declaration refusals;
+  - CSV/DataFrame equivalence and a Parquet round trip.
+- **[tests/integration/test_us_utj_events.py](tests/integration/test_us_utj_events.py)** (local log): the sha256; 17 events; the six cutting dates with their evidence classes; only 2024-09-08 approximate; the IRGASON move as an overlap; the exclusion counts; and the cuttings equal the crop-height resets (one-day drops to the 5 cm base).
+
+### US-UTJ (D-060)
+- 6 cuttings: 2024-06-11, 2024-07-19 and 2025-07-05 come from Planet imagery (remote-sensing inference), and 2024-09-08, 2025-05-28 and 2025-09-07 from the camera (photo observation). 2024-09-08 is approximate.
+- 11 instrument overlaps inside the record. 17 US-UTJ entries outside the record and 479 rows of other stations are excluded with reasons.
+- No irrigation events.
+
+### Open (user decisions)
+- ~~Which cuttings the farm records confirm.~~ All six (user, 2026-10-17; part 2).
+- ~~The event-analysis settings and the anomaly method.~~ Provisional defaults in part 2.
+- Whether `station_log` is the right class for the `eddy`/`met`/`both` sources.
+
+## Step 13 — Landscape representativeness and satellite support (2026-10-17)
+
+**Run it**
+```bash
+uv sync --extra geo && uv pip install -e ../footprints   # fluxfootprints: optional, not an extra (D-056)
+uv run python -m pytest                           # 483 passed, 3 skipped (opt-in Drive raster tests)
+uv run ruff check src tests tools/run_cohorts.py tools/run_representativeness.py && uv run mypy   # clean
+uv run python tools/run_representativeness.py examples/us_utj.yaml   # landscape (~70 s; reads M: once)
+uv run python tools/run_cohorts.py examples/us_utj.yaml              # + satellite support (~4 min)
+UV_LINK_MODE=copy uv run --isolated --resolution lowest-direct --python 3.11 --with pytest \
+    python -W error::FutureWarning -m pytest tests/test_representativeness.py tests/test_satellite.py \
+    tests/test_spatial.py tests/test_import_gate.py tests/test_diagnostics.py tests/test_ranking.py \
+    tests/test_bootstrap.py tests/test_metrics.py tests/test_aggregation.py tests/test_cohorts.py \
+    tests/test_schemas.py tests/test_config.py tests/test_imputation.py
+    # oldest stack (numpy 1.26.0, pandas 2.2.0, pyarrow 14.0.0, scipy 1.11.1, no geo):
+    # 387 passed, 7 skipped (shapely, pyproj and fluxfootprints tests)
+```
+
+### API
+- **`etcompare.representativeness.assess_landscape(spec, *, footprint_days, layers, fixed_supports=(), footprint_unusable=None, station_land_cover=None, label_source=None, unavailable=())`** returns an immutable `RepresentativenessResult` with:
+  - `class_fractions` (`landscape_class_fractions` v1) and `index_summaries` (`landscape_index_summaries` v1);
+  - `differences` (`landscape_method_differences` v1);
+  - `labels` (`representativeness_labels` v1) and `availability` (`representativeness_availability` v1);
+  - `report` and `tables()`.
+- **Building blocks** (public, tested): `contour_mask` (footprint only), `class_composition`, `index_summary`, `match_asset`, `pixel_window_support`, `nearest_pixel_support`, `polygon_support`, `polygon_cell_fractions`, `read_layer_asset` (geo) and `read_legend_csv`. Data classes: `LayerAsset`, `FootprintDay`, `FixedSupport` and `LabelSource`.
+- **`etcompare.satellite`:** `support_status(sources, tables)`, `acquisition_gaps(days, clear_days)` and `assess_satellite_support(cohort, spec, metric_spec, *, support)` → `SatelliteSupportResult` (`satellite_support_errors` v1 + availability).
+- **`etcompare.adapters.fluxfootprints_labels`:** `fluxfootprints_status()` (version, commit, location), `categorical_labels`, `to_xy` and `upstream_parameters`. All imports are deferred.
+- **Config:**
+  - `RepresentativenessSpec` (`representativeness:` section) with `LandscapeLayerSpec`, `LayerAssetSpec`, `MatchingPolicySpec` and `PolygonLayerSpec`.
+  - `SatelliteSupportSpec` (`satellite_support:` section) with `SupportSourceSpec`.
+  - New constants: `LAYER_KINDS`, `MATCHING_POLICIES`, `LANDSCAPE_METHODS`, `SUPPORT_KINDS` and `ACQUISITION_GAP_VARIABLES`. New accessors `Config.representativeness_spec()` and `satellite_support_spec()`.
+- **`prepare_footprint`** gains the status `invalid_values` (a normalized weight above 1, or a total that is not finite; D-054).
+
+### Delivered
+- **[src/etcompare/representativeness.py](src/etcompare/representativeness.py)**; the rules are in the module docstring and D-055:
+  - **Conservative transfer.** Every support's weights move onto the layer's native grid by exact area overlap (D-028). Classes and index values never move, so no categorical map is interpolated and no 30 m class is shown as 10 m information.
+  - **Separate denominators:** valid / grid total, nodata / grid total, outside / grid total, and class / valid (summing to 1). There are explicit nodata rows, and nothing is multiplied with domain capture.
+  - **Weighted index:** mean, population weighted SD (the formula is on every row) and Kish `n_eff`.
+  - **Contours** come from the footprint alone, as separate `contour_<level>` rows next to `full_domain`.
+  - **Matching:** `nearest`, `previous_only`, `within_n_days`. Every row records the days from the layer, the relation, both years, the year mismatch and `retrospective`. Days without an admissible asset get a per-day `not_available` row and are never filled.
+  - **Fixed supports** (3×3 window and nearest pixel on the model grid, polygons) on the footprint's frozen days with the same asset, and footprint − support differences. `ET_mean` is never a fixed support (D-007).
+  - **Labels:** the station IGBP label and the fluxfootprints labels sit in their own table, kept apart from every number.
+- **[src/etcompare/satellite.py](src/etcompare/satellite.py)** (D-057):
+  - Authoritative flags or counts only. Missing rows are `unknown`.
+  - Clear and interpolated subsets are identical across models; mixed and unknown days are counted. Metrics come via `compute_metrics`.
+  - Timing bins come from config; the variables that use later acquisitions are labelled retrospective. Without sources: `not_available`.
+- **[src/etcompare/adapters/fluxfootprints_labels.py](src/etcompare/adapters/fluxfootprints_labels.py)** (D-056): calls `categorical_representativeness` on the native map grid and records the version, commit and thresholds.
+- **Schemas:** the six tables above, all v1. Keys include analysis, site, date, day set, extraction method, footprint set, layer, matching policy, domain and class (labels also source and radius; satellite errors also cohort, series, variable, subset and metric), so none can collide.
+- **[tools/run_representativeness.py](tools/run_representativeness.py)** (new) writes `outputs/representativeness/<id>_{class_fractions,index_summaries,differences,labels,availability}.{parquet,csv}` and `<id>_report.txt` (inputs with SHA-256, settings, summary).
+- **[tools/run_cohorts.py](tools/run_cohorts.py)** also writes `<id>__<sat>_satellite_{errors,availability}.{parquet,csv}` for frozen cohorts.
+- **Example config:**
+  - `utj_landscape` on Annual NLCD 2023–2025, CDL 2024 and the tower field. Legend file: `examples/legends/cdl_2024_legend.csv`.
+  - `utj_satellite_support` with no sources.
+  - All settings are **Provisional** (D-055, D-057).
+- **Docs:** D-054 to D-058; contract §1, §8 and §9 rows.
+
+### Gate checks, in [tests/test_representativeness.py](tests/test_representativeness.py) (40) and [tests/test_satellite.py](tests/test_satellite.py) (20)
+Expected values are independent: rectangle areas by hand, the 0.75/0.25 moments written out, contours listed from binary-exact weights, calendar day counts, and numpy metrics on masks built from the synthetic flags.
+- **Mixed land cover** (30 m map; uniform 10 m footprint shifted by 25 m, so cells straddle the map edges at 30, 60 and 90 m):
+  - Class shares equal the area ratios 3150/6175 and 3025/6175.
+  - The nodata area is 125/6300 of the grid total and is reported separately.
+  - Valid weight is 6175/6300, and the shares sum to 1.
+  - A cell straddling a class boundary splits 0.125/0.125; a footprint half outside the map gives outside fraction 0.5.
+  - A class missing from the legend raises.
+- **Index:** a uniform index has SD 0. Weights 0.75/0.25 on 0.2/0.6 give mean 0.3, SD √0.1875·0.4 and n_eff 1.6, both directly and through the transfer.
+- **Contours:** {0.5, 0.25} at level 0.75. At level 0.8 both tied 0.125 cells are included (mass 1.0). Contour shares are 2/3 and 1/3 against 0.5 and 0.5 for the full domain, both kept. Under a different map the contour mass and membership are unchanged.
+- **Matching:**
+  - `nearest` picks the same-year map (0 days, retrospective). `previous_only` picks 2023 (157 days, not retrospective).
+  - For 2025-03-01, `nearest` gives 60 days (past), and `within_30_days` gives nothing.
+  - An 8-day tie goes to the past scene; 7 days ahead gives a future scene (retrospective) under `nearest` and the past one under `previous_only`. A same-day scene is not retrospective.
+  - Days without an asset are per-day `not_available` rows with no data rows, and retrospective rows are flagged.
+- **Fixed supports:** the 3×3 window gives 6/9 and 3/9. Footprint − window and footprint − pixel differences are as computed by hand (a class absent on one side has share 0). Partial windows are reported, and polygon area shares are exact (0.5/0.5).
+- **Labels never enter numbers:** labels `high` and `low` give identical class, index and difference tables, every label row carries `label_not_accuracy_guarantee`, and the numeric tables have no label column.
+- **fluxfootprints against the real API:** `p_footprint` = 0.8, `p_target` equals an independent disc count, and the label equals upstream `classify_categorical`. The `(x, y)` orientation is tested separately.
+- **No acquisition metadata:** a cohort with daily values in every model and no source gives no error rows and `not_available` (`no_acquisition_metadata`). Flags on 60 of 120 days leave 60 days `unknown`, never interpolated.
+- **Clear and interpolated subsets:** with per-model flags (three days where one model differs, counted as mixed), every model has identical subset days, and MBE/MAE/RMSE equal numpy and `compute_metrics`. Per-model counts are recorded, and a 5-day subset is `sparse_subset` with no value.
+- **Timing:** days since, nearest and enclosing gap are checked by hand. Count sources convert with `min_clear_count`, bins count 15/45/60 days, the enclosing gap is retrospective, and 7 trailing days are `variable_missing`.
+- **Also tested:** unfrozen cohorts are refused, and missing model support gives `support_missing_for_models`. Non-boolean and null flags are refused.
+- **Parquet:** all six tables round-trip; `test_schemas` covers every new schema too.
+- **Config:** 21 representativeness and 11 satellite rejection cases, among them a missing legend, vintage or acquisition date, an unknown or undeclared policy, contour levels 0 and 1, an undeclared nodata, scene cloud cover, missing authority or meaning, a label threshold key and a non-frozen comparison.
+- **Import:** the gate now also blocks `fluxfootprints`, `xarray` and `pyogrio`. etcompare imports without the geo extra; this is also exercised by the oldest stack.
+
+### US-UTJ run (D-054, D-058; local outputs)
+- **Inputs** were confirmed by the user (D-054):
+  - Annual NLCD, which replaced a folder that turned out to hold the LCNext stratum map;
+  - CDL 2024 at 30 m;
+  - `Bluff.gpkg`, with the CRS and tower field declared by the user;
+  - no NDVI and no acquisition metadata.
+- **Corrupted footprints restored:** three daily files per etcompare-built set (the D-043 dates) were still corrupt in this checkout, and two passed `prepare_footprint`. They were restored from the other clone, and a guard was added.
+- **Independent checks:** point sampling (8×8 per footprint cell) agrees to ≤ 2.7e-4, the window lattice gives 0.2852/0.5984, the polygon Monte Carlo agrees to ≤ 0.001, and fluxfootprints `p_footprint` equals etcompare to 1e-6.
+- **Footprint, full domain:** NLCD crops 0.394 and woody wetlands 0.570; CDL alfalfa 0.696 and shrubland 0.282. The field polygon is 0.900 crops (NLCD) and 0.878 alfalfa (CDL). The footprint is never the field.
+- **NLCD and CDL disagree** on the riparian strip east of the tower. The tower's OpenET pixel is woody wetlands in NLCD and alfalfa in CDL. This is not resolved.
+- **Matching:** NLCD `nearest` (same year, retrospective) and `previous_only` (previous year) agree. CDL `previous_only` leaves the 191 days of 2024 `not_available`.
+- **fluxfootprints:** 20,459 `low` and 1 `medium`. Labels only.
+- **Satellite support:** `not_available` for all four frozen ranking cohorts, with zero rows (D-011, D-057).
+- **Restated:**
+  - IGBP CRO is a site label, not a fraction.
+  - No acquisition flags exist (D-011).
+  - No intervals are attached in step 13. Elsewhere, 28-day blocks mostly lack support and the 7- and 14-day intervals are probably too narrow (D-048).
+  - Gap-filled reference days share gridMET drivers (D-005).
+
+### Assumptions and limitations
+- **One station, descriptive only.** Landscape shares describe what each support sees. They are not ET errors, and they are not accuracy guarantees.
+- **Map quality.** The two 30 m maps disagree near the tower, and the 30 m CDL is resampled by NASS from 10 m. No map is treated as truth.
+- **Polygon vintage** is unknown, and the field boundary may predate or postdate the record.
+- **Same-year annual maps** are labelled retrospective because they are built from the whole year.
+- **fluxfootprints** is installed from a local checkout, not as an extra. Its chi-square uses pseudo-counts (upstream note).
+- **Not implemented:** scene-level cloud-cover diagnostics, which need authorization to query and are never pixel flags.
+
+### Open (user decisions)
+- **Matching policy** (`nearest` vs `previous_only`; none adopted) and the **contour level** (0.8, Provisional).
+- **Which map, if either, describes the riparian strip.** A 10 m CDL or a site survey would help.
+- **The vintage of `Bluff.gpkg`.**
+- **Whether to declare a vegetation-index series** (with acquisition dates), and whether any acquisition metadata exists.
+- **Whether to keep fluxfootprints installed** outside the project metadata.
+- **`openet_rasters.root`** in the example config is stale after the Drive reorganisation (`unclipped/`).
+- **Carried over:** block length and support (D-048), equivalence margins (D-049), quality threshold (D-008), measured-LE coverage minimum (D-038), metric tolerances (D-044), imputation driver (D-042), diagnostic defaults (D-051), and whether to keep `utj_rank_closure` and `utj_rank_methods`.
+
+**Next:** step 14. Anomalies and management events: held-out seasonal anomalies (climatologies fitted on training years only) and event windows from management records. The crop-height model's cutting dates (D-042) are candidate events; their source must be declared.
 
 ## Step 12 — Closure, coverage and environmental diagnostics (2026-10-16)
 
@@ -121,7 +352,7 @@ Expected values are independent: numpy masks and formulas on the cohort's paired
   - the quality threshold (D-008), the measured-LE coverage minimum (D-038), the metric tolerances (D-044) and the imputation driver (D-042);
   - whether to keep `utj_rank_closure` and `utj_rank_methods`.
 
-**Next:** step 13. Landscape representativeness and satellite support: footprint-weighted land-cover and vegetation-index fractions, and differences from fixed windows. Clear-observation flags need authoritative acquisition metadata, which US-UTJ lacks (D-011).
+**Next (at the time):** step 13. Superseded by the Step 13 entry above.
 
 ## Step 11 — Ranking and paired contrasts (2026-10-16)
 

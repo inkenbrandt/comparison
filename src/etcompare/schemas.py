@@ -27,9 +27,12 @@ import pandas as pd
 
 from etcompare.config import (
     DIRECTIONS,
+    EVENT_CATEGORIES,
+    EVIDENCE_CLASSES,
     FOOTPRINT_VALUE_SEMANTICS,
     INTERVAL_LABELS,
     INTERVAL_METHODS,
+    MANAGEMENT_KINDS,
     MULTIPLICITY_POLICIES,
     NETWORK_SUMMARY_TYPES,
     PERIOD_TYPES,
@@ -109,6 +112,38 @@ AVAILABILITY_STATUSES: Final = ("available", "not_available")
 REGRESSION_STATUSES: Final = ("ok", "estimate_undefined")
 RANK_CHANGE_EFFECTS: Final = ("closure", "closure_and_cohort_days", "gap_filling_and_cohort_days",
                               "closure_and_gap_filling", "other")
+#: Landscape representativeness (``etcompare.representativeness``).
+LAYER_KIND_VALUES: Final = ("categorical", "continuous")
+#: past: the asset's reference period ended before the day; contains_day: the day lies in
+#: it; future: it starts after the day. contains_day and future rows use later information.
+TEMPORAL_RELATIONS: Final = ("past", "contains_day", "future")
+CLASS_ROLES: Final = ("class", "nodata")
+LANDSCAPE_QUANTITY_KINDS: Final = ("class_fraction", "nodata_fraction", "index_mean",
+                                   "index_std")
+LABEL_SOURCES: Final = ("station_metadata", "fluxfootprints")
+SUPPORT_STATUSES: Final = ("clear_observation", "interpolated", "unknown")
+#: outside_edges / variable_missing: remainder days of a binned variable, accounted for but
+#: not binned (no value).
+SUBSET_STATUSES: Final = ("ok", "sparse_subset", "empty_subset", "estimate_undefined",
+                          "outside_edges", "variable_missing")
+#: Station events (``etcompare.adapters.event_log``). ``overlap_only`` events (instrument
+#: and confounder) are kept visible next to management events but never analysed as
+#: treatments.
+EVENT_ROLES: Final = ("management_event", "overlap_only")
+#: Event responses (``etcompare.events``).
+EVENT_SERIES: Final = ("observed", "modeled", "modeled_minus_observed")
+#: Only an uncontrolled before/after design is implemented; it is never causal evidence.
+EVENT_DESIGNS: Final = ("before_after_uncontrolled",)
+EVENT_STATUSES: Final = ("ok", "incomplete_baseline", "incomplete_post_window",
+                         "incomplete_baseline_and_post_window")
+RECOVERY_STATUSES: Final = ("recovered", "not_recovered_within_horizon",
+                            "not_identifiable_gap", "interrupted_by_management_event",
+                            "baseline_unavailable", "baseline_below_min", "not_applicable")
+OVERLAP_WINDOWS: Final = ("pre", "event", "post", "recovery")
+#: Anomalies (``etcompare.anomalies``).
+ANOMALY_DAY_STATUSES: Final = ("ok", "baseline_unavailable")
+ANOMALY_METRIC_STATUSES: Final = ("ok", "sparse_sample", "empty_sample", "estimate_undefined",
+                                  "insufficient_training_years")
 
 
 @dataclass(frozen=True)
@@ -1107,6 +1142,469 @@ REFERENCE_RANK_CHANGES = TableSchema(
     primary_key=("diagnostics_id", "ranking_id", "context_a", "context_b", "metric", "model"),
 )
 
+_LANDSCAPE_KEY = (
+    _key("representativeness_id", "string", "Declared representativeness analysis"),
+    _key("site_id", "string", "Station"),
+    _key("date", "date", "Footprint station-day label"),
+    _key("day_set", "string", "Footprint set whose usable days this row belongs to (fixed "
+         "supports are evaluated on those frozen days)"),
+    _key("extraction_method", "string", "footprint_conservative, pixel_window_<n>x<n>, "
+         "nearest_tower_pixel or polygon_<id> (D-029 naming)"),
+    _key("footprint_set_id", "string", "Footprint set of the support, 'none' for fixed supports"),
+    _key("layer_id", "string", "Declared landscape layer"),
+    _key("matching_policy", "string", "Declared policy matching layer dates to the day"),
+    _key("domain", "string", "full_domain (footprint grid), contour_<level> (footprint "
+         "cumulative-contribution contour) or full_support (fixed supports)"),
+)
+
+_MATCH_COLUMNS = (
+    _c("layer_asset", "string", "File of the layer used for this day", nullable=False),
+    _c("layer_vintage", "int", "Declared vintage year (categorical maps)"),
+    _c("layer_reference_start", "date", "Start of the asset's reference period",
+       nullable=False),
+    _c("layer_reference_end", "date", "End of the asset's reference period", nullable=False),
+    _c("days_from_layer", "int", "day - reference_end (past, > 0), 0 inside the period, "
+       "day - reference_start (future, < 0)", unit="d", nullable=False),
+    _c("temporal_relation", "string", "past, contains_day or future", nullable=False,
+       allowed=TEMPORAL_RELATIONS),
+    _c("footprint_year", "int", "Calendar year of the day", nullable=False),
+    _c("layer_year", "int", "Calendar year of the asset's reference end", nullable=False),
+    _c("year_mismatch", "int", "footprint_year - layer_year", nullable=False),
+    _c("retrospective", "bool", "The asset's reference period ends after the day, so the "
+       "row uses later information", nullable=False),
+)
+
+_DENOMINATORS = (
+    _c("weight_denominator", "string", "What weight_grid_total is: e.g. "
+       "normalized_truncated_footprint (D-008), window_pixels, polygon_area", nullable=False),
+    _c("weight_grid_total", "float", "Support total: footprint-grid total, or 1 for fixed "
+       "supports", unit=FRACTION, nullable=False),
+    _c("weight_domain", "float", "Weight inside the domain (= total for full_domain; contour "
+       "mass for contours)", unit=FRACTION, nullable=False),
+    _c("weight_in_layer_extent", "float", "Domain weight on cells of the layer raster window",
+       unit=FRACTION, nullable=False),
+    _c("weight_valid", "float", "Domain weight on valid (non-nodata) layer cells",
+       unit=FRACTION, nullable=False),
+    _c("weight_nodata", "float", "Domain weight on nodata layer cells inside the extent",
+       unit=FRACTION, nullable=False),
+    _c("valid_frac_of_grid_total", "float", "weight_valid / weight_grid_total (separate "
+       "denominator; never multiplied with domain capture)", unit=FRACTION, nullable=False),
+    _c("nodata_frac_of_grid_total", "float", "weight_nodata / weight_grid_total",
+       unit=FRACTION, nullable=False),
+    _c("outside_layer_frac_of_grid_total", "float",
+       "(weight_domain - weight_in_layer_extent) / weight_grid_total", unit=FRACTION,
+       nullable=False),
+    _c("domain_frac_of_grid_total", "float", "weight_domain / weight_grid_total (contour mass "
+       "for contours)", unit=FRACTION, nullable=False),
+    _c("n_cells_valid", "int", "Layer cells with positive weight and a valid value",
+       nullable=False),
+)
+
+LANDSCAPE_CLASS_FRACTIONS = TableSchema(
+    "landscape_class_fractions", "1",
+    "Weight of a support (footprint, pixel window, nearest pixel, polygon) on each class of a "
+    "categorical map, moved onto the map's native grid by exact area overlap (classes are "
+    "never resampled). class_frac_of_valid is conditional on valid cells and sums to 1 over "
+    "the class rows; nodata weight is a separate row. Landscape description only: not an ET "
+    "accuracy guarantee.",
+    (
+        *_LANDSCAPE_KEY,
+        _key("class_code", "string", "Legend code, or 'nodata'"),
+        _c("class_role", "string", "class or nodata", nullable=False, allowed=CLASS_ROLES),
+        _c("class_name", "string", "Legend name ('nodata' for the nodata row)", nullable=False),
+        _c("class_weight", "float", "Domain weight on this class (or on nodata)", unit=FRACTION,
+           nullable=False),
+        _c("class_frac_of_valid", "float", "class_weight / weight_valid; null for nodata",
+           unit=FRACTION),
+        _c("class_frac_of_grid_total", "float", "class_weight / weight_grid_total",
+           unit=FRACTION, nullable=False),
+        *_DENOMINATORS,
+        *_MATCH_COLUMNS,
+        _c("contour_level", "float", "Declared contour level of a contour domain", unit=FRACTION),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=tuple(c.name for c in _LANDSCAPE_KEY) + ("class_code",),
+)
+
+LANDSCAPE_INDEX_SUMMARIES = TableSchema(
+    "landscape_index_summaries", "1",
+    "Support-weighted mean and variability of a continuous vegetation index on its native "
+    "grid. weighted_std = sqrt(sum c_j (v_j - m)^2 / sum c_j) over valid cells (population "
+    "form, no small-sample correction); n_eff = (sum c_j)^2 / sum c_j^2 (Kish effective number "
+    "of cells). Landscape description only: not an ET accuracy guarantee.",
+    (
+        *_LANDSCAPE_KEY,
+        _c("index_units", "string", "Declared units of the index", nullable=False),
+        _c("weighted_mean", "float", "sum c_j v_j / sum c_j over valid cells", nullable=False),
+        _c("weighted_std", "float", "Weighted population standard deviation", nullable=False),
+        _c("std_estimator", "string", "Exact estimator of weighted_std", nullable=False),
+        _c("n_eff", "float", "Effective number of contributing cells", nullable=False),
+        *_DENOMINATORS,
+        *_MATCH_COLUMNS,
+        _c("contour_level", "float", "Declared contour level of a contour domain", unit=FRACTION),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=tuple(c.name for c in _LANDSCAPE_KEY),
+)
+
+LANDSCAPE_METHOD_DIFFERENCES = TableSchema(
+    "landscape_method_differences", "1",
+    "Footprint minus fixed-support landscape quantities on frozen footprint days: the same "
+    "day, layer asset and matching policy on both sides. A difference describes what the "
+    "supports see; it is not an ET error. ET_mean (source_region_mean) is a varying source "
+    "region (D-007) and never appears as a fixed support.",
+    (
+        _key("representativeness_id", "string", "Declared representativeness analysis"),
+        _key("site_id", "string", "Station"),
+        _key("date", "date", "Footprint station-day label"),
+        _key("footprint_set_id", "string", "Footprint set (baseline side)"),
+        _key("layer_id", "string", "Declared landscape layer"),
+        _key("matching_policy", "string", "Declared matching policy"),
+        _key("domain", "string", "Footprint domain: full_domain or contour_<level>"),
+        _key("compared_method", "string", "Fixed support compared with the footprint"),
+        _key("quantity", "string", "class_frac_of_valid:<code>, nodata_frac_of_grid_total, "
+             "index_mean or index_std"),
+        _c("quantity_kind", "string", "Kind of quantity", nullable=False,
+           allowed=LANDSCAPE_QUANTITY_KINDS),
+        _c("footprint_value", "float", "Footprint side (0 for a class absent on that side)",
+           nullable=False),
+        _c("method_value", "float", "Fixed-support side", nullable=False),
+        _c("difference", "float", "footprint_value - method_value", nullable=False),
+        _c("units", "string", "Units of the quantity", nullable=False),
+        _c("layer_asset", "string", "Asset used on both sides", nullable=False),
+        _c("retrospective", "bool", "The asset uses information from after the day",
+           nullable=False),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("representativeness_id", "site_id", "date", "footprint_set_id", "layer_id",
+                 "matching_policy", "domain", "compared_method", "quantity"),
+)
+
+REPRESENTATIVENESS_LABELS = TableSchema(
+    "representativeness_labels", "1",
+    "Qualitative labels kept next to the quantitative fractions: the station's metadata land "
+    "cover (a site label, not a footprint-weighted fraction) and optional fluxfootprints "
+    "HIGH/MEDIUM/LOW classes. A label never enters a metric or threshold and is not a "
+    "quantitative ET accuracy guarantee.",
+    (
+        _key("representativeness_id", "string", "Declared representativeness analysis"),
+        _key("site_id", "string", "Station"),
+        _key("date_label", "string", "ISO day, or 'all' for a station-level label"),
+        _key("day_set", "string", "Footprint set, or 'none'"),
+        _key("layer_id", "string", "Layer the label describes, or 'station_metadata'"),
+        _key("matching_policy", "string", "Matching policy, or 'none'"),
+        _key("domain", "string", "Footprint domain, or 'none'"),
+        _key("label_source", "string", "station_metadata or fluxfootprints",
+             allowed=LABEL_SOURCES),
+        _key("radius_m", "float", "Target-area radius of a fluxfootprints label; 0 otherwise",
+             unit="m"),
+        _c("label", "string", "The label (e.g. IGBP 'CRO', or 'high'/'medium'/'low')",
+           nullable=False),
+        _c("label_meaning", "string", "What the label states and what it does not",
+           nullable=False),
+        _c("dominant_class", "string", "fluxfootprints dominant footprint class"),
+        _c("p_footprint", "float", "fluxfootprints dominant-class footprint share",
+           unit=FRACTION),
+        _c("p_target", "float", "Its share of the target disc", unit=FRACTION),
+        _c("chi2", "float", "fluxfootprints chi-square statistic"),
+        _c("p_value", "float", "Its p-value (pseudo-counts; see fluxfootprints)"),
+        _c("source_version", "string", "Version and commit of the label source",
+           nullable=False),
+        _c("source_parameters", "string", "Upstream thresholds and parameters (JSON)"),
+        _c("layer_asset", "string", "Layer asset used"),
+        _c("flags", "string", "';'-joined flags (always label_not_accuracy_guarantee)"),
+    ),
+    primary_key=("representativeness_id", "site_id", "date_label", "day_set", "layer_id",
+                 "matching_policy", "domain", "label_source", "radius_m"),
+)
+
+SATELLITE_SUPPORT_ERRORS = TableSchema(
+    "satellite_support_errors", "1",
+    "Metrics (compute_metrics) of e = P - O on clear-observation and interpolated days of one "
+    "frozen cohort, identical across models, plus declared acquisition-timing bins. Support "
+    "comes only from authoritative product metadata; unknown support is never counted as "
+    "either subset.",
+    (
+        _key("satellite_support_id", "string", "Declared satellite-support analysis"),
+        _key("comparison_id", "string", "Comparison identifier"),
+        _key("cohort_id", "string", "Cohort identifier"),
+        _key("site_id", "string", "Station"),
+        *_SERIES_KEY,
+        _key("variable", "string", "support_status, or an acquisition-gap variable"),
+        _key("subset", "string", "all_cohort_days, clear_observation, interpolated, or a bin "
+             "label"),
+        _key("metric", "string", "Metric (etcompare.metrics)"),
+        _c("bin_index", "int", "Bin position for gap variables; null for support subsets"),
+        _c("bin_lower", "float", "Lower edge (days)", unit="d"),
+        _c("bin_upper", "float", "Upper edge (days)", unit="d"),
+        _c("value", "float", "Metric on the subset; null unless status ok"),
+        _c("units", "string", "Units of value", nullable=False),
+        _c("status", "string", "ok, or why there is no value", nullable=False,
+           allowed=SUBSET_STATUSES),
+        _c("status_detail", "string", "Reason behind a non-ok status"),
+        _c("n_days", "int", "Days in the subset (identical for every model)", nullable=False),
+        _c("n_days_cohort", "int", "Cohort days", nullable=False),
+        _c("n_days_mixed_support", "int", "Cohort days whose support differs across models "
+           "(excluded from both subsets)", nullable=False),
+        _c("n_days_unknown_support", "int", "Cohort days with no support record for some model",
+           nullable=False),
+        _c("n_days_model_clear", "int", "This model's clear days in the cohort", nullable=False),
+        _c("n_days_model_interpolated", "int", "This model's interpolated days", nullable=False),
+        _c("n_days_model_unknown", "int", "This model's days without a support record",
+           nullable=False),
+        _c("min_subset_days", "int", "Declared minimum subset size", nullable=False),
+        _c("support_sources", "string", "Support source IDs and authorities used",
+           nullable=False),
+        _c("retrospective", "bool", "The variable uses acquisitions after the day",
+           nullable=False),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("satellite_support_id", "comparison_id", "cohort_id", "site_id", "model",
+                 "reference_variant", "extraction_method", "footprint_set_id", "variable",
+                 "subset", "metric"),
+)
+
+REPRESENTATIVENESS_AVAILABILITY = TableSchema(
+    "representativeness_availability", "1",
+    "Which landscape and satellite-support analyses ran, per day where relevant, and which "
+    "were not available, with reasons. A day without an admissible layer asset is "
+    "not_available, never filled.",
+    (
+        _key("analysis_id", "string", "Declared representativeness or satellite-support ID"),
+        _key("site_id", "string", "Station"),
+        _key("analysis", "string", "landscape_class_fractions, landscape_index_summaries, "
+             "method_difference, fluxfootprints_labels, satellite_support, ..."),
+        _key("layer_id", "string", "Layer, or 'none'"),
+        _key("extraction_method", "string", "Support, or 'all'"),
+        _key("day_set", "string", "Footprint set or comparison, or 'all'"),
+        _key("matching_policy", "string", "Matching policy, or 'all'"),
+        _key("domain", "string", "Domain, or 'all'"),
+        _key("date_label", "string", "ISO day, or 'all'"),
+        _c("status", "string", "available or not_available", nullable=False,
+           allowed=AVAILABILITY_STATUSES),
+        _c("reason_code", "string", "Stable reason when not_available"),
+        _c("reason", "string", "Explanation (also for labelled available analyses)"),
+        _c("n_days", "int", "Days concerned"),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("analysis_id", "site_id", "analysis", "layer_id", "extraction_method",
+                 "day_set", "matching_policy", "domain", "date_label"),
+)
+
+STATION_EVENTS = TableSchema(
+    "station_events", "1",
+    "Events of a declared station event log, one row per event inside the station record. "
+    "Events come only from the log, never from model residuals or agreement. Source columns "
+    "pass through with prefix 'src_'.",
+    (
+        _key("site_id", "string", "Station (from the declared site mapping)"),
+        _key("event_id", "string", "Source event ID, preserved as text"),
+        _c("event_table", "string", "Declared event table name", nullable=False),
+        _c("source_station_id", "string", "Station ID as written in the log", nullable=False),
+        _c("start_date", "date", "Station day of the event timestamp (declared day rule)",
+           nullable=False),
+        _c("end_date", "date", "Last station day; equals start_date without an end column",
+           nullable=False),
+        _c("start_time", "string", "Time of day as logged (HH:MM:SS), null for date-only "
+           "entries (logged at exactly 00:00)"),
+        _c("event_type", "string", "Source event_type, preserved exactly", nullable=False),
+        _c("category", "string", "Declared category of the event type", nullable=False,
+           allowed=EVENT_CATEGORIES),
+        _c("management_kind", "string", "Declared kind for management events; null otherwise",
+           allowed=MANAGEMENT_KINDS),
+        _c("analysis_role", "string", "management_event, or overlap_only (instrument and "
+           "confounder events: never a treatment)", nullable=False, allowed=EVENT_ROLES),
+        _c("event_source", "string", "Source event_source, preserved exactly (null when "
+           "unlabelled)"),
+        _c("evidence_class", "string", "Declared evidence class of event_source (unknown when "
+           "unlabelled)", nullable=False, allowed=EVIDENCE_CLASSES),
+        _c("observer", "string", "Observer as logged"),
+        _c("event_notes", "string", "Notes as logged"),
+        _c("approximate", "bool", "A declared approximate-date pattern matches the notes",
+           nullable=False),
+        _c("approximate_rule", "string", "The pattern that matched, if any"),
+        _c("management_record", "bool", "A declared management record confirms the event "
+           "(event_source and evidence_class stay as logged)", nullable=False),
+        _c("management_record_source", "string", "The confirming record, who confirmed it and "
+           "when"),
+    ),
+    primary_key=("site_id", "event_id"),
+    allow_extra_columns=True,
+)
+
+_SERIES_KEYS: Final = (
+    _key("comparison_id", "string", "Comparison"),
+    _key("cohort_id", "string", "Cohort"),
+    _key("site_id", "string", "Station"),
+)
+_SIDE_KEYS: Final = (
+    _key("model", "string", "Model"),
+    _key("reference_variant", "string", "Reference variant", allowed=REFERENCE_VARIANTS),
+    _key("extraction_method", "string", "Extraction method"),
+    _key("footprint_set_id", "string", "Footprint set, or 'none'"),
+)
+
+EVENT_RESPONSES = TableSchema(
+    "event_responses", "1",
+    "Before/after response of each cohort series to each management event: baseline, change, "
+    "cumulative response and recovery for the observed and modeled series and their "
+    "difference. An uncontrolled before/after difference is not causal evidence.",
+    (
+        _key("event_analysis_id", "string", "Declared event analysis"),
+        *_SERIES_KEYS,
+        _key("event_id", "string", "Event (from the station event log)"),
+        *_SIDE_KEYS,
+        _key("series", "string", "observed, modeled or modeled_minus_observed",
+             allowed=EVENT_SERIES),
+        _c("event_start_date", "date", "Event station day", nullable=False),
+        _c("event_end_date", "date", "Last event station day", nullable=False),
+        _c("management_kind", "string", "Management kind", nullable=False),
+        _c("evidence_class", "string", "Evidence class of the logged source", nullable=False),
+        _c("management_record", "bool", "Confirmed by a management record", nullable=False),
+        _c("approximate", "bool", "The log calls the date approximate", nullable=False),
+        _c("design", "string", "Comparison design", nullable=False, allowed=EVENT_DESIGNS),
+        _c("pre_start", "date", "First baseline day", nullable=False),
+        _c("pre_end", "date", "Last baseline day", nullable=False),
+        _c("post_start", "date", "First post day", nullable=False),
+        _c("post_end", "date", "Last post day", nullable=False),
+        _c("n_pre_days_expected", "int", "Calendar days of the baseline window", nullable=False),
+        _c("n_pre_days", "int", "Cohort days in the baseline window", nullable=False),
+        _c("n_post_days_expected", "int", "Calendar days of the post window", nullable=False),
+        _c("n_post_days", "int", "Cohort days in the post window", nullable=False),
+        _c("n_pre_days_reference_filled", "int", "Gap-filled reference days in the baseline",
+           nullable=False),
+        _c("n_post_days_reference_filled", "int", "Gap-filled reference days after the event",
+           nullable=False),
+        _c("baseline_mean_mm", "float", "Mean daily ET of the baseline window", unit=ET_UNIT),
+        _c("post_mean_mm", "float", "Mean daily ET of the post window", unit=ET_UNIT),
+        _c("change_mm", "float", "post_mean - baseline_mean", unit=ET_UNIT),
+        _c("relative_change_percent", "float", "100 * change / baseline", unit="%"),
+        _c("cumulative_response_mm", "float", "Sum over the post window of (ET - baseline); "
+           "only with every post day present", unit=ET_TOTAL_UNIT),
+        _c("baseline_fraction", "float", "Baseline mean of ET / normalising variable",
+           unit=FRACTION),
+        _c("post_fraction", "float", "Post-window mean of ET / normalising variable",
+           unit=FRACTION),
+        _c("fraction_change", "float", "post_fraction - baseline_fraction", unit=FRACTION),
+        _c("recovery_days", "int", "Days after the event until the smoothed ET reaches "
+           "recovery_fraction of the baseline (difference rows: modeled - observed)", unit="d"),
+        _c("recovery_status", "string", "Recovery outcome", nullable=False,
+           allowed=RECOVERY_STATUSES),
+        _c("status", "string", "ok, or why the change is not computed", nullable=False,
+           allowed=EVENT_STATUSES),
+        _c("status_detail", "string", "Further detail"),
+        _c("overlapping_event_ids", "string", "';'-joined IDs of other events in the windows"),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("event_analysis_id", "comparison_id", "cohort_id", "site_id", "event_id",
+                 "model", "reference_variant", "extraction_method", "footprint_set_id",
+                 "series"),
+)
+
+EVENT_OVERLAPS = TableSchema(
+    "event_overlaps", "1",
+    "Every other logged event (management, instrument or confounder) inside a management "
+    "event's windows. Kept visible; instrument and confounder events are never treatments.",
+    (
+        _key("event_analysis_id", "string", "Declared event analysis"),
+        _key("site_id", "string", "Station"),
+        _key("event_id", "string", "Analysed management event"),
+        _key("other_event_id", "string", "Overlapping event"),
+        _c("other_event_type", "string", "Logged type", nullable=False),
+        _c("other_category", "string", "Declared category", nullable=False,
+           allowed=EVENT_CATEGORIES),
+        _c("other_analysis_role", "string", "management_event or overlap_only", nullable=False,
+           allowed=EVENT_ROLES),
+        _c("other_start_date", "date", "Overlapping event's station day", nullable=False),
+        _c("offset_days", "int", "Other start minus this event's start", unit="d",
+           nullable=False),
+        _c("window", "string", "pre, event, post or recovery (where the other event starts)",
+           nullable=False, allowed=OVERLAP_WINDOWS),
+        _c("other_event_notes", "string", "Notes as logged"),
+    ),
+    primary_key=("event_analysis_id", "site_id", "event_id", "other_event_id"),
+)
+
+EVENT_CONDITIONS = TableSchema(
+    "event_conditions", "1",
+    "Declared weather variables summarised over each event's windows on the station "
+    "record, so weather confounding stays visible next to the responses.",
+    (
+        _key("event_analysis_id", "string", "Declared event analysis"),
+        _key("site_id", "string", "Station"),
+        _key("event_id", "string", "Management event"),
+        _key("variable", "string", "Declared weather variable"),
+        _key("window", "string", "pre or post", allowed=("pre", "post")),
+        _c("column", "string", "station_daily column", nullable=False),
+        _c("aggregation", "string", "mean or sum", nullable=False),
+        _c("value", "float", "Window summary (null when no day has a value)"),
+        _c("units", "string", "Declared units (sums: per window)", nullable=False),
+        _c("n_days", "int", "Days with a value", nullable=False),
+        _c("n_days_expected", "int", "Calendar days of the window", nullable=False),
+    ),
+    primary_key=("event_analysis_id", "site_id", "event_id", "variable", "window"),
+)
+
+ANOMALY_DAILY = TableSchema(
+    "anomaly_daily", "1",
+    "Daily anomalies of a cohort: each value minus its baseline (held-out climatology or "
+    "exploratory moving mean), fitted separately to the observed and modeled series.",
+    (
+        _key("anomaly_id", "string", "Declared anomaly analysis"),
+        *_SERIES_KEYS,
+        _key("date", "date", "Station-day label"),
+        *_SIDE_KEYS,
+        _c("method", "string", "Anomaly method", nullable=False),
+        _c("fold", "string", "Held-out fold label, or 'in_sample'", nullable=False),
+        _c("observed_mm", "float", "Observed ET", unit=ET_UNIT),
+        _c("modeled_mm", "float", "Modeled ET", unit=ET_UNIT),
+        _c("observed_baseline_mm", "float", "Baseline fitted to the observed series",
+           unit=ET_UNIT),
+        _c("modeled_baseline_mm", "float", "Baseline fitted to the modeled series",
+           unit=ET_UNIT),
+        _c("observed_anomaly_mm", "float", "observed - observed baseline", unit=ET_UNIT),
+        _c("modeled_anomaly_mm", "float", "modeled - modeled baseline", unit=ET_UNIT),
+        _c("status", "string", "ok or baseline_unavailable", nullable=False,
+           allowed=ANOMALY_DAY_STATUSES),
+        _c("n_training_values", "int", "Values behind the baseline"),
+        _c("n_training_years", "int", "Distinct training folds behind the climatology"),
+        _c("reference_provenance", "string", "Reference provenance", allowed=REFERENCE_PROVENANCE),
+    ),
+    primary_key=("anomaly_id", "comparison_id", "cohort_id", "site_id", "date", "model",
+                 "reference_variant", "extraction_method", "footprint_set_id"),
+)
+
+ANOMALY_METRICS = TableSchema(
+    "anomaly_metrics", "1",
+    "Metrics of raw values and of anomalies on the same days, per fold and pooled. Raw bias "
+    "is reported next to anomaly skill because demeaning removes part of the bias.",
+    (
+        _key("anomaly_id", "string", "Declared anomaly analysis"),
+        *_SERIES_KEYS,
+        *_SIDE_KEYS,
+        _key("fold", "string", "Held-out fold, 'all_folds' (pooled held-out days) or "
+             "'in_sample'"),
+        _key("series_kind", "string", "raw or anomaly", allowed=("raw", "anomaly")),
+        _key("metric", "string", "Metric ID"),
+        _c("method", "string", "Anomaly method", nullable=False),
+        _c("inference", "string", "held_out or exploratory", nullable=False,
+           allowed=("held_out", "exploratory")),
+        _c("value", "float", "Metric value; null with a status when undefined"),
+        _c("units", "string", "Units", nullable=False),
+        _c("status", "string", "Status", nullable=False, allowed=ANOMALY_METRIC_STATUSES),
+        _c("status_detail", "string", "Further detail"),
+        _c("n_days", "int", "Days in the sample", nullable=False),
+        _c("n_days_cohort", "int", "Cohort days of the series", nullable=False),
+        _c("n_days_reference_filled", "int", "Gap-filled reference days in the sample",
+           nullable=False),
+        _c("training_folds", "string", "';'-joined training folds (held-out rows)"),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("anomaly_id", "comparison_id", "cohort_id", "site_id", "model",
+                 "reference_variant", "extraction_method", "footprint_set_id", "fold",
+                 "series_kind", "metric"),
+)
+
 EXCLUSIONS = TableSchema(
     "exclusions", "1", "Rows removed or flagged, with stage and reason.",
     (
@@ -1127,7 +1625,12 @@ SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
                         RANK_DISTRIBUTION, MODEL_CONTRASTS, NETWORK_SUMMARIES,
                         RANKING_SENSITIVITY, CLOSURE_MAGNITUDE, REFERENCE_PROVENANCE_PERIODS,
                         CONDITIONAL_ERRORS, ERROR_REGRESSIONS, DIAGNOSTIC_AVAILABILITY,
-                        REFERENCE_RANK_CHANGES, EXCLUSIONS)
+                        REFERENCE_RANK_CHANGES, LANDSCAPE_CLASS_FRACTIONS,
+                        LANDSCAPE_INDEX_SUMMARIES, LANDSCAPE_METHOD_DIFFERENCES,
+                        REPRESENTATIVENESS_LABELS, SATELLITE_SUPPORT_ERRORS,
+                        REPRESENTATIVENESS_AVAILABILITY, STATION_EVENTS, EVENT_RESPONSES,
+                        EVENT_OVERLAPS, EVENT_CONDITIONS, ANOMALY_DAILY, ANOMALY_METRICS,
+                        EXCLUSIONS)
 })
 
 

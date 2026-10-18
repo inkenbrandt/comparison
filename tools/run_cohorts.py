@@ -70,6 +70,18 @@ and, for every declared diagnostics set that lists the comparison (step 12):
                                 rank changes between reference variants (from the
                                 ranking sensitivity table; not re-ranked)
 
+and, for every declared satellite_support analysis that lists the comparison (step 13; only
+cohorts that freeze days across models):
+
+  <id>__<sat>_satellite_errors.parquet / .csv
+                                metrics on clear-observation and interpolated days (identical
+                                across models) and declared acquisition-timing bins
+  <id>__<sat>_satellite_availability.parquet / .csv
+                                not_available with the reason when no authoritative
+                                clear-observation metadata is declared (D-011)
+
+The landscape (raster) part of step 13 is tools/run_representativeness.py.
+
 With year_subsets, each calendar year of a multi-year ranking cohort is rebuilt as its own
 frozen cohort (same rule, start/end restricted) and its daily pairs are scored,
 bootstrapped and ranked with subset year=<y>. Rankings need the bootstrap step, so
@@ -100,10 +112,11 @@ from etcompare.bootstrap import bootstrap_comparison
 from etcompare.cohorts import build_cohort
 from etcompare.config import load_config
 from etcompare.diagnostics import diagnose_comparison, reference_rank_changes
-from etcompare.io.tables import read_table, write_table
+from etcompare.io.tables import read_any, read_table, write_table
 from etcompare.metrics import definitions_frame, score_comparison
 from etcompare.ranking import rank_comparison, ranking_sensitivity, year_subsets
 from etcompare.registry import SiteRegistry
+from etcompare.satellite import assess_satellite_support, support_status
 from etcompare.schemas import CanonicalTable
 
 
@@ -282,6 +295,23 @@ def main() -> None:
                      "conditional associations, not causes; corrected/raw differences are "
                      "reference sensitivity, not uncertainty bounds):\n"
                      f"{dg.report.summary()}\n{_diagnostics_text(dg)}")
+        for ss in cfg.satellite_support:
+            if (ss.comparisons is not None and cid not in ss.comparisons) or (
+                    ss.comparisons is None and not spec.freeze_models):
+                continue
+            sup = support_status(ss.sources, {s.source_id: read_any(s.path)
+                                              for s in ss.sources}) if ss.sources else None
+            sat = assess_satellite_support(c, ss, cfg.metric_set(ss.metric_set), support=sup)
+            stem = f"{cid}__{ss.satellite_support_id}"
+            for name, t in (("satellite_errors", sat.errors),
+                            ("satellite_availability", sat.availability)):
+                write_table(t, out / f"{stem}_{name}.parquet")
+                t.frame.to_csv(out / f"{stem}_{name}.csv", index=False)
+            av = sat.availability.frame
+            text += (f"\n\nsatellite support {ss.satellite_support_id}: "
+                     f"{len(sat.errors)} error rows; "
+                     + "; ".join(f"{r.status} ({r.reason_code}): {r.reason}"
+                                 for r in av.itertuples()))
         (out / f"{cid}_report.txt").write_text(text + "\n", encoding="utf-8")
         print(text, "\n", "-" * 78)
 

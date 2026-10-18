@@ -141,6 +141,14 @@ def test_prepare_footprint_policies():
                               value_semantics="normalized_cell_weight", nodata=0.0)
     assert empty.status == "no_positive_weight"
 
+    # Storage corruption (D-043, D-054): all-positive garbage must not pass as a footprint.
+    huge = prepare_footprint(np.array([[1.2e307, 0.1], [0.2, 0.3]]), g,
+                             value_semantics="normalized_cell_weight", nodata=0.0)
+    assert huge.status == "invalid_values" and huge.contribution is None
+    over = prepare_footprint(np.array([[1.6e308, 1.6e308], [0.2, np.nan]]), g,
+                             value_semantics="cell_contribution", nodata=None)
+    assert over.status == "invalid_values"
+
 
 # ---------------------------------------------------------------- blocks
 

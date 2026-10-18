@@ -23,3 +23,6 @@ uv.lock
 
 # Run outputs
 outputs/
+/NLCD/*
+/2024_30m_cdls/*
+eddy_events_202610171141.csv

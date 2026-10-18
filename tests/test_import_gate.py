@@ -22,7 +22,7 @@ SCRIPT = textwrap.dedent(
     socket.getaddrinfo = _blocked
 
     BLOCKED = {"rasterio", "geopandas", "shapely", "pyproj", "fiona", "osgeo", "matplotlib",
-               "ee", "requests"}
+               "ee", "requests", "fluxfootprints", "xarray", "pyogrio"}
 
     class Block:
         def find_spec(self, name, path=None, target=None):
