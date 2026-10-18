@@ -260,7 +260,18 @@ Keep context stable. Update it when verified input semantics or scope changes, i
 
 Do not claim the source raster paths are accessible until checked in the user's runtime. Do not expose or package private station data publicly without permission. Use small synthetic fixtures for distributable tests and keep user-supplied examples as local integration inputs unless authorized otherwise.
 
-**Current handoff (updated 2026-10-17, after step 14):** Guide steps 1–14 are implemented, and step 15 (water-balance checks and scenario uncertainty) is next.
+**Current handoff (updated 2026-10-17, after step 15):** Guide steps 1–15 are implemented, and step 16 (held-out ensemble experiments) is next.
+- **Water balance (step 15):** `etcompare.water_balance.compute_water_balance` (D-062) checks `residual = P + I + CR − ET − RO − DP − ΔS` over a declared boundary and the step-8 periods.
+  - Every term is declared. An unknown term is never zero and makes the residual unknown, with every unknown term listed.
+  - Scenario residuals are separate rows. Support mismatches are flagged, never equated.
+  - A period total needs every calendar day (D-041), and ET gap-filled days are counted.
+  - Volumes need a known area. Residuals are plausibility diagnostics only: never ET error, never a selection basis.
+- **Scenarios (step 15):** `etcompare.scenarios.run_scenario` (D-063) takes only declared distributions (with justification and dependence) or declared alternatives. Measurement, footprint-parameter and method-choice results are kept separate, and sampling is the step-10 bootstrap. Footprint uncertainty comes only from supplied realizations.
+- **US-UTJ (D-064): the water balance is unknown.**
+  - Irrigation, capillary rise, runoff, deep percolation and storage change have no input.
+  - The tower field (98,147.74 m², vintage unknown) is the boundary. ET (corrected-inclusive, footprint support) and gridMET precipitation (cell support) are flagged support mismatches. WY2025 term totals are ET 888.9 mm (127 days gap-filled) and P 131.9 mm, reported as totals only.
+  - `p_1_1_1` is not used (bucket factor, D-059). No scenario is declared. `tools/run_water_balance.py` runs it.
+  - **Open:** irrigation records, a soil-moisture series and permission to read logger files, use of `p_1_1_1`, the ET variant, gridMET units and day definition, the boundary area and vintage, other terms and any scenarios.
 - **Station events (step 14):** `etcompare.adapters.event_log.adapt_event_table` (D-060) reads the declared `event_tables:` log into `station_events`. Events come only from the log. Each keeps its observer, source and notes, an evidence class and an `approximate` flag set by a declared text rule. Instrument events are `overlap_only`.
   - For US-UTJ: 6 cuttings (3 Planet, 3 camera; 2024-09-08 approximate), all confirmed by farm records (user, 2026-10-17), and 11 instrument overlaps. There are no irrigation events.
 - **Event responses (step 14):** `etcompare.events.analyse_events` (D-061) gives the baseline, change, cumulative response and recovery per cutting and series, with overlaps, weather and gap-filled days kept visible. The design is uncontrolled before/after, never causal evidence.

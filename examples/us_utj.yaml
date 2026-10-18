@@ -626,4 +626,70 @@ anomalies:
     comparisons: [utj_rank_corrected_inclusive, utj_rank_corrected_measured,
                   utj_pair_eemetric_ssebop]
 
+# Water balance (guide step 15; D-062, D-063). A plausibility check of the tower field, never
+# ET error and never a basis for choosing a model, reference, filter or footprint. Every term
+# is declared; a term without an input is unknown (never zero), so the residual stays unknown
+# until irrigation, capillary rise, runoff, deep percolation and storage change have inputs.
+# The station gauge p_1_1_1 is NOT used: its bucket factor was changed after the record
+# (D-059), and the user decides whether and how it may be used. All choices below are
+# Provisional (assistant, 2026-10-17) until the user confirms them.
+water_balances:
+  - water_balance_id: utj_tower_field_balance
+    site_id: US-UTJ
+    period_aggregation: utj_periods   # step-8 periods and calendar denominators (D-041, D-042)
+    boundary:
+      boundary_id: tower_field
+      kind: polygon
+      path: ../Bluff.gpkg
+      layer: bluff_fields
+      crs: "EPSG:26912"               # user-declared 2026-10-17; the file has no CRS
+      id_column: fieldid
+      feature_id: "4940083"           # user-declared tower field (alfalfa, sprinkler)
+      source: "Bluff.gpkg layer bluff_fields (water-related land-use attributes)"
+      vintage: unknown
+      area_m2: 98147.74
+      area_source: "planar area of fieldid 4940083 in the declared EPSG:26912 (equals its shape_area attribute; the acres attribute 24.3 = 98,339 m2, rounded); polygon vintage unknown"
+    equation: soil_zone
+    sign_convention: inflows_positive
+    volumes: true                     # only for terms that cover the field itself
+    terms:
+      precipitation:
+        status: modeled
+        source: station_column
+        column: src_gridMET_prcp
+        units: mm/day                 # gridMET daily precipitation depth (Provisional)
+        spatial_support: gridded_cell
+        day_definition: unknown       # gridMET day as exported by flux-data-qaqc: unverified
+        support_note: "gridMET cell (~4 km) at the station, from the daily export; not the field"
+      irrigation:
+        status: unknown
+        source: none
+        reason: "no irrigation depths, timing or diversion records declared (the event log has no US-UTJ irrigation events); regional diversion is not field irrigation"
+      capillary_rise:
+        status: unknown
+        source: none
+        reason: "no input"
+      et:
+        status: measured
+        source: station_et
+        reference_variant: et_corrected_inclusive   # the only variant with complete months; gap-filled days counted (D-005)
+        spatial_support: tower_footprint
+        support_note: "EC ET represents the daily-changing footprint, which is never the field"
+      runoff:
+        status: unknown
+        source: none
+        reason: "no input"
+      deep_percolation:
+        status: unknown
+        source: none
+        reason: "no input"
+      storage_change:
+        status: unknown
+        source: none
+        reason: "no soil-moisture series declared (CS655/SoilVue are mentioned in the event log; no daily series, depth or units supplied)"
+
+# Scenario uncertainty (guide step 15; D-063): none declared. Distributions and alternatives
+# come only from the user, each with a justification and a dependence structure.
+scenarios: []
+
 output_dir: ../outputs

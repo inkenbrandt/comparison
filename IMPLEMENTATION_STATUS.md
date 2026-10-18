@@ -18,7 +18,84 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 12 — Closure, coverage and environmental diagnostics | **Done** 2026-10-16 (station level; defaults Provisional; several diagnostics `not_available` for US-UTJ by design) |
 | 13 — Landscape representativeness and satellite support | **Done** 2026-10-17 (station level; defaults Provisional; no matching policy adopted; satellite support `not_available` for US-UTJ, D-011) |
 | 14 — Anomalies and management events | **Done** 2026-10-17 (station level; defaults Provisional, chosen by the assistant at the user's request; uncontrolled before/after only; no held-out anomaly skill possible for US-UTJ) |
-| 15–18 | Not started |
+| 15 — Water-balance checks and scenario uncertainty | **Done** 2026-10-17 (station level; US-UTJ declaration Provisional; **the US-UTJ residual is unknown**: five terms have no input; no scenario declared) |
+| 16–18 | Not started |
+
+## Step 15 — Water-balance checks and scenario uncertainty (2026-10-17)
+
+**Run it**
+```bash
+uv run python -m pytest                           # 678 passed, 3 skipped (opt-in Drive raster tests)
+uv run ruff check src tests tools/run_cohorts.py tools/run_representativeness.py tools/run_events.py \
+    tools/run_water_balance.py && uv run mypy     # clean
+uv run python tools/run_water_balance.py examples/us_utj.yaml   # ~1 s; outputs/water_balance/
+UV_LINK_MODE=copy uv run --isolated --resolution lowest-direct --python 3.11 --with pytest \
+    python -W error::FutureWarning -m pytest tests/test_water_balance.py tests/test_scenarios.py \
+    tests/integration/test_us_utj_water_balance.py tests/test_events.py tests/test_event_analysis.py \
+    tests/test_anomalies.py tests/test_import_gate.py tests/test_schemas.py tests/test_config.py \
+    tests/test_imputation.py tests/test_aggregation.py tests/test_cohorts.py tests/test_metrics.py \
+    tests/test_bootstrap.py
+    # oldest stack: 410 passed, 1 skipped (the polygon-area check needs geopandas)
+```
+
+### API
+- **`etcompare.water_balance.compute_water_balance(spec, station_daily, *, period_aggregation, station)`** returns a `WaterBalanceResult` with `terms` (`water_balance_terms` v1), `residuals` (`water_balance_residuals` v1), `report` and `tables()`. It has no cohort or model parameter.
+  - Building blocks: `prepare_water_balance` / `evaluate_water_balance`, `term_series`, `term_total` and `depth_to_volume_m3`.
+  - Data classes: `TermSeries`, `BalancePeriod`, `PreparedWaterBalance` and `TermTotal`.
+- **`etcompare.scenarios.run_scenario(scenario, water_balance, station_daily, *, period_aggregation, station)`** returns a `ScenarioResult` with `results` (`scenario_results` v1), `draws()` (measurement only) and `report`. Also public: `draw_perturbations`, `marginal`, `scenario_sha256` and `UNCERTAINTY_LABELS`.
+- **Config:**
+  - `WaterBalanceSpec` (`water_balances:`) with `WaterBalanceBoundarySpec` and `WaterBalanceTermSpec`;
+  - `ScenarioSpec` (`scenarios:`) with `PerturbationSpec` and `ScenarioAlternativeSpec`;
+  - accessors `Config.water_balance()` and `scenario()`;
+  - constants `WATER_BALANCE_TERMS`, `WATER_BALANCE_SIGNS`, `WATER_BALANCE_EQUATIONS`, `SIGN_CONVENTIONS`, `TERM_STATUSES`, `TERM_SOURCES`, `TERM_QUANTITIES`, `SPATIAL_SUPPORTS`, `BOUNDARY_KINDS`, `UNCERTAINTY_CATEGORIES`, `SCENARIO_CATEGORIES`, `DISTRIBUTION_FAMILIES`, `PERTURBATION_MODES`, `TEMPORAL_DEPENDENCES`, `TERM_DEPENDENCES` and `STATE_TIMES`.
+- **[tools/run_water_balance.py](tools/run_water_balance.py)** (new) writes `outputs/water_balance/<id>_{terms,residuals}.{parquet,csv}`, `<id>__<scenario>_scenarios.*` for declared scenarios, and `<id>_report.txt` (station SHA-256, declaration, validation, totals, gap-filled counts).
+
+### Delivered
+The rules are in the module docstrings and D-062 / D-063:
+- **Every term is declared.** Unknown terms are never zero: they give a null residual whose reason lists every unknown term.
+- Residuals from measured/modeled terms and scenario residuals are separate rows.
+- Supports other than the boundary are flagged `support_mismatch`, never equated. A footprint boundary and regional irrigation are refused.
+- The periods are the step-8 calendar. A flux needs every day, and a storage change needs both states; otherwise only a labelled partial sum is reported.
+- ET gap-filled days are counted and flagged (D-005), and unknown day definitions are flagged.
+- Volumes need a known area and a matching support.
+- Scenarios have one of three categories (`sampling` is the bootstrap and is refused), each labelled, with seed, draws and declaration. Footprint uncertainty comes only from supplied realizations.
+
+### Checks
+- **[tests/test_water_balance.py](tests/test_water_balance.py)** (47 tests). Expected values are analytic, from binary-exact daily depths.
+  - **Gates:** a closed balance is exactly 0 mm / 0 m³; an unknown inflow stays unknown with every unknown term listed; a support mismatch is flagged and gives no volume; volumes are refused without an area.
+  - Also: incomplete months (partial sum 30 × 0.75 mm, total null), storage states, gap-filled ET (5 days; the measured variant then 24/29 and incomplete), day alignment, scenario residuals, 366-day year and water-year denominators, Parquet, isolation (signature; only `scenarios` imports the module) and 28 declaration refusals.
+- **[tests/test_scenarios.py](tests/test_scenarios.py)** (35 tests).
+  - **Gates:** the same seed reproduces (another differs); results are labelled apart from `intervals` and `sampling` is refused.
+  - Analytic draws: `P_total·(x − 1)`, February = January × 29/31, `−Σ x_d`, the storage offset, copula ρ = 0.8 ± 0.03.
+  - Unknown bases stay unknown, method-choice ranges, footprint realizations and their refusals, and 20 declaration refusals plus copula checks.
+- **[tests/integration/test_us_utj_water_balance.py](tests/integration/test_us_utj_water_balance.py)** (6 tests; skips without the local files):
+  - every residual is unknown with the five terms listed;
+  - supports are flagged and no volume is given;
+  - `p_1_1_1` is unused;
+  - July 2025 and WY2025 totals and gap-filled counts equal pandas sums of the CSV;
+  - partial periods are never totals;
+  - the declared area equals the geopandas polygon area.
+
+### US-UTJ result (D-064; local outputs, git-ignored)
+- **The water balance is unknown.** Irrigation, capillary rise, runoff, deep percolation and storage change have no input, so all 24 residuals are null with that reason. No scenario is declared, and no volume is given (both known terms mismatch the field's support).
+- **Complete term totals:**
+  - every month from 2024-07 to 2025-09, and WY2025: ET (corrected-inclusive) 888.9 mm, 127 of 365 days gap-filled; gridMET precipitation 131.9 mm;
+  - May 2025 is 31 of 31 days gap-filled.
+
+  These are term totals only. Their difference is not a residual, and nothing is assigned to ET error.
+- **Not used:** `p_1_1_1` (D-059), the half-hourly logger files, and any download, service or credential.
+
+### Open (user decisions; see the questions in D-064)
+- Irrigation depths, timing or diversion records for the field.
+- A soil-moisture series: which sensor, depth and units, and whether the logger files may be read.
+- Whether and how `p_1_1_1` may be used.
+- The ET reference variant of the balance (`et_corrected_inclusive` is Provisional).
+- The gridMET precipitation units and day definition.
+- The boundary area and polygon vintage.
+- Any runoff, deep-percolation or capillary-rise input or scenario.
+- Any measurement, method-choice or footprint scenario.
+
+**Next:** step 16, held-out ensemble experiments.
 
 ## Step 14, part 2 — Event responses and anomalies (2026-10-17)
 

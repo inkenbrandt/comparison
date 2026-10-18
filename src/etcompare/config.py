@@ -164,6 +164,65 @@ FOLD_UNITS: Final = ("year", "water_year")
 #: Leap-day rule: 29 February takes 28 February's day of year in a 365-day calendar.
 LEAP_DAY_RULES: Final = ("as_feb28",)
 
+#: Water-balance terms (guide step 15; ``etcompare.water_balance``). Every term must be
+#: declared; a term without an input is ``unknown``, never zero.
+WATER_BALANCE_TERMS: Final = ("precipitation", "irrigation", "capillary_rise", "et", "runoff",
+                              "deep_percolation", "storage_change")
+#: Sign of each term under the ``inflows_positive`` convention of the ``soil_zone`` equation.
+WATER_BALANCE_SIGNS: Final[Mapping[str, int]] = MappingProxyType({
+    "precipitation": 1, "irrigation": 1, "capillary_rise": 1, "et": -1, "runoff": -1,
+    "deep_percolation": -1, "storage_change": -1,
+})
+#: Supported equations and their text (recorded in every output).
+WATER_BALANCE_EQUATIONS: Final[Mapping[str, str]] = MappingProxyType({
+    "soil_zone": "residual = precipitation + irrigation + capillary_rise - et - runoff "
+                 "- deep_percolation - storage_change",
+})
+#: Inflows (precipitation, irrigation, capillary rise) add to the boundary's water; outflows
+#: and a storage increase are subtracted.
+SIGN_CONVENTIONS: Final = ("inflows_positive",)
+#: ``measured``: an observation; ``modeled``: a gridded or modeled product (e.g. gridMET);
+#: ``scenario``: an explicit assumption with a justification; ``unknown``: no input.
+TERM_STATUSES: Final = ("measured", "modeled", "scenario", "unknown")
+#: Where a term's values come from: a ``station_daily`` column, the station ET of a declared
+#: reference variant (D-004), a separate table, a declared scenario value, or nothing.
+TERM_SOURCES: Final = ("station_column", "station_et", "table", "scenario", "none")
+#: ``flux``: a daily depth (mm d-1) summed over the period; ``storage_state``: a storage depth
+#: (mm) at the end of each station day, differenced over the period.
+TERM_QUANTITIES: Final = ("flux", "storage_state")
+#: The area a term's values represent. ``boundary`` means the term was measured or derived
+#: for exactly the declared boundary. Anything else differs from a polygon boundary (a point
+#: boundary also matches ``station_point``) and is flagged as a support mismatch.
+SPATIAL_SUPPORTS: Final = ("boundary", "station_point", "tower_footprint", "gridded_cell",
+                           "model_pixel", "regional")
+#: ``polygon``: a declared polygon (e.g. the tower field), with or without a known area;
+#: ``point``: a point/depth-only column at the station, which has no area. A tower footprint
+#: is never a boundary: it changes every day.
+BOUNDARY_KINDS: Final = ("polygon", "point")
+#: The four uncertainty kinds of guide step 15, each kept and labelled on its own.
+#: ``sampling`` is the step-10 bootstrap (``etcompare.bootstrap``) and is never produced or
+#: merged by scenarios.
+UNCERTAINTY_CATEGORIES: Final = ("sampling", "measurement", "footprint_parameter",
+                                 "method_choice")
+#: Categories a declared scenario can have (``etcompare.scenarios``).
+SCENARIO_CATEGORIES: Final = ("measurement", "footprint_parameter", "method_choice")
+#: Distribution families of declared measurement scenarios and their parameters.
+#: ``lognormal`` draws ``exp(N(mu, sigma))``.
+DISTRIBUTION_FAMILIES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType({
+    "normal": ("mean", "sd"), "lognormal": ("mu", "sigma"), "uniform": ("low", "high"),
+    "triangular": ("low", "mode", "high"),
+})
+#: ``multiplicative``: the term is multiplied by the draw; ``additive``: the draw is added
+#: (mm d-1 per day for flux terms, mm for a storage change).
+PERTURBATION_MODES: Final = ("multiplicative", "additive")
+#: ``systematic``: one draw per term and realization, applied to every day (a bias);
+#: ``independent_daily``: an independent draw for each station day.
+TEMPORAL_DEPENDENCES: Final = ("systematic", "independent_daily")
+#: Dependence between the perturbed terms: none, or a declared Gaussian copula.
+TERM_DEPENDENCES: Final = ("independent", "gaussian_copula")
+#: When a storage state is recorded.
+STATE_TIMES: Final = ("end_of_station_day",)
+
 #: Canonical unit of every daily ET column: depth per declared station day.
 ET_UNIT: Final = "mm d-1"
 #: Unit of a period total: depth summed over the period's station days.
@@ -2588,6 +2647,595 @@ class AnomalySpec:
             object.__setattr__(self, "comparisons", tuple(self.comparisons))
 
 
+def _depth_units(value: object, quantity: str, *, key: str) -> str:
+    """Canonical units of a water-balance term: ``mm d-1`` (flux) or ``mm`` (storage state)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ContractError(f"{key}: units not declared; magnitude is not evidence",
+                            config_key=f"{key}.units")
+    text = " ".join(str(value).strip().lower().split())
+    if quantity == "storage_state":
+        if text != "mm":
+            raise ContractError(f"{key}: a storage state needs units 'mm' (storage depth), got "
+                                f"{value!r}; convert water content to a storage depth upstream "
+                                "with a declared profile depth", config_key=f"{key}.units")
+        return ET_TOTAL_UNIT
+    if text in _ET_UNIT_SYNONYMS:
+        return ET_UNIT
+    raise ContractError(f"{key}: units {value!r} are not a daily depth; declare mm/day (a bare "
+                        "'mm' does not state the period, and no unit is converted)",
+                        config_key=f"{key}.units")
+
+
+def _finite(value: object, *, key: str, field: str) -> float:
+    if value is None or isinstance(value, bool):
+        raise ContractError(f"{key}: {field} not declared", config_key=f"{key}.{field}")
+    try:
+        x = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"{key}: {field}={value!r} is not a number",
+                            config_key=f"{key}.{field}") from exc
+    if not math.isfinite(x):
+        raise ContractError(f"{key}: {field} must be finite", config_key=f"{key}.{field}")
+    return x
+
+
+@dataclass(frozen=True)
+class WaterBalanceTermSpec:
+    """One term of a water balance (guide step 15).
+
+    ``status`` is ``measured``, ``modeled``, ``scenario`` or ``unknown``. Each status admits
+    only its own source:
+
+    - ``unknown``: ``source: none`` and a ``reason``. The term has no value, so every
+      residual that needs it is unknown; it is never set to zero.
+    - ``scenario``: ``source: scenario``, a constant ``daily_mm``, a ``justification`` and
+      the ``spatial_support`` it is assumed for. It gives a *scenario* residual, never a
+      measured/modeled one.
+    - ``measured`` / ``modeled``: ``station_column`` (``column``, a ``station_daily``
+      column such as ``src_gridMET_prcp``), ``station_et`` (the station ET of
+      ``reference_variant``; ET only) or ``table`` (``path``, ``date_column``,
+      ``value_column``). Each needs ``spatial_support``; columns and tables also need
+      ``units`` and ``day_definition`` (may be ``unknown``).
+
+    ``quantity`` is ``flux`` (mm d-1, summed) or, for ``storage_change`` only,
+    ``storage_state`` (mm at the end of each station day, ``state_time``).
+    """
+
+    status: str
+    source: str
+    spatial_support: str | None = None
+    units: str | None = None
+    quantity: str = "flux"
+    column: str | None = None
+    reference_variant: str | None = None
+    path: Path | None = None
+    date_column: str | None = None
+    value_column: str | None = None
+    date_format: str = "%Y-%m-%d"
+    day_definition: str | None = None
+    state_time: str | None = None
+    daily_mm: float | None = None
+    justification: str | None = None
+    reason: str | None = None
+    support_note: str | None = None
+    description: str | None = None
+
+    def check(self, term: str, key: str) -> None:
+        """Validate the declaration of ``term`` (raises :class:`ContractError`)."""
+        _choice(term, WATER_BALANCE_TERMS, input=key, field="term", config_key=key)
+        _choice(self.status, TERM_STATUSES, input=key, field="status", config_key=f"{key}.status")
+        _choice(self.source, TERM_SOURCES, input=key, field="source", config_key=f"{key}.source")
+        _choice(self.quantity, TERM_QUANTITIES, input=key, field="quantity",
+                config_key=f"{key}.quantity")
+        allowed = {"unknown": ("none",), "scenario": ("scenario",),
+                   "measured": ("station_column", "station_et", "table"),
+                   "modeled": ("station_column", "station_et", "table")}[self.status]
+        if self.source not in allowed:
+            raise ContractError(f"{key}: status {self.status} needs source {list(allowed)}, not "
+                                f"{self.source!r}", config_key=f"{key}.source")
+        if self.quantity == "storage_state":
+            if term != "storage_change":
+                raise ContractError(f"{key}: only storage_change can be a storage_state",
+                                    config_key=f"{key}.quantity")
+            if self.status in ("unknown", "scenario"):
+                raise ContractError(f"{key}: a storage_state needs a measured or modeled source",
+                                    config_key=f"{key}.quantity")
+            _choice(self.state_time, STATE_TIMES, input=key, field="state_time",
+                    config_key=f"{key}.state_time")
+        elif self.state_time is not None:
+            raise ContractError(f"{key}: state_time applies only to a storage_state",
+                                config_key=f"{key}.state_time")
+        fields_by_source = {
+            "none": {"reason"}, "scenario": {"daily_mm", "justification", "spatial_support"},
+            "station_column": {"column", "units", "day_definition", "spatial_support"},
+            "station_et": {"reference_variant", "spatial_support"},
+            "table": {"path", "date_column", "value_column", "units", "day_definition",
+                      "spatial_support"},
+        }
+        optional = {"quantity", "state_time", "support_note", "description", "date_format",
+                    "status", "source"}
+        own = fields_by_source[self.source]
+        for f in sorted(own):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        if self.source == "station_et":
+            # Station ET is canonical mm d-1 (the station table declares its units).
+            if self.units not in (None, ET_UNIT):
+                raise ContractError(f"{key}: station_et units come from the station table "
+                                    "declaration; do not redeclare them", config_key=f"{key}.units")
+            optional = optional | {"units"}
+        defaults = {"quantity": "flux", "date_format": "%Y-%m-%d"}
+        for f in self.__dataclass_fields__:
+            if f in own or f in optional:
+                continue
+            if getattr(self, f) is not None and getattr(self, f) != defaults.get(f):
+                raise ContractError(f"{key}: {f} does not apply to source {self.source}",
+                                    config_key=f"{key}.{f}")
+        if self.source == "station_et":
+            if term != "et":
+                raise ContractError(f"{key}: station_et is the ET term's source only",
+                                    config_key=f"{key}.source")
+            _choice(self.reference_variant, REFERENCE_VARIANTS, input=key,
+                    field="reference_variant", config_key=f"{key}.reference_variant")
+            object.__setattr__(self, "units", ET_UNIT)
+        if self.source in ("station_column", "table"):
+            object.__setattr__(self, "units", _depth_units(self.units, self.quantity, key=key))
+            _choice(self.day_definition, PRODUCT_DAY_DEFINITIONS, input=key,
+                    field="day_definition", config_key=f"{key}.day_definition")
+        if self.spatial_support is not None:
+            _choice(self.spatial_support, SPATIAL_SUPPORTS, input=key, field="spatial_support",
+                    config_key=f"{key}.spatial_support")
+        if term == "irrigation" and self.spatial_support == "regional":
+            raise ContractError(f"{key}: a regional diversion is not field irrigation; declare "
+                                "irrigation records of the boundary itself, or a scenario",
+                                config_key=f"{key}.spatial_support")
+        if self.source == "scenario":
+            object.__setattr__(self, "daily_mm",
+                               _finite(self.daily_mm, key=key, field="daily_mm"))
+
+
+@dataclass(frozen=True)
+class WaterBalanceBoundarySpec:
+    """The boundary every term of a water balance must cover.
+
+    - ``polygon``: a declared polygon (``path``, ``crs``, ``id_column``, ``feature_id``,
+      ``source`` and ``vintage``, which may be ``unknown``). ``area_m2`` with its
+      ``area_source`` is optional; without it volumes are refused.
+    - ``point``: a point/depth-only column at the station (optional ``depth_mm``). It has
+      no area, so volumes are never defined.
+
+    A tower footprint is never a boundary: it changes every day and is not a field area.
+    """
+
+    boundary_id: str
+    kind: str
+    area_m2: float | None = None
+    area_source: str | None = None
+    path: Path | None = None
+    layer: str | None = None
+    crs: str | None = None
+    id_column: str | None = None
+    feature_id: str | None = None
+    source: str | None = None
+    vintage: str | None = None
+    depth_mm: float | None = None
+    description: str | None = None
+
+    @property
+    def area_known(self) -> bool:
+        return self.area_m2 is not None
+
+    def check(self, key: str) -> None:
+        _require(self.boundary_id, input=key, field="boundary_id",
+                 config_key=f"{key}.boundary_id")
+        if not _METHOD_ID.match(str(self.boundary_id)):
+            raise ContractError(f"{key}: boundary_id must be snake_case",
+                                config_key=f"{key}.boundary_id")
+        if self.kind in ("footprint", "tower_footprint"):
+            raise ContractError(f"{key}: a tower footprint changes every day and is never a "
+                                "water-balance boundary or a field area; declare a polygon "
+                                "or a point boundary", config_key=f"{key}.kind")
+        _choice(self.kind, BOUNDARY_KINDS, input=key, field="kind", config_key=f"{key}.kind")
+        polygon = ("path", "crs", "id_column", "feature_id", "source", "vintage")
+        if self.kind == "polygon":
+            for f in polygon:
+                _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+            object.__setattr__(self, "feature_id", str(self.feature_id))
+            object.__setattr__(self, "vintage", str(self.vintage))
+            if self.depth_mm is not None:
+                raise ContractError(f"{key}: depth_mm applies to a point boundary",
+                                    config_key=f"{key}.depth_mm")
+        else:
+            for f in (*polygon, "layer"):
+                if getattr(self, f) is not None:
+                    raise ContractError(f"{key}: {f} applies to a polygon boundary",
+                                        config_key=f"{key}.{f}")
+            if self.area_m2 is not None or self.area_source is not None:
+                raise ContractError(f"{key}: a point/depth boundary has no area, so volumes "
+                                    "are not defined", config_key=f"{key}.area_m2")
+            if self.depth_mm is not None:
+                d = _finite(self.depth_mm, key=key, field="depth_mm")
+                if d <= 0:
+                    raise ContractError(f"{key}: depth_mm must be > 0",
+                                        config_key=f"{key}.depth_mm")
+                object.__setattr__(self, "depth_mm", d)
+        if (self.area_m2 is None) != (self.area_source is None):
+            raise ContractError(f"{key}: declare area_m2 together with its area_source",
+                                config_key=f"{key}.area_source")
+        if self.area_m2 is not None:
+            a = _finite(self.area_m2, key=key, field="area_m2")
+            if a <= 0:
+                raise ContractError(f"{key}: area_m2 must be > 0", config_key=f"{key}.area_m2")
+            object.__setattr__(self, "area_m2", a)
+
+    def matches(self, support: str | None) -> bool:
+        """True when a term of ``support`` covers exactly this boundary."""
+        return support == "boundary" or (self.kind == "point" and support == "station_point")
+
+
+def _term_specs(value: object, *, key: str, require_all: bool
+                ) -> Mapping[str, WaterBalanceTermSpec]:
+    if not isinstance(value, Mapping):
+        raise ContractError(f"{key}: terms must be a mapping term -> declaration",
+                            config_key=key)
+    terms: dict[str, WaterBalanceTermSpec] = {}
+    for name, body in value.items():
+        tkey = f"{key}.{name}"
+        if not isinstance(body, WaterBalanceTermSpec):
+            _check_keys(body, set(WaterBalanceTermSpec.__dataclass_fields__), tkey)
+            body = WaterBalanceTermSpec(**{f: body.get(f) for f in ("status", "source")},
+                                        **{k: v for k, v in body.items()
+                                           if k not in ("status", "source")})
+        body.check(str(name), tkey)
+        terms[str(name)] = body
+    if require_all:
+        missing = [t for t in WATER_BALANCE_TERMS if t not in terms]
+        if missing:
+            raise ContractError(f"{key}: term(s) {missing} not declared; a term without an "
+                                "input must be declared with status unknown (it is never zero)",
+                                config_key=key)
+    return MappingProxyType({t: terms[t] for t in WATER_BALANCE_TERMS if t in terms})
+
+
+@dataclass(frozen=True)
+class WaterBalanceSpec:
+    """A water-balance plausibility check of one station's boundary (guide step 15).
+
+    ``residual = P + I + CR - ET - RO - DP - dS`` (``equation: soil_zone``,
+    ``sign_convention: inflows_positive``). Every term of :data:`WATER_BALANCE_TERMS` is
+    declared (:class:`WaterBalanceTermSpec`). Periods are those of the step-8
+    ``period_aggregation`` (optionally a subset, ``periods``), with the same calendar
+    denominators. ``volumes`` converts depths to volumes and needs a boundary of known area.
+
+    Residuals are plausibility diagnostics only: they hold every unmeasured exchange and the
+    errors of every term, so they are never ET error and never a basis for choosing a model,
+    reference, filter or footprint.
+    """
+
+    water_balance_id: str
+    site_id: str
+    period_aggregation: str
+    boundary: WaterBalanceBoundarySpec
+    equation: str
+    sign_convention: str
+    terms: Mapping[str, WaterBalanceTermSpec]
+    periods: tuple[str, ...] | None = None
+    volumes: bool = False
+    description: str | None = None
+
+    @property
+    def equation_text(self) -> str:
+        return WATER_BALANCE_EQUATIONS[self.equation]
+
+    def __post_init__(self) -> None:
+        wid = self.water_balance_id
+        _require(wid, input="water balance", field="water_balance_id",
+                 config_key="water_balances[].water_balance_id")
+        key = f"water_balances.{wid}"
+        if not _METHOD_ID.match(str(wid)):
+            raise ContractError(f"{key}: water_balance_id must be snake_case", config_key=key)
+        for f in ("site_id", "period_aggregation"):
+            _require(getattr(self, f), input=key, field=f, config_key=f"{key}.{f}")
+        _choice(self.equation, tuple(WATER_BALANCE_EQUATIONS), input=key, field="equation",
+                config_key=f"{key}.equation")
+        _choice(self.sign_convention, SIGN_CONVENTIONS, input=key, field="sign_convention",
+                config_key=f"{key}.sign_convention")
+        b = self.boundary
+        if b is None:
+            raise ContractError(f"{key}: boundary not declared", config_key=f"{key}.boundary")
+        if isinstance(b, Mapping):
+            _check_keys(b, set(WaterBalanceBoundarySpec.__dataclass_fields__), f"{key}.boundary")
+            bkw: dict[str, Any] = {f: b.get(f) for f in ("boundary_id", "kind")}
+            bkw.update({k: v for k, v in b.items() if k not in bkw})
+            b = WaterBalanceBoundarySpec(**bkw)
+            object.__setattr__(self, "boundary", b)
+        b.check(f"{key}.boundary")
+        object.__setattr__(self, "terms", _term_specs(self.terms or {}, key=f"{key}.terms",
+                                                      require_all=True))
+        if self.periods is not None:
+            p = tuple(self.periods)
+            if not p or len(set(p)) != len(p):
+                raise ContractError(f"{key}: periods must be a non-empty list without duplicates",
+                                    config_key=f"{key}.periods")
+            for x in p:
+                _choice(x, PERIOD_TYPES, input=key, field="periods", config_key=f"{key}.periods")
+            object.__setattr__(self, "periods", p)
+        if not isinstance(self.volumes, bool):
+            raise ContractError(f"{key}: volumes must be true or false",
+                                config_key=f"{key}.volumes")
+        if self.volumes and not b.area_known:
+            raise ContractError(f"{key}: volumes need a boundary with a declared, known area "
+                                f"(boundary {b.boundary_id} has none); depths are not converted",
+                                config_key=f"{key}.volumes")
+
+
+@dataclass(frozen=True)
+class PerturbationSpec:
+    """A declared distribution for one term of a measurement scenario.
+
+    ``distribution`` is ``{family: <DISTRIBUTION_FAMILIES>, <its parameters>}``; ``mode``
+    is ``multiplicative`` or ``additive``; ``temporal_dependence`` is ``systematic`` (one
+    draw per realization for every day) or ``independent_daily``. A ``justification`` is
+    mandatory: no distribution is a default.
+    """
+
+    term: str
+    distribution: Mapping[str, Any]
+    mode: str
+    temporal_dependence: str
+    justification: str
+
+    def check(self, key: str) -> None:
+        _choice(self.term, WATER_BALANCE_TERMS, input=key, field="term", config_key=f"{key}.term")
+        _choice(self.mode, PERTURBATION_MODES, input=key, field="mode", config_key=f"{key}.mode")
+        _choice(self.temporal_dependence, TEMPORAL_DEPENDENCES, input=key,
+                field="temporal_dependence", config_key=f"{key}.temporal_dependence")
+        _require(self.justification, input=key, field="justification",
+                 config_key=f"{key}.justification")
+        d = self.distribution
+        if not isinstance(d, Mapping):
+            raise ContractError(f"{key}: distribution must be a mapping with a family",
+                                config_key=f"{key}.distribution")
+        family = d.get("family")
+        _choice(family, tuple(DISTRIBUTION_FAMILIES), input=key, field="distribution.family",
+                config_key=f"{key}.distribution.family")
+        names = DISTRIBUTION_FAMILIES[str(family)]
+        _check_keys(d, {"family", *names}, f"{key}.distribution")
+        p = {n: _finite(d.get(n), key=f"{key}.distribution", field=n) for n in names}
+        bad = ((family == "normal" and p["sd"] <= 0) or
+               (family == "lognormal" and p["sigma"] <= 0) or
+               (family == "uniform" and not p["low"] < p["high"]) or
+               (family == "triangular" and not (p["low"] <= p["mode"] <= p["high"]
+                                                and p["low"] < p["high"])))
+        if bad:
+            raise ContractError(f"{key}: invalid {family} parameters {p}",
+                                config_key=f"{key}.distribution")
+        object.__setattr__(self, "distribution", MappingProxyType({"family": family, **p}))
+
+
+@dataclass(frozen=True)
+class ScenarioAlternativeSpec:
+    """A named alternative declaration of one or more terms (method choice or a supplied
+    footprint realization), with its justification."""
+
+    name: str
+    justification: str
+    terms: Mapping[str, WaterBalanceTermSpec]
+
+    def check(self, key: str) -> None:
+        _require(self.name, input=key, field="name", config_key=f"{key}.name")
+        if not _METHOD_ID.match(str(self.name)) or self.name == "declared":
+            raise ContractError(f"{key}: alternative name must be snake_case and not "
+                                "'declared' (the water balance's own declaration)",
+                                config_key=f"{key}.name")
+        _require(self.justification, input=key, field="justification",
+                 config_key=f"{key}.justification")
+        terms = _term_specs(self.terms or {}, key=f"{key}.terms", require_all=False)
+        if not terms:
+            raise ContractError(f"{key}: an alternative must redeclare at least one term",
+                                config_key=f"{key}.terms")
+        object.__setattr__(self, "terms", terms)
+
+
+def _cholesky_ok(matrix: list[list[float]]) -> bool:
+    n = len(matrix)
+    low = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1):
+            s = matrix[i][j] - sum(low[i][k] * low[j][k] for k in range(j))
+            if i == j:
+                if s <= 1e-12:
+                    return False
+                low[i][i] = math.sqrt(s)
+            else:
+                low[i][j] = s / low[j][j]
+    return True
+
+
+@dataclass(frozen=True)
+class ScenarioSpec:
+    """Declared scenario uncertainty of one water balance (guide step 15).
+
+    One ``category`` per scenario, so the kinds are never merged into one interval:
+
+    - ``measurement``: ``perturbations`` (declared distributions with justifications), a
+      ``dependence`` declaration (``across_terms``: ``independent`` or ``gaussian_copula``
+      with ``correlations``, and a ``justification``), ``seed``, ``n_draws`` and
+      ``quantiles``.
+    - ``method_choice``: named ``alternatives`` (e.g. another ET reference variant). They
+      are deterministic sensitivity cases, never a probability distribution.
+    - ``footprint_parameter``: at least two ``alternatives`` that are supplied realizations
+      (``table`` sources from regenerated footprints), with ``realization_source``. Noise is
+      never added to normalized footprint pixels.
+
+    ``sampling`` uncertainty is the step-10 bootstrap and cannot be declared here.
+    """
+
+    scenario_id: str
+    water_balance: str
+    category: str
+    justification: str
+    seed: int | None = None
+    n_draws: int | None = None
+    quantiles: tuple[float, ...] = ()
+    perturbations: tuple[PerturbationSpec, ...] = ()
+    dependence: Mapping[str, Any] | None = None
+    alternatives: tuple[ScenarioAlternativeSpec, ...] = ()
+    realization_source: str | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        sid = self.scenario_id
+        _require(sid, input="scenario", field="scenario_id", config_key="scenarios[].scenario_id")
+        key = f"scenarios.{sid}"
+        if not _METHOD_ID.match(str(sid)):
+            raise ContractError(f"{key}: scenario_id must be snake_case", config_key=key)
+        _require(self.water_balance, input=key, field="water_balance",
+                 config_key=f"{key}.water_balance")
+        _require(self.justification, input=key, field="justification",
+                 config_key=f"{key}.justification")
+        if self.category == "sampling":
+            raise ContractError(f"{key}: sampling uncertainty is the step-10 block bootstrap "
+                                "(etcompare.bootstrap); it is reported in the intervals tables "
+                                "and never declared or merged here", config_key=f"{key}.category")
+        _choice(self.category, SCENARIO_CATEGORIES, input=key, field="category",
+                config_key=f"{key}.category")
+        perts = []
+        for i, p in enumerate(self.perturbations or ()):
+            pkey = f"{key}.perturbations[{i}]"
+            if isinstance(p, Mapping):
+                _check_keys(p, set(PerturbationSpec.__dataclass_fields__), pkey)
+                pkw: dict[str, Any] = {f: p.get(f) for f in PerturbationSpec.__dataclass_fields__}
+                p = PerturbationSpec(**pkw)
+            p.check(pkey)
+            perts.append(p)
+        object.__setattr__(self, "perturbations", tuple(perts))
+        alts = []
+        for i, a in enumerate(self.alternatives or ()):
+            akey = f"{key}.alternatives[{i}]"
+            if isinstance(a, Mapping):
+                _check_keys(a, set(ScenarioAlternativeSpec.__dataclass_fields__), akey)
+                akw: dict[str, Any] = {f: a.get(f) for f in
+                                       ScenarioAlternativeSpec.__dataclass_fields__}
+                a = ScenarioAlternativeSpec(**akw)
+            a.check(akey)
+            alts.append(a)
+        object.__setattr__(self, "alternatives", tuple(alts))
+        names = [a.name for a in alts]
+        if len(set(names)) != len(names):
+            raise ContractError(f"{key}: duplicate alternative names",
+                                config_key=f"{key}.alternatives")
+        object.__setattr__(self, "quantiles", tuple(self.quantiles or ()))
+        if self.category == "measurement":
+            self._check_measurement(key)
+        else:
+            for f in ("seed", "n_draws", "dependence"):
+                if getattr(self, f) is not None:
+                    raise ContractError(f"{key}: {f} applies to measurement scenarios only "
+                                        f"({self.category} alternatives are deterministic)",
+                                        config_key=f"{key}.{f}")
+            if self.perturbations or self.quantiles:
+                raise ContractError(f"{key}: {self.category} scenarios take alternatives, not "
+                                    "distributions or quantiles", config_key=f"{key}.perturbations")
+            minimum = 2 if self.category == "footprint_parameter" else 1
+            if len(alts) < minimum:
+                raise ContractError(f"{key}: {self.category} needs at least {minimum} "
+                                    "alternative(s)", config_key=f"{key}.alternatives")
+            if self.category == "footprint_parameter":
+                _require(self.realization_source, input=key, field="realization_source",
+                         config_key=f"{key}.realization_source")
+                for a in alts:
+                    bad = [t for t, s in a.terms.items() if s.source != "table"]
+                    if bad:
+                        raise ContractError(
+                            f"{key}: footprint realization {a.name} redeclares {bad} without a "
+                            "table source; footprint uncertainty needs regenerated footprints or "
+                            "supplied realizations, never noise on normalized pixels",
+                            config_key=f"{key}.alternatives")
+            elif self.realization_source is not None:
+                raise ContractError(f"{key}: realization_source applies to footprint_parameter",
+                                    config_key=f"{key}.realization_source")
+
+    def _check_measurement(self, key: str) -> None:
+        if self.alternatives or self.realization_source is not None:
+            raise ContractError(f"{key}: measurement scenarios take perturbations, not "
+                                "alternatives", config_key=f"{key}.alternatives")
+        if self.seed is None:
+            raise ContractError(f"{key}: seed not declared; scenarios must be reproducible",
+                                config_key=f"{key}.seed")
+        _positive_int(self.seed, key=key, field="seed", minimum=0)
+        if self.n_draws is None:
+            raise ContractError(f"{key}: n_draws not declared", config_key=f"{key}.n_draws")
+        _positive_int(self.n_draws, key=key, field="n_draws", minimum=2)
+        if not self.perturbations:
+            raise ContractError(f"{key}: no perturbations declared; distributions are never "
+                                "a default", config_key=f"{key}.perturbations")
+        terms = [p.term for p in self.perturbations]
+        if len(set(terms)) != len(terms):
+            raise ContractError(f"{key}: a term is perturbed twice",
+                                config_key=f"{key}.perturbations")
+        q = self.quantiles
+        if not q or len(set(q)) != len(q) or any(
+                isinstance(x, bool) or not isinstance(x, int | float) or not 0 < x < 1 for x in q):
+            raise ContractError(f"{key}: quantiles must be distinct levels in (0, 1)",
+                                config_key=f"{key}.quantiles")
+        object.__setattr__(self, "quantiles", tuple(sorted(float(x) for x in q)))
+        d = self.dependence
+        if not isinstance(d, Mapping):
+            raise ContractError(f"{key}: dependence not declared (across_terms: independent or "
+                                "gaussian_copula, with a justification)",
+                                config_key=f"{key}.dependence")
+        _check_keys(d, {"across_terms", "correlations", "justification"}, f"{key}.dependence")
+        _choice(d.get("across_terms"), TERM_DEPENDENCES, input=key,
+                field="dependence.across_terms", config_key=f"{key}.dependence.across_terms")
+        _require(d.get("justification"), input=key, field="dependence.justification",
+                 config_key=f"{key}.dependence.justification")
+        pairs = list(d.get("correlations") or ())
+        by_term = {p.term: p for p in self.perturbations}
+        rho: dict[tuple[str, ...], float] = {}
+        if d["across_terms"] == "independent" and pairs:
+            raise ContractError(f"{key}: correlations given for independent terms",
+                                config_key=f"{key}.dependence.correlations")
+        if d["across_terms"] == "gaussian_copula" and not pairs:
+            raise ContractError(f"{key}: gaussian_copula needs declared correlations",
+                                config_key=f"{key}.dependence.correlations")
+        for i, c in enumerate(pairs):
+            ckey = f"{key}.dependence.correlations[{i}]"
+            _check_keys(c, {"terms", "rho"}, ckey)
+            t = tuple(c.get("terms") or ())
+            if len(t) != 2 or t[0] == t[1] or any(x not in by_term for x in t):
+                raise ContractError(f"{ckey}: terms must be two different perturbed terms",
+                                    config_key=ckey)
+            if by_term[t[0]].temporal_dependence != by_term[t[1]].temporal_dependence:
+                raise ContractError(f"{ckey}: correlated terms need the same temporal_dependence",
+                                    config_key=ckey)
+            r = _finite(c.get("rho"), key=ckey, field="rho")
+            if not -1 < r < 1:
+                raise ContractError(f"{ckey}: rho must lie in (-1, 1)", config_key=ckey)
+            pair = tuple(sorted(t))
+            if pair in rho:
+                raise ContractError(f"{ckey}: pair {pair} declared twice", config_key=ckey)
+            rho[pair] = r
+        names = sorted(by_term)
+        matrix = [[1.0 if a == b else rho.get(tuple(sorted((a, b))), 0.0)
+                   for b in names] for a in names]
+        if not _cholesky_ok(matrix):
+            raise ContractError(f"{key}: the declared correlations are not positive definite",
+                                config_key=f"{key}.dependence.correlations")
+        object.__setattr__(self, "dependence", MappingProxyType({
+            "across_terms": d["across_terms"], "justification": d["justification"],
+            "correlations": tuple(MappingProxyType({"terms": list(k), "rho": v})
+                                  for k, v in sorted(rho.items()))}))
+
+    def correlation(self, a: str, b: str) -> float:
+        """Declared correlation of two perturbed terms (1 on the diagonal, 0 if undeclared)."""
+        if a == b:
+            return 1.0
+        for c in (self.dependence or {}).get("correlations", ()):
+            if sorted(c["terms"]) == sorted((a, b)):
+                return float(c["rho"])
+        return 0.0
+
+
 @dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
@@ -2614,6 +3262,8 @@ class Config:
     event_tables: tuple[EventTableSpec, ...] = ()
     event_analyses: tuple[EventAnalysisSpec, ...] = ()
     anomalies: tuple[AnomalySpec, ...] = ()
+    water_balances: tuple[WaterBalanceSpec, ...] = ()
+    scenarios: tuple[ScenarioSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -2679,6 +3329,63 @@ class Config:
                 raise ContractError(f"anomalies.{an.anomaly_id}: metric set {an.metric_set!r} "
                                     "not declared",
                                     config_key=f"anomalies.{an.anomaly_id}.metric_set")
+        self._check_water_balances()
+
+    def _check_water_balances(self) -> None:
+        wids = [w.water_balance_id for w in self.water_balances]
+        if len(set(wids)) != len(wids):
+            raise ContractError(f"duplicate water_balance_id in {wids}",
+                                config_key="water_balances")
+        aggs = {a.aggregation_id: a for a in self.period_aggregations}
+        for w in self.water_balances:
+            key = f"water_balances.{w.water_balance_id}"
+            if w.site_id not in self.stations:
+                raise ContractError(f"{key}: station {w.site_id} not declared",
+                                    config_key=f"stations.{w.site_id}")
+            if not any(t.site_id == w.site_id for t in self.station_tables):
+                raise ContractError(f"{key}: station {w.site_id} has no station table",
+                                    config_key="station_tables")
+            agg = aggs.get(w.period_aggregation)
+            if agg is None:
+                raise ContractError(f"{key}: period_aggregation {w.period_aggregation!r} not "
+                                    "declared; water balances reuse the step-8 periods",
+                                    config_key=f"{key}.period_aggregation")
+            outside = set(w.periods or ()) - set(agg.periods)
+            if outside:
+                raise ContractError(f"{key}: periods {sorted(outside)} are not periods of "
+                                    f"{agg.aggregation_id}", config_key=f"{key}.periods")
+        sids = [s.scenario_id for s in self.scenarios]
+        if len(set(sids)) != len(sids):
+            raise ContractError(f"duplicate scenario_id in {sids}", config_key="scenarios")
+        balances = {w.water_balance_id: w for w in self.water_balances}
+        for s in self.scenarios:
+            key = f"scenarios.{s.scenario_id}"
+            wb = balances.get(s.water_balance)
+            if wb is None:
+                raise ContractError(f"{key}: water balance {s.water_balance!r} not declared",
+                                    config_key=f"{key}.water_balance")
+            for p in s.perturbations:
+                t = wb.terms[p.term]
+                if t.status == "unknown":
+                    raise ContractError(
+                        f"{key}: term {p.term} is unknown in {wb.water_balance_id}; a distribution "
+                        "cannot give an unknown term a value (declare it as a scenario term with "
+                        "daily_mm and a justification first)", config_key=f"{key}.perturbations")
+                if t.quantity == "storage_state" and p.temporal_dependence != "systematic":
+                    raise ContractError(f"{key}: a storage_state change can only be perturbed "
+                                        "systematically", config_key=f"{key}.perturbations")
+
+    def water_balance(self, water_balance_id: str) -> WaterBalanceSpec:
+        for w in self.water_balances:
+            if w.water_balance_id == water_balance_id:
+                return w
+        raise KeyError(water_balance_id)
+
+    def scenario(self, scenario_id: str) -> ScenarioSpec:
+        for s in self.scenarios:
+            if s.scenario_id == scenario_id:
+                return s
+        raise KeyError(scenario_id)
 
     def event_analysis(self, event_analysis_id: str) -> EventAnalysisSpec:
         for a in self.event_analyses:
@@ -3029,7 +3736,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
            "footprint_aggregations", "comparisons", "period_aggregations",
            "crop_height_tables", "metric_sets", "bootstrap", "rankings", "diagnostics",
            "representativeness", "satellite_support", "event_tables", "event_analyses",
-           "anomalies", "output_dir"}
+           "anomalies", "water_balances", "scenarios", "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -3250,6 +3957,38 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         kw.update({k: v for k, v in body.items() if k not in kw})
         anomalies.append(AnomalySpec(**kw))
 
+    def term_paths(terms: Any) -> Any:
+        if not isinstance(terms, Mapping):
+            return terms
+        return {t: ({**b, "path": _path(b.get("path"), base_dir)}
+                    if isinstance(b, Mapping) and b.get("path") is not None else b)
+                for t, b in terms.items()}
+
+    balances = []
+    wb_fields = set(WaterBalanceSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("water_balances") or []):
+        _check_keys(body, wb_fields, f"water_balances[{i}]")
+        kw = {f: body.get(f) for f in ("water_balance_id", "site_id", "period_aggregation",
+                                       "boundary", "equation", "sign_convention", "terms")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        if isinstance(kw.get("boundary"), Mapping):
+            kw["boundary"] = {**kw["boundary"],
+                              "path": _path(kw["boundary"].get("path"), base_dir)}
+        kw["terms"] = term_paths(kw.get("terms"))
+        balances.append(WaterBalanceSpec(**kw))
+
+    scenarios = []
+    sc_fields = set(ScenarioSpec.__dataclass_fields__)
+    for i, body in enumerate(data.get("scenarios") or []):
+        _check_keys(body, sc_fields, f"scenarios[{i}]")
+        kw = {f: body.get(f) for f in ("scenario_id", "water_balance", "category",
+                                       "justification")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        kw["alternatives"] = [{**a, "terms": term_paths(a.get("terms"))}
+                              if isinstance(a, Mapping) else a
+                              for a in (kw.get("alternatives") or [])]
+        scenarios.append(ScenarioSpec(**kw))
+
     return Config(
         stations=stations,
         products=products,
@@ -3273,6 +4012,8 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         event_tables=tuple(events),
         event_analyses=tuple(event_analyses),
         anomalies=tuple(anomalies),
+        water_balances=tuple(balances),
+        scenarios=tuple(scenarios),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 
