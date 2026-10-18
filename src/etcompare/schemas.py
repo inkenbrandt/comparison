@@ -37,8 +37,14 @@ from etcompare.config import (
     NETWORK_SUMMARY_TYPES,
     PERIOD_TYPES,
     PRODUCT_DAY_DEFINITIONS,
+    SCENARIO_CATEGORIES,
+    SPATIAL_SUPPORTS,
     STATION_DAY_DEFINITIONS,
     TEMPORAL_SUPPORTS,
+    TERM_QUANTITIES,
+    TERM_SOURCES,
+    TERM_STATUSES,
+    WATER_BALANCE_TERMS,
 )
 from etcompare.config import ET_TOTAL_UNIT as ET_TOTAL_UNIT
 from etcompare.config import ET_UNIT as ET_UNIT
@@ -144,6 +150,16 @@ OVERLAP_WINDOWS: Final = ("pre", "event", "post", "recovery")
 ANOMALY_DAY_STATUSES: Final = ("ok", "baseline_unavailable")
 ANOMALY_METRIC_STATUSES: Final = ("ok", "sparse_sample", "empty_sample", "estimate_undefined",
                                   "insufficient_training_years")
+#: Water balances (``etcompare.water_balance``). A period total exists only when complete.
+TERM_TOTAL_STATUSES: Final = ("complete", "incomplete_period", "unknown_term")
+#: ``measured_modeled``: only measured and modeled terms; ``scenario``: at least one
+#: scenario term. The two are always separate rows.
+RESIDUAL_KINDS: Final = ("measured_modeled", "scenario")
+RESIDUAL_STATUSES: Final = ("computed", "unknown", "not_applicable")
+VOLUME_STATUSES: Final = ("computed", "not_requested", "area_unknown", "support_mismatch",
+                          "no_value")
+#: Scenario results (``etcompare.scenarios``).
+SCENARIO_STATUSES: Final = ("computed", "unknown")
 
 
 @dataclass(frozen=True)
@@ -1605,6 +1621,137 @@ ANOMALY_METRICS = TableSchema(
                  "series_kind", "metric"),
 )
 
+_BALANCE_KEYS = (
+    _key("water_balance_id", "string", "Declared water balance"),
+    _key("site_id", "string", "Station"),
+    _key("period_type", "string", "Period type of the step-8 aggregation",
+         allowed=PERIOD_TYPES),
+    _key("period_label", "string", "Period label (e.g. 2025-07, WY2025, GS2025)"),
+)
+_PERIOD_BOUNDS = (
+    _c("period_start", "date", "First calendar day of the period", nullable=False),
+    _c("period_end", "date", "Last calendar day of the period", nullable=False),
+    _c("boundary_id", "string", "Declared boundary every term must cover", nullable=False),
+)
+
+WATER_BALANCE_TERM_TOTALS = TableSchema(
+    "water_balance_terms", "1",
+    "Period totals of each declared water-balance term. A total exists only when every "
+    "calendar day (or both storage states) of the period has a value; otherwise the partial "
+    "sum is reported with its day count and is never a full-period total.",
+    (
+        *_BALANCE_KEYS,
+        _key("term", "string", "Water-balance term", allowed=WATER_BALANCE_TERMS),
+        *_PERIOD_BOUNDS,
+        _c("status", "string", "measured, modeled, scenario or unknown", nullable=False,
+           allowed=TERM_STATUSES),
+        _c("source_kind", "string", "Where the values come from", nullable=False,
+           allowed=TERM_SOURCES),
+        _c("source", "string", "Column, table, reference variant or scenario value"),
+        _c("quantity", "string", "flux (summed) or storage_state (differenced)",
+           nullable=False, allowed=TERM_QUANTITIES),
+        _c("spatial_support", "string", "Declared spatial support of the values",
+           allowed=SPATIAL_SUPPORTS),
+        _c("support_matches_boundary", "bool",
+           "The term covers exactly the boundary (null for an unknown term)"),
+        _c("day_definition", "string", "Declared day definition of the term's values"),
+        _c("sign", "int", "+1 inflow, -1 outflow or storage increase", nullable=False),
+        _c("n_days_expected", "int", "Calendar days of the period", nullable=False),
+        _c("n_values_required", "int",
+           "Values a complete total needs: every day (flux) or 2 states (storage)"),
+        _c("n_values_present", "int", "Values present among those required"),
+        _c("period_completeness", "float", "n_values_present / n_values_required",
+           unit=FRACTION),
+        _c("partial_sum_mm", "float",
+           "Sum over the n_values_present days only (flux); never a full-period total",
+           unit=ET_TOTAL_UNIT),
+        _c("total_mm", "float", "Full-period total; null unless total_status is complete",
+           unit=ET_TOTAL_UNIT),
+        _c("signed_total_mm", "float", "sign x total_mm", unit=ET_TOTAL_UNIT),
+        _c("total_status", "string", "complete, incomplete_period or unknown_term",
+           nullable=False, allowed=TERM_TOTAL_STATUSES),
+        _c("total_detail", "string", "Further detail"),
+        _c("volume_m3", "float", "total_mm x boundary area (known area and matching support)",
+           unit="m3"),
+        _c("volume_status", "string", "Why a volume is or is not given", nullable=False,
+           allowed=VOLUME_STATUSES),
+        _c("reference_variant", "string", "Station ET reference variant (ET term)",
+           allowed=REFERENCE_VARIANTS),
+        _c("n_days_et_gap_filled", "int", "Gap-filled station ET days among the present days"),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("water_balance_id", "site_id", "period_type", "period_label", "term"),
+)
+
+WATER_BALANCE_RESIDUALS = TableSchema(
+    "water_balance_residuals", "1",
+    "Water-balance residuals per period: a plausibility diagnostic holding every unmeasured "
+    "exchange and the error of every term; never ET error and never a basis for choosing a "
+    "model, reference, filter or footprint. Residuals from measured/modeled terms and "
+    "scenario residuals are separate rows.",
+    (
+        *_BALANCE_KEYS,
+        _key("residual_kind", "string", "measured_modeled or scenario", allowed=RESIDUAL_KINDS),
+        *_PERIOD_BOUNDS,
+        _c("equation", "string", "Declared equation and sign convention", nullable=False),
+        _c("status", "string", "computed, unknown or not_applicable", nullable=False,
+           allowed=RESIDUAL_STATUSES),
+        _c("residual_mm", "float", "Residual depth; null unless computed", unit=ET_TOTAL_UNIT),
+        _c("residual_volume_m3", "float", "Residual volume over the boundary area", unit="m3"),
+        _c("volume_status", "string", "Why a volume is or is not given", nullable=False,
+           allowed=VOLUME_STATUSES),
+        _c("reason", "string", "Why the residual is unknown or not applicable"),
+        _c("unknown_terms", "string", "';'-joined terms with no input"),
+        _c("incomplete_terms", "string", "';'-joined terms without a complete period total"),
+        _c("scenario_terms", "string", "';'-joined scenario terms"),
+        _c("support_mismatch_terms", "string",
+           "';'-joined terms whose spatial support differs from the boundary"),
+        _c("n_days_expected", "int", "Calendar days of the period", nullable=False),
+        _c("et_reference_variant", "string", "Station ET reference variant",
+           allowed=REFERENCE_VARIANTS),
+        _c("n_days_et_gap_filled", "int", "Gap-filled station ET days in the period"),
+        _c("interpretation", "string", "How the residual may be read", nullable=False),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("water_balance_id", "site_id", "period_type", "period_label",
+                 "residual_kind"),
+)
+
+SCENARIO_RESULTS = TableSchema(
+    "scenario_results", "1",
+    "Declared scenario uncertainty of a water-balance residual: one uncertainty category per "
+    "scenario (measurement, footprint_parameter or method_choice), never merged and never a "
+    "bootstrap interval (sampling uncertainty is the step-10 intervals table).",
+    (
+        _key("scenario_id", "string", "Declared scenario"),
+        _key("site_id", "string", "Station"),
+        _key("period_type", "string", "Period type", allowed=PERIOD_TYPES),
+        _key("period_label", "string", "Period label"),
+        _key("statistic", "string",
+             "base, mean, sd, q<level>, min, median, max, alternative=<name> or "
+             "realization=<name>"),
+        _c("water_balance_id", "string", "Water balance", nullable=False),
+        _c("uncertainty_category", "string", "Uncertainty category of the scenario",
+           nullable=False, allowed=SCENARIO_CATEGORIES),
+        _c("uncertainty_label", "string", "Human-readable category label", nullable=False),
+        _c("period_start", "date", "First calendar day of the period", nullable=False),
+        _c("period_end", "date", "Last calendar day of the period", nullable=False),
+        _c("residual_kind", "string", "Kind of the base residual", nullable=False,
+           allowed=RESIDUAL_KINDS),
+        _c("value", "float", "Residual statistic; null unless computed", unit=ET_TOTAL_UNIT),
+        _c("status", "string", "computed or unknown", nullable=False, allowed=SCENARIO_STATUSES),
+        _c("status_detail", "string", "Further detail (e.g. which terms are unknown)"),
+        _c("n_draws", "int", "Draws (measurement) or alternatives incl. the declared one",
+           nullable=False),
+        _c("n_valid_draws", "int", "Draws or alternatives with a computed residual"),
+        _c("seed", "int", "Declared seed (measurement scenarios)"),
+        _c("scenario_sha256", "string", "SHA-256 of the scenario declaration", nullable=False),
+        _c("interpretation", "string", "How the value may be read", nullable=False),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("scenario_id", "site_id", "period_type", "period_label", "statistic"),
+)
+
 EXCLUSIONS = TableSchema(
     "exclusions", "1", "Rows removed or flagged, with stage and reason.",
     (
@@ -1630,6 +1777,7 @@ SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
                         REPRESENTATIVENESS_LABELS, SATELLITE_SUPPORT_ERRORS,
                         REPRESENTATIVENESS_AVAILABILITY, STATION_EVENTS, EVENT_RESPONSES,
                         EVENT_OVERLAPS, EVENT_CONDITIONS, ANOMALY_DAILY, ANOMALY_METRICS,
+                        WATER_BALANCE_TERM_TOTALS, WATER_BALANCE_RESIDUALS, SCENARIO_RESULTS,
                         EXCLUSIONS)
 })
 

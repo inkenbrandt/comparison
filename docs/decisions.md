@@ -1167,3 +1167,118 @@ The user stated that the crop-height model's cutting dates come from farm record
 
 What would change these: other window lengths, completeness or recovery settings (they must be redeclared before rerunning, never chosen for agreement), a control site or period, more years of record, and acquisition metadata.
 
+---
+
+**Revision 2026-10-17 (r):** Step 15 implemented. D-062 to D-064 added. No input was downloaded, no service or database was queried, and no credential was used. The station gauge `p_1_1_1` and the half-hourly logger files were not used. D-001 to D-061 are unchanged.
+
+### D-062 — Water-balance plausibility checks (Adopted rules; US-UTJ declaration Provisional)
+`etcompare.water_balance.compute_water_balance(spec, station_daily, *, period_aggregation, station)` evaluates one `WaterBalanceSpec` (the new `water_balances:` section). It writes `water_balance_terms` and `water_balance_residuals`, both v1.
+- **Equation and signs.** `equation: soil_zone` is `residual = P + I + capillary_rise − ET − runoff − deep_percolation − ΔS`, with `sign_convention: inflows_positive`. The equation text is recorded on every residual row and in the table attributes.
+- **Every term is declared.** All seven terms must appear; leaving one out raises an error. Each term has a `status` and its own source:
+
+  | Status | Source | Mandatory fields |
+  |---|---|---|
+  | `measured`, `modeled` | `station_column` (a `station_daily` column, e.g. `src_gridMET_prcp`), `station_et` (ET only) or `table` (CSV/Parquet) | `spatial_support`. Columns and tables also need `units` (a daily depth; a bare `mm` is refused, D-022) and `day_definition` (may be `unknown`). `station_et` needs `reference_variant` |
+  | `scenario` | `scenario` | a constant `daily_mm`, a `justification` and the `spatial_support` it assumes |
+  | `unknown` | `none` | a `reason` |
+
+  Fields that do not belong to the source are refused.
+- **Unknown is never zero.** An unknown term has no value. The residual is null (`status = unknown`), and its `reason` and `unknown_terms` list every unknown term.
+- **Scenario residuals are separate.** Each period has two rows: `measured_modeled` (only measured and modeled terms) and `scenario` (at least one scenario term). A scenario term makes the `measured_modeled` residual unknown, with a pointer to the scenario row. The scenario row is `not_applicable` when no scenario term is declared, and it carries `scenario_assumption`.
+- **Spatial support.** `spatial_support` is one of `boundary`, `station_point`, `tower_footprint`, `gridded_cell`, `model_pixel` and `regional`.
+  - Only `boundary` covers a polygon boundary; a point boundary also matches `station_point`.
+  - Every other support is flagged `support_mismatch` on the term row and listed in `support_mismatch_terms`. It is never treated as equal.
+  - The residual depth is still computed when every term is known, so the mismatch stays visible rather than hidden.
+  - A tower footprint is refused as a boundary: it changes every day and is not a field area.
+  - Irrigation with `regional` support is refused: a regional diversion is not field irrigation.
+- **Periods and completeness (D-041).** The periods are those of the declared step-8 `period_aggregation` (optionally a subset), built by `aggregation.period_calendar` with the same calendar denominators (leap days included, whole periods listed, `period_outside_record` flagged).
+  - A flux term has a `total_mm` only when every calendar day has a value. Otherwise only `partial_sum_mm` is reported, with `n_values_present` / `n_values_required`, and `total_status = incomplete_period`.
+  - A storage term (`quantity: storage_state`, mm at `end_of_station_day`) gives ΔS = S(end) − S(day before start) only when both states exist.
+  - A residual needs a complete total of every term, and the incomplete terms are named in `reason`.
+  - Growing seasons from a crop-height table must be attached first (`with_growing_seasons`), as in step 8.
+- **Station ET.** The ET term names its reference variant (D-004). Gap-filled days are counted per period (`n_days_et_gap_filled`) and flagged `includes_gap_filled_et_days` and `shared_gridmet_drivers` (D-005).
+- **Day definitions.** A column or table term whose `day_definition` is `unknown` or differs from the station's is flagged `day_alignment=unverified`, on its rows and on the residual. Nothing is shifted (D-002).
+- **Volumes.** `volume_m3 = depth_mm / 1000 × area_m2`. A volume is given only when:
+  - the declaration sets `volumes: true`; this is refused at load time unless the boundary has a declared `area_m2` and `area_source`;
+  - the boundary has a known area; a point boundary never has one, and `depth_to_volume_m3` refuses otherwise;
+  - the term (or, for the residual, every term) covers the boundary. A footprint or gridMET depth is not a volume of the field (`volume_status = support_mismatch`).
+- **Interpretation.** A residual is a plausibility diagnostic. It holds every unmeasured exchange and the errors of every term. It is never assigned to ET error and never used to choose a model, reference, filter or footprint.
+  - Every row carries `plausibility_diagnostic_only` and `not_et_error`, plus an `interpretation` column.
+  - `compute_water_balance` takes no cohort or model input, and no module except `etcompare.scenarios` imports `water_balance` (both tested).
+- **Gate (tested, `tests/test_water_balance.py`, 47 tests):**
+  - a closed synthetic balance gives exactly 0 mm and 0 m³ in every month;
+  - an unknown inflow gives a null residual with every unknown term listed;
+  - support mismatches are flagged, and no boundary volume is given for them;
+  - volumes are refused without a known area (point, and polygon without area);
+  - also: incomplete months, storage states, gap-filled ET counts, day alignment, scenario residuals, step-8 denominators, a Parquet round trip and 28 declaration refusals.
+
+### D-063 — Scenario uncertainty (Adopted rules; none declared for US-UTJ)
+`etcompare.scenarios.run_scenario(scenario, water_balance, station_daily, *, period_aggregation, station)` propagates one `ScenarioSpec` (the new `scenarios:` section) and writes `scenario_results` v1.
+- **Four kinds, never merged.** `UNCERTAINTY_CATEGORIES` = `sampling`, `measurement`, `footprint_parameter` and `method_choice`.
+  - `sampling` is the step-10 bootstrap (`intervals` table) and is refused as a scenario category.
+  - Each scenario has exactly one category, and its rows carry `uncertainty_category`, `uncertainty_label`, an `interpretation` and the flag `not_bootstrap_interval`. No interval combines two categories.
+- **`measurement`: declared distributions only.** Each perturbation declares:
+  - a term;
+  - a family (`normal`, `lognormal`, `uniform` or `triangular`) with its parameters;
+  - a `mode` (`multiplicative`, or `additive` in mm d⁻¹ per day, or mm for ΔS);
+  - a `temporal_dependence` (`systematic`: one draw per realization for every day; `independent_daily`: one draw per station day);
+  - a `justification`.
+
+  The scenario also declares `dependence.across_terms` (`independent` or `gaussian_copula`) with `correlations` and a justification. Correlations must be positive definite, and correlated terms need the same temporal dependence. `seed`, `n_draws` and `quantiles` are mandatory. There is no default distribution.
+  - Draws use `numpy.random.default_rng([seed, hash(scenario_id)])`, systematic first. The same seed and declaration reproduce every draw (tested).
+  - Rows hold `base`, `mean`, `sd` and the declared quantiles, with the seed, the number of draws and the declaration's SHA-256. The declaration itself is in the table attributes.
+- **Refused:**
+  - a perturbation of an `unknown` term (a distribution cannot give it a value; declare a scenario term first);
+  - a daily perturbation of a storage state.
+
+  A period whose base residual is unknown stays unknown in every draw. Perturbations never change which days are present, so completeness stays as declared.
+- **`method_choice`: deterministic alternatives.** Named alternatives redeclare terms (for example another ET reference variant), each with a justification. The rows are `alternative=declared`, `alternative=<name>`, `min` and `max`, flagged `not_a_probability_distribution`. A range exists only when every alternative has a residual. The corrected/raw ET difference and model spread can enter only this way, never as a distribution.
+- **`footprint_parameter`: supplied realizations only.** At least two alternatives are required, each redeclaring terms with `table` sources (term series computed from regenerated footprints), plus a `realization_source`. Distributions are refused for this category, so noise is never added to normalized footprint pixels. The rows are `realization=<name>`, `min`, `median` and `max`.
+- **Gate (tested, `tests/test_scenarios.py`, 35 tests):**
+  - the same seed reproduces the table and the draws, and another seed differs;
+  - results are labelled apart from the bootstrap `intervals` schema, and `sampling` is refused;
+  - draws are checked analytically: systematic multiplicative precipitation equals `P_total·(x − 1)`, and February scales by 29/31; independent daily additive ET equals `−Σ x_d`; the storage offset; the copula correlation (0.8 ± 0.03) and its independence;
+  - an unknown base stays unknown;
+  - method-choice ranges, and footprint realizations with refusals of non-table and noise declarations;
+  - 20 declaration refusals and the copula checks.
+
+### D-064 — US-UTJ tower-field water balance (Information; declaration Provisional, chosen by the assistant)
+`utj_tower_field_balance` in `examples/us_utj.yaml`, run by `tools/run_water_balance.py` (about 1 s; local `outputs/water_balance/`).
+- **Boundary.** The tower field `fieldid 4940083` of `Bluff.gpkg` (EPSG:26912 user-declared; vintage `unknown`, flagged `boundary_vintage_unknown`).
+  - `area_m2` 98,147.74 is the polygon's planar area in the declared CRS, equal to its `shape_area` attribute.
+  - The `acres` attribute (24.3) is 98,339 m², which agrees to 0.2 % (rounding).
+  - `volumes: true`.
+- **Terms:**
+
+  | Term | Declaration | Note |
+  |---|---|---|
+  | precipitation | `modeled`, `src_gridMET_prcp`, mm/day, `gridded_cell`, day definition `unknown` | gridMET cell at the station (complete, 492 days); units Provisional |
+  | irrigation | `unknown` | no depths, timing or diversion records; the log has no US-UTJ irrigation events. Nothing is inferred from ET, soil moisture, cuttings or residuals |
+  | capillary_rise, runoff, deep_percolation | `unknown` | no input |
+  | et | `measured`, `station_et`, `et_corrected_inclusive`, `tower_footprint` | the only variant with complete months; gap-filled days are counted |
+  | storage_change | `unknown` | the log mentions CS655 and SoilVue sensors, but no daily series, depth or units was supplied, and the half-hourly logger files were not read |
+
+  **Not used:**
+  - `p_1_1_1` (237 of 492 days), because its bucket factor was changed after the record (D-059). Using or rescaling it is the user's decision.
+  - Any downloaded or queried input.
+- **Result: the water balance is unknown.**
+  - All 24 `measured_modeled` residuals (months, growing seasons, years, water years) are null. Every reason lists irrigation, capillary rise, runoff, deep percolation and storage change.
+  - All 24 scenario residuals are `not_applicable`.
+  - No volume is given: precipitation and ET both mismatch the field's support, and no residual exists.
+- **Complete term totals** (reported as term totals only):
+  - every month from 2024-07 to 2025-09, and WY2025: ET 888.9 mm with 127 of 365 days gap-filled, and gridMET precipitation 131.9 mm;
+  - May 2025 is complete but entirely gap-filled (31 of 31 days, D-061);
+  - 2024-06, 2025-10, both calendar years, GS2024, GS2025, WY2024 and WY2026 have partial sums only.
+
+  No difference of the two totals is reported. It would omit five unknown terms, mix a footprint support with a gridMET cell, and could not be read as irrigation or as an ET error.
+- **Independent check** (local integration test): July 2025 and WY2025 totals and gap-filled counts recomputed from `US-UTJ_daily.csv` with pandas match. The polygon area recomputed with geopandas matches.
+- **Open, for the user:**
+  - irrigation records (depths, timing, diversions for this field);
+  - a soil-moisture series (sensor, depth, units, and permission to read the logger files);
+  - whether and how `p_1_1_1` may be used;
+  - the ET variant;
+  - the gridMET precipitation units and day definition;
+  - the boundary area and vintage;
+  - any runoff, deep-percolation or capillary-rise input or scenario;
+  - any measurement, method-choice or footprint scenario.
+
