@@ -442,4 +442,188 @@ diagnostics:
         status: verified              # user-confirmed; .ini RH_1_1_1 in % (D-053)
         # No bins: VPD is the declared humidity condition. Bins are not added after errors were seen.
 
+# Landscape representativeness (guide step 13; D-054 to D-057). Inputs were declared by the
+# user on 2026-10-17: Annual NLCD (Collection 1 v1.2), the 2024 CDL (30 m) and the field
+# polygons of Bluff.gpkg (CRS EPSG:26912 and tower field 4940083 declared by the user; the
+# file carries no CRS). Every analysis setting is a Provisional default fixed before any
+# landscape value was computed. Both matching policies are reported side by side and none
+# is adopted. Fractions and labels describe each support's landscape; they are not ET
+# accuracy guarantees. tools/run_representativeness.py runs this section.
+x-nlcd-legend: &nlcd_legend   # NLCD class names from the product XML (edom); 250 = NoData
+  11: Open Water
+  12: Perennial Ice/Snow
+  21: Developed, Open Space
+  22: Developed, Low Intensity
+  23: Developed, Medium Intensity
+  24: Developed, High Intensity
+  31: Barren Land (Rock/Sand/Clay)
+  41: Deciduous Forest
+  42: Evergreen Forest
+  43: Mixed Forest
+  52: Shrub/Scrub
+  71: Grassland/Herbaceous
+  81: Pasture/Hay
+  82: Cultivated Crops
+  90: Woody Wetlands
+  95: Emergent Herbaceous Wetlands
+representativeness:
+  - representativeness_id: utj_landscape
+    site_id: US-UTJ
+    footprint_sets: [US-UTJ_nldas_eto_20261014]   # primary footprints (D-037)
+    start: "2024-06-05"
+    end: "2025-10-09"
+    matching_policies: [nearest, previous_only]   # Provisional; both reported, none adopted
+    contour_levels: [0.8]             # Provisional; the 80 % contour of Chu et al. (2021)
+    methods: [footprint, pixel_window, nearest_tower_pixel, polygon]
+    window_sizes: [3]                 # the step-5 pixel_window_3x3 (D-029)
+    # One OpenET raster supplies the model grid of the pixel supports; its grid id must equal
+    # the step-5 model grid. (The Drive folder moved to unclipped/ after step 5.)
+    reference_grid_raster: "M:/My Drive/OpenET_Daily_Tiffs/unclipped/US-UTJ_US-CdM/ensemble/US-CdM_US-UTJ_ensemble_et_2025_06_15_2b83d.tif"
+    reference_grid_id: bc933ed96e16809f
+    negative_weight_tolerance: 1.0e-9 # as the step-5 extraction (D-027)
+    layers:
+      nlcd:
+        kind: categorical
+        source: "USGS Annual NLCD Collection 1 v1.2 (June 2026) land cover, tile H09V10, 30 m"
+        crs: "+proj=aea +lat_0=23 +lon_0=-96 +lat_1=29.5 +lat_2=45.5 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+        nodata: 250
+        legend: *nlcd_legend
+        assets:
+          - {path: ../NLCD/Annual_NLCD_H09V10_LndCov_2023_CU_C1V2.tif, vintage: 2023}
+          - {path: ../NLCD/Annual_NLCD_H09V10_LndCov_2024_CU_C1V2.tif, vintage: 2024}
+          - {path: ../NLCD/Annual_NLCD_H09V10_LndCov_2025_CU_C1V2.tif, vintage: 2025}
+      cdl:
+        kind: categorical
+        source: "USDA NASS Cropland Data Layer 2024, 30 m version (resampled by NASS from the official 10 m CDL)"
+        crs: "EPSG:5070"
+        nodata: 0                     # Background (Class_Names 0; statistics exclude 0)
+        legend_csv: legends/cdl_2024_legend.csv   # Class_Names of the product's .aux
+        assets:
+          - {path: ../2024_30m_cdls/2024_30m_cdls.tif, vintage: 2024}
+    polygons:
+      - polygon_id: tower_field
+        path: ../Bluff.gpkg
+        layer: bluff_fields
+        crs: "EPSG:26912"             # user-declared 2026-10-17; the file has no CRS
+        id_column: fieldid
+        feature_id: "4940083"         # user-declared tower field (alfalfa, sprinkler)
+        source: "Bluff.gpkg layer bluff_fields (water-related land-use attributes)"
+        vintage: unknown
+    fluxfootprints_labels:            # labels only, never a metric or threshold
+      layers: [nlcd, cdl]
+      radii: [250, 500, 1000, 1500, 2000, 3000]   # fluxfootprints TARGET_RADII (Chu et al. 2021)
+      alpha: 0.05                     # fluxfootprints DEFAULT_ALPHA
+
+# Satellite support (guide step 13; D-011, D-057). No authoritative per-pixel or per-site
+# clear-observation metadata exists for the OpenET models (user, 2026-10-17), so every
+# analysis reports not_available. Nothing is inferred from missing rows, filenames, scene
+# dates or daily values, and scene-level Landsat cloud cover is not a pixel-clear flag.
+satellite_support:
+  - satellite_support_id: utj_satellite_support
+    metric_set: utj_metrics
+    metrics: [mbe, mae, rmse]
+    min_subset_days: 20               # Provisional; the step-12 min_bin_days floor
+    sources: []                       # none declared (D-011)
+    comparisons: [utj_rank_corrected_inclusive, utj_rank_corrected_measured,
+                  utj_pair_eemetric_ssebop, utj_set_a_common]
+
+# Station events (guide step 14; D-059, D-060). Events come only from the station event
+# log, never from model residuals. Cuttings are the only US-UTJ management events; the
+# log has no US-UTJ irrigation events, and none is inferred. Station visits and program
+# updates (including the 2025-07-15 IRGASON move) are instrument events: kept visible as
+# overlaps, never analysed as treatments.
+event_tables:
+  - name: utj_station_events
+    path: ../eddy_events_202610171141.csv   # local only (D-014); sha256 ea3ca891...f34698
+    columns:
+      event_id: event_id
+      site: stationid
+      timestamp: event_date
+      event_type: event_type
+      event_source: event_source
+      observer: observer
+      notes: event_notes
+    timestamp_format: "%Y-%m-%d %H:%M:%S.%f"
+    timestamp_timezone: "UTC-07:00"   # user-provided: the log uses station time (D-002)
+    day_rule: station_local_date      # calendar date of the timestamp; nothing is shifted
+    site_mapping: {US-UTJ: US-UTJ}
+    site_windows:
+      US-UTJ: {start: "2024-06-05", end: "2025-10-09"}   # the station daily record
+    event_types:
+      cutting: {category: management, management_kind: cutting}
+      station visit: {category: instrument}
+      program update: {category: instrument}
+    evidence_classes:                 # an unlabelled source is always unknown
+      camera: photo_observation
+      Planet imagery: remote_sensing_inference
+      Sentinel NDVI: remote_sensing_inference
+      eddy: station_log               # program updates: the logger the update went to
+      met: station_log
+      both: station_log
+    # The date, not another quantity, must be called approximate ("depth approximate" in
+    # another station's note does not match).
+    approximate_date_patterns:
+      - '\bdate\s+(?:is\s+)?approximate\b'
+      - '\bapproximate\s+date\b'
+    # The farm records confirm all six cuttings (user, 2026-10-17). The logged event_source
+    # (Planet imagery or camera) and its evidence class stay as logged.
+    management_records:
+      - record: farm records
+        confirmed_by: user
+        confirmed_on: "2026-10-17"
+        event_ids: ["805", "804", "708", "709", "801", "710"]
+        note: "2024-06-11, 2024-07-19, 2024-09-08, 2025-05-28, 2025-07-05, 2025-09-07"
+
+# Management-event responses (guide step 14; D-061). Provisional defaults chosen by the
+# assistant at the user's request (2026-10-17), fixed before any response was computed and
+# not tuned on agreement. Uncontrolled before/after design: never causal evidence.
+event_analyses:
+  - event_analysis_id: utj_cutting_response
+    event_table: utj_station_events
+    management_kinds: [cutting]
+    pre_days: 7                       # baseline: the week before the cut
+    post_offset_days: 1               # day 0 (cut day, part cut) is left out
+    post_days: 7                      # the week after the cut
+    min_window_completeness: 0.7      # >= 5 of 7 days
+    baseline_min_mm: 0.5              # mm/day; below it no relative change or recovery
+    recovery_fraction: 0.9
+    recovery_max_days: 28             # shorter than the shortest cutting interval (38 days)
+    recovery_smoothing_days: 3        # trailing mean, all three days present
+    approximate_policy: flag          # 2024-09-08 kept, flagged
+    weather_variables:
+      reference_et: {column: src_gridMET_ETr, units: mm/day, aggregation: mean,
+                     meaning: "gridMET alfalfa reference ET (shared with gap-filling, D-005)"}
+      precipitation: {column: src_gridMET_prcp, units: mm, aggregation: sum,
+                      meaning: gridMET precipitation}
+    normalize_by: reference_et
+    comparisons: [utj_rank_corrected_inclusive, utj_rank_corrected_measured,
+                  utj_pair_eemetric_ssebop, utj_coverage]
+
+# Anomalies (guide step 14; D-061). Provisional defaults, as above. The record holds no
+# complete year, so the held-out climatology reports insufficient_training_years by design;
+# the moving-mean detrending is exploratory and in sample.
+anomalies:
+  - anomaly_id: utj_anomaly_climatology
+    metric_set: utj_metrics
+    method: held_out_climatology
+    metrics: [mbe, mae, rmse, pearson_r]
+    min_days: 20                      # the step-12 floor
+    fold_unit: water_year
+    water_year_start_month: 10
+    climatology_half_window_days: 15
+    min_training_values: 20
+    min_training_years: 2
+    leap_day: as_feb28
+    comparisons: [utj_rank_corrected_inclusive, utj_rank_corrected_measured,
+                  utj_pair_eemetric_ssebop]
+  - anomaly_id: utj_anomaly_exploratory
+    metric_set: utj_metrics
+    method: exploratory_moving_mean
+    metrics: [mbe, mae, rmse, pearson_r]
+    min_days: 20
+    window_days: 31
+    min_window_completeness: 0.7
+    comparisons: [utj_rank_corrected_inclusive, utj_rank_corrected_measured,
+                  utj_pair_eemetric_ssebop]
+
 output_dir: ../outputs

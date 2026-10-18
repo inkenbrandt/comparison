@@ -26,6 +26,11 @@ geo = [
     "geopandas>=0.14",
 ]
 plot = ["matplotlib>=3.8"]
+# fluxfootprints (optional representativeness labels, guide step 13) is deliberately not an
+# extra: it needs numpy >= 2, and as an extra it would raise the lowest-direct floors of the
+# whole project (D-018). It is installed into the dev venv from the sibling checkout with
+# `uv pip install -e ../footprints` and called only through
+# etcompare.adapters.fluxfootprints_labels (D-056).
 
 [dependency-groups]
 dev = [

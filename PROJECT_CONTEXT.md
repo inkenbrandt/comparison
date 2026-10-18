@@ -260,7 +260,31 @@ Keep context stable. Update it when verified input semantics or scope changes, i
 
 Do not claim the source raster paths are accessible until checked in the user's runtime. Do not expose or package private station data publicly without permission. Use small synthetic fixtures for distributable tests and keep user-supplied examples as local integration inputs unless authorized otherwise.
 
-**Current handoff (updated 2026-10-16, after step 12):** Guide steps 1–12 are implemented, and step 13 (landscape representativeness and satellite support) is next.
+**Current handoff (updated 2026-10-17, after step 14):** Guide steps 1–14 are implemented, and step 15 (water-balance checks and scenario uncertainty) is next.
+- **Station events (step 14):** `etcompare.adapters.event_log.adapt_event_table` (D-060) reads the declared `event_tables:` log into `station_events`. Events come only from the log. Each keeps its observer, source and notes, an evidence class and an `approximate` flag set by a declared text rule. Instrument events are `overlap_only`.
+  - For US-UTJ: 6 cuttings (3 Planet, 3 camera; 2024-09-08 approximate), all confirmed by farm records (user, 2026-10-17), and 11 instrument overlaps. There are no irrigation events.
+- **Event responses (step 14):** `etcompare.events.analyse_events` (D-061) gives the baseline, change, cumulative response and recovery per cutting and series, with overlaps, weather and gap-filled days kept visible. The design is uncontrolled before/after, never causal evidence.
+  - **US-UTJ:** after every cutting with measured reference days, every model drops less than the station (by 0.15–2.70 mm/day).
+  - 2025-05-28 cannot be assessed: its windows are entirely gap-filled.
+- **Anomalies (step 14):** `etcompare.anomalies.compute_anomalies` (D-061) offers a held-out climatology and an exploratory moving mean. US-UTJ has too few years for held-out skill; only in-sample exploratory anomalies exist.
+- `tools/run_events.py` runs both. All step-14 defaults are Provisional (chosen by the assistant at the user's request).
+- **Open:** the step-14 defaults, whether mostly gap-filled windows should be excluded, a control design, and the class for the `eddy`/`met`/`both` sources.
+- **Landscape representativeness (step 13):** `etcompare.representativeness.assess_landscape` (D-055) describes what each support sees. Supports are the daily footprint, the D-029 3×3 window and nearest pixel on the model grid, and declared polygons.
+  - Weights move onto each map's native grid by exact area overlap; classes are never resampled.
+  - Denominators are separate: valid / grid total, nodata, outside, and class / valid. The weighted index SD is the population form, with Kish `n_eff`.
+  - 80 % contour rows come from the footprint alone and sit next to the full-domain rows.
+  - Every declared matching policy runs side by side, with days-from-layer, year mismatch and `retrospective` on every row. A day without an admissible asset is `not_available`, never filled.
+  - Settings are in the `representativeness:` section (Provisional). `tools/run_representativeness.py` runs it.
+  - **Inputs (user, 2026-10-17; D-054):** Annual NLCD 2023–2025, CDL 2024 (30 m), and `Bluff.gpkg` (EPSG:26912 and tower field 4940083 declared; vintage unknown). No NDVI and no acquisition metadata.
+  - **US-UTJ run (D-058):**
+    - The footprint is never the field. Full domain: NLCD crops 0.39 and woody wetlands 0.57; CDL alfalfa 0.70 and shrubland 0.28. The field polygon is about 0.9 crop in both maps.
+    - NLCD and CDL disagree on the riparian strip east of the tower; even the tower's OpenET pixel differs (woody wetlands vs alfalfa).
+    - Independent point sampling reproduces the shares to ≤ 2.7e-4.
+  - **fluxfootprints labels** (0.5.1 @ 6b7311d, installed editable but not as an extra; D-056) are stored as labels only: almost all `low`, never an accuracy guarantee.
+  - IGBP `CRO` is a site label, not a footprint fraction.
+  - Three corrupted footprint files per etcompare-built set were restored in this checkout, and `prepare_footprint` now rejects impossible values.
+- **Satellite support (step 13):** `etcompare.satellite` (D-057) accepts only authoritative clear-observation flags or counts. Clear and interpolated subsets are identical across models of a frozen cohort, and metrics come via `compute_metrics`. For US-UTJ there is no metadata (D-011), so `run_cohorts.py` writes `not_available` for the four ranking cohorts.
+  - **Open:** the matching policy, the contour level, which map describes the riparian strip, the polygon vintage, a vegetation-index series, a stale `openet_rasters.root`, and the carried-over decisions below.
 - **Diagnostics (step 12):** `etcompare.diagnostics.diagnose_comparison` (D-051) describes one frozen cohort.
   - **Closure:** correction magnitude from the existing columns (`ET_corr − ET`, the ratio, `ebc_cf`), on `corrected_from_raw` days only. It is labelled reference sensitivity, not uncertainty.
   - **Provenance:** observation-dominated vs gap-filled subsets with identical days across models, and the gap-filled fraction per period.

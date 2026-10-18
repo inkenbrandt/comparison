@@ -906,3 +906,264 @@ The user confirmed the station-variable units that D-051 had marked provisional,
 
 Status changes only labels and flags (`variable_provisional` is dropped). Values, bins and edges are unchanged, because the confirmed units are the ones the edges were declared in. The diagnostics were rerun to update the labels.
 
+---
+
+**Revision 2026-10-17 (o):** Step 13 implemented. D-054 to D-058 added. Three corrupted footprint files per etcompare-built set were found in this checkout and restored (D-054); D-001 to D-053 are otherwise unchanged.
+
+### D-054 — US-UTJ landscape inputs (Adopted 2026-10-17, user declarations)
+The user was asked which land-cover and vegetation inputs exist. A read-only local search found candidates, and the user confirmed or corrected each one. Nothing was downloaded, and no service or credential was used.
+
+| Input | Declaration | Evidence |
+|---|---|---|
+| Annual NLCD | `NLCD/Annual_NLCD_H09V10_LndCov_<year>_CU_C1V2.tif`, 1985–2025. Assets 2023, 2024 and 2025 are declared (vintage = year; reference period = that calendar year) | USGS Annual NLCD Collection 1 v1.2 (June 2026), tile H09V10, 30 m. CRS: Albers on WGS84, no EPSG code; declared as its PROJ string and checked against every header. Nodata 250 (header and XML). Legend: the 16 classes of the product XML |
+| CDL 2024 | `2024_30m_cdls/2024_30m_cdls.tif`, vintage 2024 | EPSG:5070. No header nodata; code 0 is "Background", declared as nodata. Legend: the 133 named classes of the product's `.aux` Class_Names column (`examples/legends/cdl_2024_legend.csv`); crop names match the FGDC accuracy table. NASS: the 30 m 2024 CDL is a resampling of the official 10 m CDL |
+| Field polygons | `Bluff.gpkg`, layer `bluff_fields`; tower field `fieldid 4940083` | 54 polygons, **no CRS in the file**. The user declared EPSG:26912 (NAD83 / UTM 12N) and the tower field. The tower falls inside the field, and its area (98,148 m²) matches the `acres` attribute (24.3). Vintage `unknown` |
+| Vegetation index | None declared | A single Planet NDVI scene (`2024-02-17_strip_7114896_composite_ndvi.tif`, 3 m, `acquired` tag) was found. The user chose not to use it: it predates the record and covers only part of the footprint grid |
+| Acquisition metadata | None (D-011 stands) | User, 2026-10-17 |
+
+- **An earlier `NLCD/` folder was not NLCD.** It held the LCNext 1.0 stratum map (sampling strata, with change strata 100–104) and reference-plot tables. The user replaced it with Annual NLCD before any use.
+- **Reference grid of the pixel supports:** `M:/My Drive/OpenET_Daily_Tiffs/unclipped/US-UTJ_US-CdM/ensemble/US-CdM_US-UTJ_ensemble_et_2025_06_15_2b83d.tif`. Its grid id `bc933ed96e16809f` equals the step-5 model grid. The Drive folder has moved to `unclipped/` since step 5, so `openet_rasters.root` in the example config is now stale (not changed here).
+- **Corrupted footprints (D-043 again):** this checkout's `outputs/footprints` still held the three corrupted daily files (2024-12-05, 2025-06-20, 2025-06-21) in both etcompare-built sets.
+  - Two of them were all-positive garbage (sums 1.6e308 and 1.6e307), which `prepare_footprint` accepted.
+  - The clean versions from the other local clone (sum 1) were copied byte-identically, and the corrupted ones were kept outside the repository. Afterwards all 474 + 391 files match the other clone and pass a sum/range check.
+  - The step 7–12 results are unaffected: their extraction tables had been copied clean from that clone (D-046).
+  - **Rule (Adopted):** `prepare_footprint` now rejects values no footprint can hold (`invalid_values`): a normalized weight above 1, or a total that is not finite.
+
+### D-055 — Landscape representativeness (Adopted rules; US-UTJ defaults Provisional)
+`etcompare.representativeness.assess_landscape` describes the landscape of each support under a `RepresentativenessSpec` (the new `representativeness:` config section). It writes five tables (all new at v1): `landscape_class_fractions`, `landscape_index_summaries`, `landscape_method_differences`, `representativeness_labels` and `representativeness_availability`.
+
+**Transfer.** Each support's cell-integrated weights move onto the layer's native grid by exact area overlap (D-028; polygon path for differing CRSs). Classes and index values never move: no categorical map is interpolated, and a 30 m class is never presented as 10 m information. Polygons are intersected exactly with the layer cells after their edges are densified for reprojection.
+
+**Denominators** (as D-029; never multiplied together or with domain capture):
+- `weight_grid_total`: the footprint-grid total, named by `weight_denominator` (`normalized_truncated_footprint` for normalized weights, D-008). Fixed supports use 1 (`window_pixels`, `polygon_area`).
+- `valid_frac_of_grid_total` = weight on valid layer cells / grid total.
+- `nodata_frac_of_grid_total` and `outside_layer_frac_of_grid_total` are reported explicitly; a `nodata` row carries the nodata weight.
+- `class_frac_of_valid` = class weight / valid weight: conditional on valid cells, summing to 1 over the class rows.
+
+**Continuous index.** `m = Σc·v / Σc` and `weighted_std = sqrt(Σc(v − m)² / Σc)` over valid cells: population form, no small-sample correction, because the weights are source fractions, not replicate counts. `n_eff = (Σc)² / Σc²` (Kish). The estimator is written on every row.
+
+**Contours.** The membership comes from the footprint alone: cells in descending weight until the cumulative weight reaches the level × grid total, with ties at the threshold included (so the mass is ≥ the level). Contour rows (`domain = contour_<level>`) are a separate product next to `full_domain`. They never replace it, and the level is a fraction of the truncated grid total, not of the original footprint.
+
+**Temporal matching.** Every asset has a reference period: the vintage year of a map, or the acquisition day of a scene. A footprint day is matched by a declared policy:
+
+| Policy | Admissible assets | Choice |
+|---|---|---|
+| `previous_only` | reference period ends on or before the day | nearest |
+| `nearest` | all | smallest \|days\|; a tie goes to the asset without later information |
+| `within_n_days` | \|days\| ≤ n | as `nearest` |
+
+- Every row records `days_from_layer` (day − end for past assets, 0 inside the period, day − start for future ones), `temporal_relation`, `footprint_year`, `layer_year`, `year_mismatch` and `retrospective`. `retrospective` is true when the asset's period ends after the day; this includes a same-year annual map, which is built from the whole year.
+- A day without an admissible asset gets a per-day `not_available` row (`no_admissible_asset`) and is never filled.
+- An undeclared or unknown policy, a missing legend, vintage or acquisition date, an undeclared nodata, a contour level outside (0, 1) and a CRS that differs from the header are all `ContractError`.
+
+**Fixed supports and differences.** The pixel window (`pixel_window_<n>x<n>`) and nearest pixel come from the declared model grid. Window pixels outside the grid are counted, not added. Polygons are `polygon_<id>`.
+- Fixed supports are evaluated on the footprint's **frozen days**: the day set of the footprint set, with the same asset (`day_set` key, `footprint_set_id = none`).
+- `landscape_method_differences` holds footprint − support per day, layer, policy, footprint domain and quantity. A class absent on one side has share 0.
+- `ET_mean` (`source_region_mean`) is a varying source region (D-007) and never appears as a fixed support.
+
+**Labels.** The station's IGBP class is a site label (`station_metadata`), not a footprint-weighted fraction. Optional fluxfootprints labels (D-056) are stored next to the fractions. Labels never enter a metric, table value or threshold (tested: changing every label leaves all numeric tables identical). Neither the fractions nor the labels are ET accuracy guarantees.
+
+**Keys.** The tables are keyed by analysis, site, date, day set, extraction method, footprint set, layer, matching policy, domain and class (labels: also label source and radius), so none of these can collide.
+
+**US-UTJ defaults (Provisional; fixed before any landscape value was computed, and not chosen for agreement):**
+- footprint set `US-UTJ_nldas_eto_20261014`, 2024-06-05..2025-10-09;
+- matching policies `nearest` and `previous_only`, both reported, **none adopted**;
+- contour level 0.8 (the 80 % contour of Chu et al. 2021);
+- supports: 3×3 window and nearest pixel on the step-5 model grid, and the tower field polygon;
+- `negative_weight_tolerance` 1e-9 (as D-027).
+
+### D-056 — fluxfootprints representativeness labels (Adopted; installed 2026-10-17 with user authorization)
+- **Inspection.** The sibling checkout `../footprints` is fluxfootprints 0.5.1 at commit `6b7311d10ba228c5c463dfbcba58c53867dd9588`. Its working tree differs only in a notebook. `fluxfootprints.representativeness` implements Chu et al. (2021): footprint-weighted versus target-disc composition, a chi-square test on pseudo-counts, and HIGH/MEDIUM/LOW at 80 %/50 % dominant-class cover and α = 0.05. Before step 13 it was installed in neither venv.
+- **Installation.** `uv pip install -e ../footprints` into the etcompare venv. It is deliberately **not** a project extra. As an extra, its `numpy >= 2` requirement entered uv's universal resolution and raised the lowest-direct stack to numpy 2.0.0, which broke pyarrow 14 (D-018). `uv run` keeps it; an exact `uv sync` would remove it. fluxfootprints is GPL-3.0.
+- **Adapter.** `etcompare.adapters.fluxfootprints_labels` is the only caller, and every import is deferred (the import gate now also blocks `fluxfootprints`, `xarray` and `pyogrio`).
+  - It hands over the footprint contribution **already moved onto the map's native grid**, so fluxfootprints never resamples the map. Arrays are reordered to its `(x, y)` convention, with ascending offsets from the tower in metres (axis-aligned metric grid required).
+  - Each label row records the version and commit, the upstream thresholds, the radii and α. It carries `label_not_accuracy_guarantee`.
+- **Tested** with a fixture against the real API: `p_footprint` equals the analytic 0.8, `p_target` equals an independent disc count, and the label equals fluxfootprints' own `classify_categorical`. Without fluxfootprints the labels are `not_available` (`fluxfootprints_not_available`).
+- **US-UTJ parameters:** the upstream defaults `TARGET_RADII` (250–3000 m) and α 0.05 on both maps. The p-value rests on pseudo-counts (upstream note), so it is a comparison aid, not a significance test.
+
+### D-057 — Satellite support (Adopted rules; US-UTJ: not available)
+`etcompare.satellite.assess_satellite_support` compares errors of one **frozen** cohort on clear-observation and interpolated days under a `SatelliteSupportSpec` (new `satellite_support:` section). It writes `satellite_support_errors` v1 and availability rows.
+- **Sources.** Only authoritative product metadata is accepted: `per_pixel_flag`, `per_site_flag`, or `per_site_count` with a declared `min_clear_count`. Each source must declare its `authority` and `meaning`, and each model has at most one source.
+  - Scene-level cloud cover is refused as a source (D-011).
+  - A day absent from the metadata is `unknown`. Missing rows are not cloud evidence, filename and scene dates are labels, and a daily value or a non-null interpolated ET value is not a clear observation.
+- **Subsets.** A day is `clear_observation` only when every cohort model is clear, and `interpolated` only when every model is interpolated. Both subsets therefore hold identical days for every model.
+  - Days with mixed or unknown support are counted and excluded, and each model's own counts are recorded.
+  - Metrics come from `compute_metrics` (tested against numpy). A subset below `min_subset_days` gets `sparse_subset` and no value. Cohorts that do not freeze models are refused.
+- **Timing bins** (optional, edges from the configuration):
+  - `days_since_previous_clear` uses no later acquisition;
+  - `days_to_nearest_clear` and `enclosing_gap_days` use later acquisitions and are labelled `retrospective`.
+
+  They are computed from the days on which every model is clear, over the whole support record.
+- **Without sources** every analysis is `not_available` (`no_acquisition_metadata`).
+- **US-UTJ** (`utj_satellite_support`; `min_subset_days` 20, Provisional, the step-12 floor): no source is declared. The four frozen ranking cohorts (`utj_rank_corrected_inclusive`, `utj_rank_corrected_measured`, `utj_pair_eemetric_ssebop`, `utj_set_a_common`) report `not_available` with zero error rows. The OpenET rasters have a value every day (interpolated daily, D-011), and that does not create overpass flags.
+
+### D-058 — US-UTJ landscape run (Information)
+From `tools/run_representativeness.py examples/us_utj.yaml` on 2026-10-17 (67 s). The outputs are the local `outputs/representativeness/utj_landscape_*` files. They describe what each support sees; they are not ET errors or accuracy guarantees.
+- **Coverage.** All 474 NLDAS footprint days are usable (after D-054). Every weight lies on valid map cells (valid fraction 1, no nodata, nothing outside the windows). The 80 % contour holds 0.8007 of the grid total on average.
+- **Footprint, full domain, mean share of valid weight** (min–max over days):
+
+  | Map | Classes |
+  |---|---|
+  | NLCD | Cultivated Crops 0.394 (0.007–0.743), Woody Wetlands 0.570 (0.240–0.938), Shrub/Scrub 0.034 |
+  | CDL 2024 | Alfalfa 0.696 (0.227–0.956), Shrubland 0.282 (0.042–0.770), Woody Wetlands 0.018 |
+
+  The 80 % contour shifts both toward the tower: NLCD crops 0.376 and woody wetlands 0.623; CDL alfalfa 0.763 and shrubland 0.232.
+- **Fixed supports:**
+
+  | Support | NLCD | CDL 2024 |
+  |---|---|---|
+  | nearest OpenET pixel | Woody Wetlands 1.0 | Alfalfa 1.0 |
+  | 3×3 OpenET window | Crops 0.285, Woody Wetlands 0.715 | Alfalfa 0.598, Shrubland 0.402 |
+  | tower field 4940083 | Crops 0.900, Woody Wetlands 0.055, Pasture 0.027, Developed open 0.011, Shrub 0.007 | Alfalfa 0.878, Shrubland 0.114, Woody Wetlands 0.008 |
+
+- **The two maps disagree on the strip east of the tower.** NLCD calls it woody wetlands, while CDL calls most of it shrubland and alfalfa. Even the tower's own OpenET pixel is woody wetlands in NLCD and alfalfa in CDL. This is a disagreement between 30 m products. It is not resolved here and is not evidence for either.
+- **Footprint − support differences** (full domain, `nearest`, frozen days; mean, 5–95 %):
+  - field polygon: NLCD crops −0.506 (−0.856 to −0.230), CDL alfalfa −0.182 (−0.480 to +0.037);
+  - 3×3 window: NLCD crops +0.108 (−0.241 to +0.385), CDL alfalfa +0.097 (−0.201 to +0.316).
+
+  The footprint is never the field: on average it places about 30 % (CDL) to 60 % (NLCD) of its valid weight outside crop or alfalfa classes.
+- **Years.** 2025 footprints see more crop than 2024 ones (NLCD crops 0.434 vs 0.334; CDL alfalfa 0.716 vs 0.666). NLCD changes in only 4 (2023→2024) and 12 (2024→2025) of 2,809 window cells, so the difference comes from the footprints and the different day sets (2024 covers June–December only).
+- **Matching:**
+  - NLCD `nearest` uses the same-year map, which is retrospective on 473 of 474 days (all but 2024-12-31). NLCD `previous_only` uses the previous year's map (year mismatch 1). Their means agree to 3 decimals because the map is stable.
+  - CDL has only 2024. `nearest` uses it on every day: 191 days of 2024 are retrospective, and the 2025 days have year mismatch 1. Under `previous_only` the 191 days of 2024 are `not_available`, and 283 days remain.
+- **fluxfootprints labels:** 20,459 `low` and 1 `medium` (CDL, `nearest`, contour, 250 m). Labels only.
+- **Independent checks:**
+  - Point sampling of the footprints at 8×8 points per 10 m cell, looked up in each map, reproduces the footprint shares to ≤ 2.7e-4 on three days and both maps.
+  - A 200×200 lattice per OpenET pixel reproduces the window shares (0.2852 and 0.5984).
+  - Monte Carlo inside the field polygon agrees to ≤ 0.001.
+  - fluxfootprints' `p_footprint` equals etcompare's dominant-class share to 1e-6.
+- **Restated:**
+  - IGBP `CRO` is a station-metadata label, not a footprint-weighted fraction.
+  - No acquisition flags exist (D-011), so satellite support is not available (D-057).
+  - No intervals are attached to the step-13 outputs. Where step-10 intervals are used elsewhere, 28-day blocks mostly lack support and the 7- and 14-day intervals are probably too narrow (D-048).
+  - Gap-filled reference days share gridMET drivers with the OpenET interpolation (D-005).
+
+What would change these results:
+- a field-boundary vintage;
+- a resolution of the NLCD/CDL disagreement (for example a 10 m CDL or a site survey);
+- a declared vegetation-index series with acquisition dates;
+- authoritative acquisition metadata;
+- a decision on the matching policy and contour level.
+
+None is to be chosen because it changes agreement.
+
+### D-059 — US-UTJ cutting dates come from the station event log (Adopted 2026-10-17, user-provided; revised the same day)
+The user stated that the crop-height model's cutting dates come from farm records and photos, and then supplied the station event log `eddy_events_202610171141.csv` (local only, D-014; sha256 `ea3ca891…f34698`; 513 events across 16 stations, 34 for US-UTJ). The six height resets of the zone-E crop-height model (D-042) **match the log's US-UTJ `cutting` events day for day**. The log records the evidence for each event, and it is not the same for all six:
+
+| Cutting | `event_source` | Observer | Note |
+|---|---|---|---|
+| 2024-06-11 | Planet imagery | PCI | |
+| 2024-07-19 | Planet imagery | PCI | |
+| 2024-09-08 | camera | DM | "date approximate; hay bales on 2024-09-11" |
+| 2025-05-28 | camera | DM | bales by 06-01, removed 06-02 |
+| 2025-07-05 | Planet imagery | PCI | |
+| 2025-09-07 | camera | DM | baled 09-10, gone by 09-11 |
+
+- **Evidence class for step 14:**
+  - `camera` events are photo observations: management-record evidence.
+  - `Planet imagery` events are inferred from satellite imagery. Planet is not an OpenET input, so they are not circular with OpenET. They are still remote-sensing inference, not a field record, and step 14 must label them as such.
+  - No US-UTJ event is tagged as a farm record, and 2024-09-08 is approximate by its own note (cut a few days before 09-11). Step 14 needs to know which, if any, of these the farm records also confirm.
+- **Not in the log for US-UTJ:** irrigation events (the log has `pivot irrigation` events only for other stations) and the four 2023 cuttings before the record (Planet imagery; outside the record).
+- **Station events that touch earlier steps** (noted, not acted on):
+  - 2025-07-15: the IRGASON was moved to 9.9 ft at azimuth 293°. Footprint heights come from `daily_footprint_parameters` (D-037), and whether that table carries the change is unverified.
+  - 2025-12-01: the precipitation bucket factor was changed from 0.1 to 0.254 mm per tip. The station `p_1_1_1` in the record may therefore be scaled low; it is not used by any analysis so far.
+- **For step 14:** read events from this log through a declared adapter. Keep `event_source`, observer and notes on every event, use only US-UTJ `cutting` events inside the record, and never derive events from model residuals.
+
+---
+
+**Revision 2026-10-17 (p):** Step 14 started: the event table and its adapter. D-060 added. No event analysis or anomaly has been computed.
+
+### D-060 — Station event tables (Adopted rules; US-UTJ declarations Provisional)
+`etcompare.adapters.event_log.adapt_event_table(source, spec, *, stations)` maps a declared event log (`event_tables:` section, `EventTableSpec`) to the new `station_events` table (v1, key `site_id` + `event_id`). It takes no model, residual or cohort input: **events are defined only from the log**, and nothing downstream may add or move one.
+- **Refused** (nothing is returned):
+  - a missing source file or mapped column;
+  - a null or duplicated event ID anywhere in the log;
+  - for rows of mapped stations: a null timestamp, a timestamp that does not match the declared format, a timezone-aware timestamp, an end before the start, an `event_type` that is not declared, and a non-null `event_source` without a declared evidence class.
+  - In the declaration: no evidence mapping for a value, an unknown category, evidence class or day rule, a management type without a `management_kind` (or a non-management type with one), a mapped site without a record window, and missing `approximate_date_patterns`.
+- **Station day.** `day_rule: station_local_date`: the timestamp's calendar date is the station day, and `timestamp_timezone` must equal the station's timezone (checked by the config and the adapter). No conversion is implemented, so a log in another timezone is refused rather than shifted. An entry logged at exactly 00:00 is date-only (`start_time` null); such entries could not be shifted correctly in any case.
+- **Excluded with a reason** (exclusion log, stage `event_adapter`):
+  - rows of stations outside `site_mapping` (one record per source station; their types and sources are not read or checked);
+  - events lying entirely outside the station's declared record window (`outside_station_record`). An event that crosses a window edge is kept with its logged dates and a warning.
+- **Kept on every event:**
+  - `observer`, `event_source` (as logged, null when unlabelled) and `event_notes`, plus every source column with the prefix `src_` (D-020);
+  - the declared `category` (`management`, `instrument`, `confounder`) and `management_kind`;
+  - `analysis_role`: `management_event`, or `overlap_only` for instrument and confounder events, which stay visible but are never analysed as treatments;
+  - `evidence_class`, mapped per `event_source`: `photo_observation`, `remote_sensing_inference`, `station_log`, `management_record` or `unknown`. An unlabelled source is always `unknown`.
+- **Approximate dates.** `approximate` is True only when a declared, case-insensitive regular expression in `approximate_date_patterns` is found in the notes; `approximate_rule` names it. The patterns must refer to the date: the log also says "depth approximate" (US-UTL) and "time estimated" (US-UTE), and neither matches.
+- **US-UTJ declaration** (`utj_station_events`, Provisional):
+  - The timestamps are in UTC−7 (user-provided).
+  - Record window 2024-06-05..2025-10-09 (the station daily table).
+  - Types: `cutting` is management (`cutting`); `station visit` and `program update` are instrument.
+  - Evidence: `camera` → photo observation; `Planet imagery` and `Sentinel NDVI` → remote-sensing inference; `eddy`, `met`, `both` → `station_log`. These three name the logger a program update went to; this class was added here because the log uses them and every source needs a class.
+  - Patterns `\bdate\s+(?:is\s+)?approximate\b` and `\bapproximate\s+date\b`.
+- **US-UTJ result** (local log, sha256 `ea3ca891…f34698`):
+  - 17 events kept: the 6 cuttings of D-059 and 11 instrument overlaps, among them the 2025-07-15 IRGASON move (13:36). The cuttings match the crop-height resets day for day (tested).
+  - Evidence: 3 cuttings are `remote_sensing_inference` (2024-06-11, 2024-07-19, 2025-07-05) and 3 are `photo_observation`. Only 2024-09-08 is approximate.
+  - 17 US-UTJ entries are excluded as outside the record: the four 2023 cuttings and 13 entries after 2025-10-09. All 479 rows of the 16 other source stations are excluded as undeclared.
+  - The event_source values are kept exactly as logged. **No event is labelled `management_record`** until the user says which cuttings the farm records confirm (Open). *Resolved the same day (D-061): the farm records confirm all six.*
+  - There are no irrigation events, and none is inferred from ET, soil moisture or notes. A 2026 note ("will start irrigating in two days") lies outside the record and is not an event.
+- **Not yet implemented:** pre/post windows, baselines, cumulative response, recovery, overlap and confounder flags, and anomalies. These need declared settings; none has been chosen. *Implemented the same day (D-061).*
+
+---
+
+**Revision 2026-10-17 (q):** Step 14 completed. D-061 added. The user confirmed that the farm records cover all six cuttings and asked for provisional defaults, to be changed later.
+
+### D-061 — Event responses, anomalies and US-UTJ defaults (Adopted rules; US-UTJ defaults Provisional, chosen by the assistant at the user's request)
+**Management records.** `event_tables[].management_records` lists the events that a record confirms, with `record`, `confirmed_by` and `confirmed_on`. The adapter sets `management_record` (and `management_record_source`) on those events only. It refuses an ID that is not a kept management event, and an event listed twice. The logged `event_source` and its evidence class are unchanged. US-UTJ: farm records confirm all six cuttings (user, 2026-10-17). They keep their logged evidence (3 Planet, 3 camera), and 2024-09-08 stays approximate because the confirmation gives no exact date.
+
+**Event responses** (`etcompare.events.analyse_events(cohort, events, spec, *, station_daily=)`; `event_analyses:`; tables `event_responses`, `event_overlaps` and `event_conditions`, all v1):
+- **Events** must be a `station_events` table from the adapter (`events_defined_from = event_log_only`), so a table built from residuals is refused. Only `management` events of the declared kinds are analysed; instrument and confounder events appear only in `event_overlaps`.
+- **Windows** are calendar days around the event: pre `−pre_days..−1` from the start, post `post_offset..post_offset+post_days−1` from the end, and recovery up to `recovery_max_days`. Only cohort days have values: a gap is never a zero, and a frozen cohort gives every model the same days.
+- **Per series** (observed, modeled, and `modeled_minus_observed`):
+  - baseline and post means, each only when at least `min_window_completeness` of the window's days are present (else `incomplete_baseline` / `incomplete_post_window`);
+  - change, and relative change only for a baseline above `baseline_min_mm`;
+  - cumulative response `Σ(ET − baseline)` only when every post day is present;
+  - recovery: the first trailing `recovery_smoothing_days` mean, lying wholly after the post offset, that reaches `recovery_fraction × baseline`. A gap before recovery gives `not_identifiable_gap`, a later management event `interrupted_by_management_event`, and no recovery by the horizon `not_recovered_within_horizon`.
+  - With `normalize_by`, the same means of ET divided by that variable. This shows how much of a change follows the weather; it is not a correction.
+- **Visible confounding:**
+  - `event_conditions` gives the declared weather variables (mean or sum) over the pre and post windows of the station record.
+  - Overlapping events of every category are listed, with their window (pre/event/post/recovery).
+  - Gap-filled reference days are counted per window and flagged `shared_gridmet_drivers` (D-005).
+- **Design:** `before_after_uncontrolled` on every row, with the flag `not_causal_evidence`. No control or BACI design exists for US-UTJ, so none is implemented. A before/after difference is never a water-saving claim.
+- **Gate (tested):** a synthetic irrigation cutoff of −3 mm/day gives change −3, −60 % and a cumulative response of −21 mm. Incomplete baselines, incomplete post windows and overlapping events are flagged.
+
+**Anomalies** (`etcompare.anomalies.compute_anomalies(cohort, spec, metric_spec)`; `anomalies:`; tables `anomaly_daily` and `anomaly_metrics`, v1). The same method is fitted separately to the observed and modeled series, and raw metrics are reported on the same days next to the anomaly metrics.
+- **`held_out_climatology`:** year or water-year folds. Each fold's climatology is fitted on the other folds only, as a circular ±`climatology_half_window_days` day-of-year mean on a 365-day calendar (29 February takes 28 February's day).
+  - Sparse-season rule: a day needs `min_training_values` from `min_training_years` distinct training folds; otherwise it gets no value.
+  - Metrics are given per fold and pooled (`all_folds`).
+  - Tested: perturbing a held-out year leaves its climatology unchanged.
+- **`exploratory_moving_mean`:** a centred calendar moving mean of the series itself, needing `min_window_completeness`. It is in-sample: `inference = exploratory`, flagged `no_seasonal_generalization`.
+
+**US-UTJ defaults (Provisional).** They were chosen before any response was computed and not tuned on agreement:
+- **Event analysis `utj_cutting_response`** (cuttings only):
+  - pre 7 days; post days 1–7 (the part-cut day 0 is left out); completeness 0.7 (≥ 5 of 7 days); `baseline_min_mm` 0.5;
+  - recovery to 0.9 of baseline with a 3-day trailing mean, searched for 28 days (shorter than the shortest cutting interval, 38 days);
+  - approximate dates flagged, not excluded;
+  - weather: gridMET ETr (mean; also `normalize_by`) and gridMET precipitation (sum);
+  - cohorts: the two all-model ranking cohorts, the eemetric/ssebop pair and per-model coverage (flagged `days_differ_across_models`).
+- **Anomalies:**
+  - held-out climatology on water years, ±15 days, ≥ 20 values from ≥ 2 training years;
+  - exploratory 31-day moving mean with completeness 0.7;
+  - `min_days` 20.
+
+**US-UTJ results** (from `tools/run_events.py`, 4 s; local `outputs/events/`). These are descriptive, from one station and an uncontrolled before/after design.
+- **Usable cuttings:**
+  - 2024-06-11 has no complete window in any cohort (record start, rejected footprints).
+  - 2024-07-19 and 2024-09-08 are usable only in the eemetric/ssebop pair and the coverage cohorts, because the all-model cohorts cover 2025 only.
+  - **2025-05-28 lies in May 2025, where every reference day is gap-filled** (14 of 14 window days; `gridMET_ETr × ETrF_filtered`). Its observed "response" (−0.15 mm/day, recovered in 3 days) is the smoothed gap-fill, not an observation of the cut. It is flagged `shared_gridmet_drivers`, and in the measured-reference cohort it is `incomplete`.
+- **Observed post-cut change** (corrected reference, mm/day): 2024-07-19 −3.7 to −3.8; 2024-09-08 −2.37 (approximate date); 2025-07-05 −2.55 (6.87 → 4.32, ET/ETr −0.28, recovered after 21 days); 2025-09-07 −1.83 (not recovered within 28 days, late season).
+- **Models show a smaller drop after every measured cutting.** Modeled − observed change is positive in all of these cases:
+  - 2025-07-05: +0.72 (ssebop) to +2.70 (geesebal, ptjpl);
+  - 2025-09-07: +0.15 (geesebal) to +1.53 (disalexi);
+  - 2024-07-19: +1.84 to +2.30 (eemetric, ensemble, ssebop);
+  - 2024-09-08: +0.20 (ssebop) to +1.42.
+
+  Several models recover 16–18 days sooner than the station after 2025-07-05. This is consistent with interpolated daily products smoothing between acquisitions (D-011). It is not tested here, because acquisition dates are unknown.
+- **Independent check:** recomputing the 2025-07-05 and 2025-09-07 baseline, post mean, change, ET/ETr change, cumulative response and recovery day directly from `US-UTJ_daily.csv` reproduces the table exactly.
+- **Anomalies:**
+  - The held-out climatology is `insufficient_training_years` for the 2025 cohorts (two water-year folds). It is sparse or empty for the eemetric/ssebop pair, whose three water-year folds never cover a day of year from two other folds.
+  - **No held-out anomaly skill exists for US-UTJ.**
+  - The exploratory moving-mean anomalies (in sample) remove the raw bias: for example, ssebop has raw MBE −0.91 and anomaly MBE ≈ 0 mm/day on the corrected-inclusive cohort. Anomaly r is 0.46–0.83 there and 0.11–0.61 on measured days only. These figures describe short-term agreement, not generalisation.
+
+What would change these: other window lengths, completeness or recovery settings (they must be redeclared before rerunning, never chosen for agreement), a control site or period, more years of record, and acquisition metadata.
+
