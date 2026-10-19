@@ -27,6 +27,7 @@ import pandas as pd
 
 from etcompare.config import (
     DIRECTIONS,
+    ENSEMBLE_DESIGNS,
     EVENT_CATEGORIES,
     EVIDENCE_CLASSES,
     FOOTPRINT_VALUE_SEMANTICS,
@@ -160,6 +161,19 @@ VOLUME_STATUSES: Final = ("computed", "not_requested", "area_unknown", "support_
                           "no_value")
 #: Scenario results (``etcompare.scenarios``).
 SCENARIO_STATUSES: Final = ("computed", "unknown")
+#: Held-out ensembles (``etcompare.ensemble``). ``baseline`` holds the products without
+#: fitted parameters (official, mean, median); each design holds its fitted product.
+ENSEMBLE_SCOPES: Final = ("baseline", *ENSEMBLE_DESIGNS)
+ENSEMBLE_PRODUCT_KINDS: Final = ("official", "mean", "median", "fitted")
+#: evaluated: baseline products compared, nothing fitted; held_out: at least one fold has
+#: held-out predictions; declined / exploratory: too little independent data;
+#: not_available: the design cannot exist for these inputs (e.g. one station).
+ENSEMBLE_STATUSES: Final = ("evaluated", "held_out", "declined", "exploratory",
+                            "not_available")
+FOLD_STATUSES: Final = ("fitted", "declined", "exploratory_in_sample")
+TRAINING_ROLES: Final = ("training", "held_out", "buffer_excluded", "training_fold_too_small",
+                         "members_incomplete", "gap_filled_reference", "not_eligible")
+IMPROVEMENT_STATUSES: Final = ("supported", "not_supported", "not_assessed")
 
 
 @dataclass(frozen=True)
@@ -1752,6 +1766,244 @@ SCENARIO_RESULTS = TableSchema(
     primary_key=("scenario_id", "site_id", "period_type", "period_label", "statistic"),
 )
 
+_ENSEMBLE_KEY = _key("ensemble_id", "string", "Declared ensemble experiment")
+_DESIGN_KEY = _key("design", "string", "Fold design", allowed=ENSEMBLE_DESIGNS)
+
+ENSEMBLE_DAYS = TableSchema(
+    "ensemble_days", "1",
+    "Member availability, eligibility under the declared missing-member policy, and member "
+    "disagreement for every candidate day of a post-extraction ensemble experiment. Member "
+    "spread is disagreement between models, never a confidence interval.",
+    (
+        _ENSEMBLE_KEY,
+        _key("site_id", "string", "Station"),
+        _key("date", "date", "Station-day label"),
+        _c("observed_mm", "float", "Station reference ET of the declared variant", unit=ET_UNIT),
+        _c("reference_provenance", "string", "Reference provenance (null: no reference)",
+           allowed=REFERENCE_PROVENANCE),
+        _c("n_members_declared", "int", "Declared members", nullable=False),
+        _c("n_members_available", "int", "Members with an extracted value", nullable=False),
+        _c("members_available", "string", "';'-joined members with a value"),
+        _c("members_missing", "string", "';'-joined members without a value"),
+        _c("official_available", "bool", "The official ensemble has a value (null: none "
+           "declared)"),
+        _c("eligible", "bool", "Usable under the missing-member policy, with a reference",
+           nullable=False),
+        _c("eligibility_reason", "string", "Why the day is not eligible"),
+        _c("reweighted", "bool", "Combinations use only the available members (policy "
+           "reweight_available)", nullable=False),
+        _c("member_range_mm", "float", "max - min of the available members: disagreement, "
+           "not a confidence interval", unit=ET_UNIT),
+        _c("member_sd_mm", "float", "Population SD of the available members: disagreement, "
+           "not a confidence interval", unit=ET_UNIT),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("ensemble_id", "site_id", "date"),
+)
+
+ENSEMBLE_PREDICTIONS = TableSchema(
+    "ensemble_predictions", "1",
+    "Daily values of each compared product. 'baseline' rows (official, mean, median) have no "
+    "fitted parameters; fitted rows are held-out predictions from weights fitted on other "
+    "folds only.",
+    (
+        _ENSEMBLE_KEY,
+        _key("scope", "string", "baseline, or the fold design of the fitted product",
+             allowed=ENSEMBLE_SCOPES),
+        _key("site_id", "string", "Station"),
+        _key("date", "date", "Station-day label"),
+        _key("product", "string", "Product ID (the official model, member_mean, member_median "
+             "or fitted_weighted)"),
+        _c("product_kind", "string", "official, mean, median or fitted", nullable=False,
+           allowed=ENSEMBLE_PRODUCT_KINDS),
+        _c("value_mm", "float", "Product ET", unit=ET_UNIT, nullable=False),
+        _c("observed_mm", "float", "Station reference ET", unit=ET_UNIT),
+        _c("reference_provenance", "string", "Reference provenance",
+           allowed=REFERENCE_PROVENANCE),
+        _c("fold", "string", "Held-out fold of a fitted prediction"),
+        _c("inference", "string", "no_fitted_parameters or held_out", nullable=False,
+           allowed=("no_fitted_parameters", "held_out")),
+        _c("n_members_used", "int", "Members combined (null for the official product)"),
+        _c("reweighted", "bool", "Weights renormalised over the available members",
+           nullable=False),
+        _c("weights_used", "string", "';'-joined member=weight actually applied (fitted)"),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("ensemble_id", "scope", "site_id", "date", "product"),
+)
+
+ENSEMBLE_FOLDS = TableSchema(
+    "ensemble_folds", "1",
+    "One row per held-out fold: training membership counts, buffer, member availability, "
+    "preprocessing and the regularisation chosen by inner grouped validation on training "
+    "folds only, or why the fold was declined.",
+    (
+        _ENSEMBLE_KEY,
+        _DESIGN_KEY,
+        _key("fold", "string", "Held-out fold (year, water year or site); 'in_sample' for an "
+             "exploratory fit"),
+        _c("status", "string", "fitted, declined or exploratory_in_sample", nullable=False,
+           allowed=FOLD_STATUSES),
+        _c("status_detail", "string", "Why the fold was declined"),
+        _c("held_out_start", "date", "First calendar day of a temporal fold"),
+        _c("held_out_end", "date", "Last calendar day of a temporal fold"),
+        _c("training_folds", "string", "';'-joined training folds used"),
+        _c("n_training_folds", "int", "Training folds used", nullable=False),
+        _c("n_training_days", "int", "Training site-days", nullable=False),
+        _c("n_training_days_gap_filled", "int", "Gap-filled reference training site-days",
+           nullable=False),
+        _c("n_buffer_days_removed", "int", "Candidate training site-days removed by the buffer",
+           nullable=False),
+        _c("n_small_fold_days_excluded", "int",
+           "Site-days of training folds below min_training_days_per_fold", nullable=False),
+        _c("n_test_days", "int", "Held-out site-days", nullable=False),
+        _c("n_test_days_reweighted", "int", "Held-out site-days with reweighted members",
+           nullable=False),
+        _c("n_inner_folds", "int", "Inner validation folds", nullable=False),
+        _c("alpha_selected", "float", "Shrinkage toward equal weights chosen by inner "
+           "validation (1 = simple mean)", unit=FRACTION),
+        _c("alpha_grid", "string", "';'-joined candidate alphas", nullable=False),
+        _c("selection_metric", "string", "Inner validation criterion"),
+        _c("method", "string", "Weight estimator"),
+        _c("regularisation", "string", "Regularisation toward equal weights"),
+        _c("preprocessing", "string", "Feature preprocessing fitted on training rows"),
+        _c("buffer_days", "int", "Declared buffer (days each side of a held-out fold)"),
+        _c("member_availability", "string", "';'-joined member=days with a value among the "
+           "fold's candidate days", nullable=False),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("ensemble_id", "design", "fold"),
+)
+
+ENSEMBLE_WEIGHTS = TableSchema(
+    "ensemble_weights", "1",
+    "Member weights of each fitted fold (nonnegative, summing to one), before and after "
+    "shrinkage toward equal weights; exploratory in-sample weights are labelled so and have "
+    "no selected weight.",
+    (
+        _ENSEMBLE_KEY,
+        _DESIGN_KEY,
+        _key("fold", "string", "Held-out fold, or 'in_sample'"),
+        _key("member", "string", "Member product"),
+        _c("weight_unregularised", "float", "Simplex least-squares weight on training rows",
+           unit=FRACTION, nullable=False),
+        _c("alpha", "float", "Selected shrinkage", unit=FRACTION),
+        _c("weight", "float", "(1 - alpha) * weight_unregularised + alpha / K", unit=FRACTION),
+        _c("inference", "string", "held_out_fold_weights or exploratory_in_sample",
+           nullable=False, allowed=("held_out_fold_weights", "exploratory_in_sample")),
+        _c("n_training_days", "int", "Training site-days", nullable=False),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("ensemble_id", "design", "fold", "member"),
+)
+
+ENSEMBLE_INNER_SCORES = TableSchema(
+    "ensemble_inner_scores", "1",
+    "Inner grouped leave-one-fold-out validation of each shrinkage candidate, on training "
+    "folds only (held-out rows never enter).",
+    (
+        _ENSEMBLE_KEY,
+        _DESIGN_KEY,
+        _key("fold", "string", "Outer held-out fold"),
+        _key("alpha", "float", "Shrinkage candidate", unit=FRACTION),
+        _c("selection_metric", "string", "Criterion", nullable=False),
+        _c("value", "float", "Pooled criterion over all inner held-out days"),
+        _c("units", "string", "Units of value", nullable=False),
+        _c("n_days", "int", "Inner held-out site-days", nullable=False),
+        _c("n_inner_folds", "int", "Inner folds", nullable=False),
+        _c("status", "string", "ok or estimate_undefined", nullable=False,
+           allowed=("ok", "estimate_undefined")),
+        _c("selected", "bool", "The chosen candidate (ties go to the larger alpha)",
+           nullable=False),
+    ),
+    primary_key=("ensemble_id", "design", "fold", "alpha"),
+)
+
+ENSEMBLE_TRAINING_MEMBERSHIP = TableSchema(
+    "ensemble_training_membership", "1",
+    "Role of every candidate site-day in every fold: training, held out, or excluded with "
+    "the reason.",
+    (
+        _ENSEMBLE_KEY,
+        _DESIGN_KEY,
+        _key("fold", "string", "Held-out fold"),
+        _key("site_id", "string", "Station"),
+        _key("date", "date", "Station-day label"),
+        _c("group", "string", "Fold group of the day", nullable=False),
+        _c("role", "string", "Role in this fold", nullable=False, allowed=TRAINING_ROLES),
+        _c("in_training", "bool", "Row used to fit this fold's weights", nullable=False),
+    ),
+    primary_key=("ensemble_id", "design", "fold", "site_id", "date"),
+)
+
+ENSEMBLE_SUMMARY = TableSchema(
+    "ensemble_summary", "1",
+    "Status of each ensemble scope: the no-fit baseline comparison and each fold design "
+    "(held_out, declined, exploratory or not_available, with the reason). Every ensemble here "
+    "is built after spatial extraction, not at pixel level; one station is not network "
+    "evidence.",
+    (
+        _ENSEMBLE_KEY,
+        _key("scope", "string", "baseline or a fold design", allowed=ENSEMBLE_SCOPES),
+        _key("subset", "string", "'all' days of the scope, or a declared month subset"),
+        _c("status", "string", "Status of the scope", nullable=False,
+           allowed=ENSEMBLE_STATUSES),
+        _c("status_detail", "string", "Reason behind the status"),
+        _c("ensemble_level", "string", "Where the ensemble is built", nullable=False,
+           allowed=("post_extraction",)),
+        _c("products", "string", "';'-joined compared products"),
+        _c("members", "string", "';'-joined members", nullable=False),
+        _c("missing_member_policy", "string", "Declared missing-member policy",
+           nullable=False),
+        _c("reference_variant", "string", "Reference variant", nullable=False,
+           allowed=REFERENCE_VARIANTS),
+        _c("extraction_method", "string", "Extraction method of the members", nullable=False),
+        _c("footprint_set_id", "string", "Footprint set of the members", nullable=False),
+        _c("n_sites", "int", "Stations with eligible days", nullable=False),
+        _c("n_folds", "int", "Folds with eligible days"),
+        _c("n_folds_fitted", "int", "Folds with fitted held-out weights"),
+        _c("n_days_compared", "int", "Site-days of the frozen comparison cohort"),
+        _c("comparison_id", "string", "Comparison of the frozen product cohort"),
+        _c("cohort_membership_sha256", "string", "Fingerprint of that cohort"),
+        _c("interpretation", "string", "How the scope may be read", nullable=False),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("ensemble_id", "scope", "subset"),
+)
+
+ENSEMBLE_IMPROVEMENT = TableSchema(
+    "ensemble_improvement", "1",
+    "Held-out contrasts of the fitted ensemble against each unfitted product, taken from the "
+    "step-11 contrasts on the frozen cohort. An improvement is 'supported' only when the "
+    "interval excludes zero in the fitted ensemble's favour on held-out days.",
+    (
+        _ENSEMBLE_KEY,
+        _key("scope", "string", "Fold design", allowed=ENSEMBLE_DESIGNS),
+        _key("subset", "string", "'all' held-out days, or a declared month subset"),
+        _key("site_id", "string", "Station (contrasts are station level)"),
+        _key("metric", "string", "Contrasted metric"),
+        _key("baseline_product", "string", "Product the fitted ensemble is compared with"),
+        _key("block_unit", "string", "Resampling unit", allowed=BLOCK_UNITS),
+        _key("block_length", "int", "Bootstrap block length; 0 = not resampled"),
+        _key("interval_method", "string", "Interval method", allowed=INTERVAL_METHODS),
+        _c("contrast_basis", "string", "value or absolute_value", nullable=False,
+           allowed=CONTRAST_BASES),
+        _c("estimate", "float", "metric(fitted) - metric(baseline) on held-out days"),
+        _c("lower", "float", "Lower bound"),
+        _c("upper", "float", "Upper bound"),
+        _c("units", "string", "Units", nullable=False),
+        _c("sign_meaning", "string", "How to read the sign", nullable=False),
+        _c("status", "string", "Interval status", nullable=False, allowed=RANKING_STATUSES),
+        _c("favoured_model", "string", "Product favoured by an interval excluding zero"),
+        _c("held_out_improvement", "string", "supported, not_supported or not_assessed",
+           nullable=False, allowed=IMPROVEMENT_STATUSES),
+        _c("n_days", "int", "Held-out site-days compared", nullable=False),
+        _c("flags", "string", "';'-joined flags"),
+    ),
+    primary_key=("ensemble_id", "scope", "subset", "site_id", "metric", "baseline_product",
+                 "block_unit", "block_length", "interval_method"),
+)
+
 EXCLUSIONS = TableSchema(
     "exclusions", "1", "Rows removed or flagged, with stage and reason.",
     (
@@ -1778,7 +2030,9 @@ SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
                         REPRESENTATIVENESS_AVAILABILITY, STATION_EVENTS, EVENT_RESPONSES,
                         EVENT_OVERLAPS, EVENT_CONDITIONS, ANOMALY_DAILY, ANOMALY_METRICS,
                         WATER_BALANCE_TERM_TOTALS, WATER_BALANCE_RESIDUALS, SCENARIO_RESULTS,
-                        EXCLUSIONS)
+                        ENSEMBLE_DAYS, ENSEMBLE_PREDICTIONS, ENSEMBLE_FOLDS, ENSEMBLE_WEIGHTS,
+                        ENSEMBLE_INNER_SCORES, ENSEMBLE_TRAINING_MEMBERSHIP, ENSEMBLE_SUMMARY,
+                        ENSEMBLE_IMPROVEMENT, EXCLUSIONS)
 })
 
 

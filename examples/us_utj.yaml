@@ -692,4 +692,35 @@ water_balances:
 # come only from the user, each with a justification and a dependence structure.
 scenarios: []
 
+# Held-out ensemble experiments (guide step 16; D-065, D-066). Every choice below was made by
+# the user on 2026-10-18 before anything was fitted, and none is tuned on agreement. The
+# ensemble is built after spatial extraction from the six members' footprint-extracted values;
+# it is not a pixel-level ensemble. The official `ensemble` is a comparison product, never a
+# member. The measured-LE footprint set never enters (it uses the target measurements, D-037).
+# With calendar-year folds the six members coexist only in 2025 (one fold), so the fitted
+# ensemble is declined by design; leave-one-site-out is not available (one station).
+ensembles:
+  - ensemble_id: utj_ensemble
+    members: [disalexi, eemetric, geesebal, ptjpl, sims, ssebop]
+    official: ensemble
+    reference_variant: et_corrected_measured     # no gap-filled rows anywhere (D-005)
+    side: *nldas_fp                              # primary footprints (D-037)
+    sources: [us_utj_nldas_eto]
+    missing_member_policy: require_all           # a day counts only with all six members
+    combinations: [mean, median]
+    metric_set: utj_metrics
+    bootstrap: utj_block_bootstrap               # 7/14/28-day blocks side by side (D-048)
+    contrast_metrics: [mae, rmse, mbe]
+    designs: [leave_one_year_out, leave_one_site_out]
+    fold_unit: year
+    buffer_days: 28                              # residual autocorrelation lasts > 14 days (D-048)
+    min_training_folds: 2                        # so inner validation is grouped by fold
+    min_training_days_per_fold: 180
+    method: simplex_least_squares                # weights >= 0, summing to 1
+    regularisation: shrink_to_equal              # w = (1 - alpha) w_fit + alpha / 6
+    shrinkage_grid: [0, 0.25, 0.5, 0.75, 1]      # alpha = 1 is the simple mean
+    selection_metric: rmse                       # inner grouped folds on training data only
+    preprocessing: none
+    insufficient_data: decline
+
 output_dir: ../outputs

@@ -19,7 +19,164 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 13 — Landscape representativeness and satellite support | **Done** 2026-10-17 (station level; defaults Provisional; no matching policy adopted; satellite support `not_available` for US-UTJ, D-011) |
 | 14 — Anomalies and management events | **Done** 2026-10-17 (station level; defaults Provisional, chosen by the assistant at the user's request; uncontrolled before/after only; no held-out anomaly skill possible for US-UTJ) |
 | 15 — Water-balance checks and scenario uncertainty | **Done** 2026-10-17 (station level; US-UTJ declaration Provisional; **the US-UTJ residual is unknown**: five terms have no input; no scenario declared) |
-| 16–18 | Not started |
+| 16 — Held-out ensemble experiments | **Done** 2026-10-18 (station level; post-extraction ensembles; US-UTJ choices made by the user; **the US-UTJ fitted ensemble is declined**: one calendar-year fold, one station) |
+| 17–18 | Not started |
+
+## Step 16, part 2 — Seven-station ensemble (2026-10-19)
+
+**Run it**
+```bash
+# footprint parameters (read-only DB query, as for US-UTJ) and per-timestep stacks
+../footprints/.venv/Scripts/python.exe tools/upstream/fetch_footprint_parameters.py US-UTD outputs/footprint_inputs
+../footprints/.venv/Scripts/python.exe tools/upstream/run_timestep_footprints.py --site US-UTD --lat 38.1038 \
+    --lon -109.5952 --metflux .../US-UTD_metflux_qc.parquet --params outputs/footprint_inputs/US-UTD_daily_footprint_parameters.parquet \
+    --nldas .../US-UTD_nldas.csv --out outputs/footprint_timesteps/US-UTD --start 2023-05-24 --end "2025-10-22 23:59"
+uv run python tools/run_footprint_aggregation.py examples/utah_stations.yaml US-UTD outputs/footprint_timesteps/US-UTD
+uv run python tools/run_raster_extraction.py examples/utah_stations.yaml utd_nldas_clip     # one per station
+uv run python tools/run_ensembles.py examples/utah_stations.yaml                            # ~1 min
+uv run python -m pytest                           # 770 passed, 3 skipped (opt-in Drive raster tests)
+# ruff (same file list plus tools/run_ensembles.py) and mypy clean; oldest stack (UV_LINK_MODE=copy,
+# --resolution lowest-direct, Python 3.11) on the ensemble, discovery, filename, ranking, bootstrap,
+# metrics, cohort, aggregation, import-gate, schema and config tests plus both ensemble
+# integration tests: 381 passed
+```
+
+### Delivered (D-069)
+- **[examples/utah_stations.yaml](examples/utah_stations.yaml)** declares seven stations (US-UTD, UTE, UTG, UTJ, UTM, UTV and UTW) with the user's choices of 2026-10-19:
+  - footprints rebuilt as NLDAS-ETo weighted from per-timestep stacks (US-UTM uses its production top-level set);
+  - the clipped rasters for every station;
+  - byte-identical duplicates collapsed;
+  - UTC−7, standard time, interval start and mm/day;
+  - calendar-year folds, with April–October reported separately.
+- **Library additions:**
+  - declared raster processing tags (`buffer400m_clip`);
+  - `on_conflict: collapse_identical` (identical copies collapse; differing copies are held out);
+  - `ensembles[].site_footprint_sets` (per-station footprint sets under one side label, provenance kept);
+  - `ensembles[].subsets` (month subsets scored apart, training unchanged; `subset` key in `ensemble_summary` and `ensemble_improvement`).
+- **Tools:**
+  - `run_timestep_footprints.py --veg-type` (cross-check only);
+  - `run_footprint_aggregation.py` picks target sets by station prefix;
+  - `run_ensembles.py` reports several stations and subsets.
+
+### Checks
+- **[tests/test_discovery.py](tests/test_discovery.py)** (+2): declared and undeclared tags; collapse of identical copies with logging, and differing copies held out.
+- **[tests/test_ensemble.py](tests/test_ensemble.py)** (+10):
+  - month subsets: identical training, months 4–10 only, metrics equal to `compute_metrics`;
+  - 5 subset refusals;
+  - the per-station relabelling and its provenance; another set's rows never enter;
+  - target-dependent mapped sets refused; the mapping must cover the sites; config label rules.
+- **[tests/integration/test_utah_ensemble.py](tests/integration/test_utah_ensemble.py)** (6; skips without the files):
+  - the independent eligible-day count (1,798) and member means;
+  - leave-one-site-out held out, and US-UTE and US-UTG never trained;
+  - leave-one-year-out with no supported claim;
+  - fitted predictions equal to member values times the weights;
+  - April–October days only;
+  - the clipped US-UTJ extraction equals the unclipped one (≤ 1.3e-10).
+
+### Results (D-070, D-071; local outputs under `outputs/utah/`, git-ignored)
+- **Footprint days:** US-UTD 831, UTE 457, UTV 726, UTW 1,543, and **UTG only 41**. Production also found mostly no valid footprint at the corn site; the cause is unresolved.
+- **Eligible station-days:** 1,798 in all (1,225 in April–October). US-UTE loses 41 days to the 186 held-out conflicting geesebal/ptjpl pairs.
+- **Leave-one-year-out:** no held-out claim. 2023 and 2025 are declined. 2024 is fitted but has 5 held-out days, so it is `not_assessed`.
+- **Leave-one-site-out:** all 7 station folds fitted. Weights favour SIMS (0.42–0.59) and SSEBop (0.22–0.30).
+  - Held-out RMSE is lower than the member mean at 6 of 7 stations (equal-station mean −0.058 mm d⁻¹; April–October −0.103), and lower than the official ensemble at 6 of 7 (−0.110).
+  - The corn station US-UTG is worse (+0.53 on 41 days).
+  - RMSE improvements are `supported` at 14-day blocks only at US-UTJ and US-UTV.
+  - These are exploratory, station-level results with no network interval.
+
+### Open (user decisions)
+- A selection for the 186 differing US-UTE duplicate pairs (they are held out now).
+- Whether leave-one-year-out needs a minimum held-out size: the 2024 fold has 5 days.
+- The US-UTG footprint problem: its corn heights and why most half-hours give no footprint.
+- Whether US-UTM should also be rebuilt from its stack, for one footprint method at every station.
+- Carried over: block length and support (D-048), equivalence margins (D-049), and a hierarchical network interval (not implemented).
+
+## Step 16 — Held-out ensemble experiments (2026-10-18)
+
+**Run it**
+```bash
+uv run python -m pytest                           # 752 passed, 3 skipped (opt-in Drive raster tests)
+uv run ruff check src tests tools/run_cohorts.py tools/run_representativeness.py tools/run_events.py \
+    tools/run_water_balance.py tools/run_ensembles.py && uv run mypy     # clean
+uv run python tools/run_ensembles.py examples/us_utj.yaml   # ~4 s; outputs/ensembles/
+UV_LINK_MODE=copy uv run --isolated --resolution lowest-direct --python 3.11 --with pytest \
+    python -W error::FutureWarning -m pytest tests/test_ensemble.py \
+    tests/integration/test_us_utj_ensemble.py tests/test_ranking.py tests/test_bootstrap.py \
+    tests/test_metrics.py tests/test_cohorts.py tests/test_aggregation.py tests/test_anomalies.py \
+    tests/test_import_gate.py tests/test_schemas.py tests/test_config.py tests/test_imputation.py \
+    tests/test_water_balance.py tests/test_scenarios.py
+    # oldest stack (Python 3.11.16, numpy 1.26.0, pandas 2.2.0, pyarrow 14.0.0, scipy 1.11.1): 448 passed
+```
+
+### API
+- **`etcompare.ensemble.run_ensemble(spec, observations, extractions, *, products, metric_spec, bootstrap_spec=None, footprint_sets=None)`** returns an `EnsembleResult` with:
+  - `days`, `predictions`, `folds`, `weights`, `inner_scores`, `training_membership`, `summary` and `improvement` (all v1), plus `tables()` and `report`;
+  - `comparisons`: per scope, an `EnsembleComparison` holding the frozen product `cohort`, `metrics` (step 9), `bootstrap` (step 10) and `ranking` (step 11 contrasts).
+- **Building blocks** (public, tested): `simplex_least_squares` (exact, by member support), `shrink`, `combine`, `fold_groups` and `fold_period`.
+- **Config:** `EnsembleSpec` (`ensembles:`) and the accessor `Config.ensemble()`. New constants: `ENSEMBLE_DESIGNS`, `MISSING_MEMBER_POLICIES`, `ENSEMBLE_COMBINATIONS`, `ENSEMBLE_METHODS`, `ENSEMBLE_REGULARISATIONS`, `ENSEMBLE_SELECTION_METRICS`, `ENSEMBLE_PREPROCESSING`, `INSUFFICIENT_DATA_POLICIES` and `MAX_ENSEMBLE_MEMBERS`.
+- **[tools/run_ensembles.py](tools/run_ensembles.py)** (new) writes:
+  - `outputs/ensembles/<id>_{days,predictions,folds,weights,inner_scores,training_membership,summary,improvement}.{parquet,csv}`;
+  - `<id>__<scope>_{paired,metrics,intervals,contrasts}.*` for each compared scope;
+  - `<id>_report.txt` (inputs with SHA-256, declaration, status, folds, metrics, contrasts).
+
+### Delivered
+The rules are in the module docstring and D-065:
+- Three products on the same frozen days: the official ensemble, the mean and median of the declared members, and an optional fitted ensemble. All are scored, resampled and contrasted through `build_cohort`, `score_comparison`, `bootstrap_comparison` and `rank_comparison`.
+- **Post-extraction, never pixel-level**, labelled on every row. The official ensemble is never a member. Target-dependent footprints (measured LE) are refused.
+- The missing-member policy is declared and reported per day and per fold. Member spread is labelled disagreement.
+- **Fitting:**
+  - leave-one-year-out (calendar or water year, shared across stations) and leave-one-site-out;
+  - training rows from other folds only, with the gap-filled rule, the time buffer and the training-fold size rule;
+  - simplex weights shrunk toward equal weights, with α chosen by inner grouped folds on training data;
+  - per-fold membership, weights, α, inner scores, preprocessing and member availability are saved.
+- **Statuses:** `held_out`, `declined`, `exploratory` (in-sample only) and `not_available`. A held-out improvement is `supported` only by an interval in the fitted ensemble's favour.
+
+### Checks
+- **[tests/test_ensemble.py](tests/test_ensemble.py)** (61 tests):
+  - **Gates:**
+    - a member good only in the training years gets no false held-out improvement, with a positive control;
+    - a perturbed held-out fold leaves its own weights, α, inner scores and membership unchanged;
+    - the official ensemble is refused as a member;
+    - the equal-weight limit reproduces the mean exactly, with zero contrasts that are not supported;
+    - both missing-member policies are applied and reported;
+    - too few folds give `declined` or `exploratory`, never fitted weights;
+    - the same seed reproduces the intervals.
+  - Also: the solver (an exact mixture; optimality against 5,000 simplex points and the vertices), the buffer dates, the fold-size rule, gap-filled exclusion, leave-one-site-out on three synthetic stations, frozen product days, disagreement values, labels, target-dependent footprints, the signature and imports, round trips, and 33 config refusals.
+- **[tests/integration/test_us_utj_ensemble.py](tests/integration/test_us_utj_ensemble.py)** (5 tests; skips without the local files):
+  - the declined and not-available statuses;
+  - the 188 days, the mean, median, MAE and RMSE recomputed with pandas from the raw files;
+  - the 115 ineligible 2024 days;
+  - the water-year and two-member alternatives, also declined;
+  - refusals of the official ensemble and the measured-LE footprints.
+- `test_schemas` round-trips the eight new schemas.
+
+### US-UTJ result (D-066; local outputs, git-ignored)
+- **The fitted ensemble is declined.** With calendar-year folds the six members coexist only in 2025 (188 measured-reference days, 2025-01-01 to 2025-10-08), so no fold has a training year. Water-year folds (WY2025 180 days, WY2026 8) and an eemetric + ssebop subset (2024 and 2025) would be declined too. Leave-one-site-out is `not_available` (one station). No weights exist and no held-out improvement is reported.
+- **Baseline** (nothing fitted; an evaluation on 188 frozen days, `et_corrected_measured`):
+
+  | Product | MAE | RMSE | MBE (mm d⁻¹) |
+  |---|---|---|---|
+  | official | 0.699 | 1.140 | −0.314 |
+  | mean | 0.683 | 1.082 | −0.255 |
+  | median | 0.725 | 1.107 | −0.201 |
+
+  No contrast excludes zero at 7 or 14 days, and 28-day blocks lack support. The intervals are probably too narrow (D-048).
+- Member disagreement ranges 0.19–7.83 mm d⁻¹ (median 1.87); this is disagreement, not an interval.
+- Station level only: n_sites = 1, not network evidence.
+
+### Other stations surveyed (2026-10-18, D-068)
+- The user gave the paths, and calendar years were confirmed as the project standard (the April–October growing season; D-066). The directories were read only.
+- Daily exports exist for 11 stations, footprints for 8 and clipped rasters for 9. There are no pre-extracted tables, so a step-5 extraction is needed.
+- **Pre-extraction estimate:**
+  - Leave-one-year-out stays declined: six-member days exist only in 2023 and 2025.
+  - Leave-one-site-out becomes possible in 2025: six stations have ≥ 180 six-member measured days.
+- Blockers before extraction: the footprint set per station, the US-UTE conflicting duplicates (186 pairs), collapsing byte-identical duplicates, station day definitions, and US-UTB / US-CdM / US-UTL coverage.
+
+### Open (user decisions; see D-067, D-068)
+- The choices listed at the end of D-068 (they come before any extraction of the other stations).
+- Whether to keep the declined designs declared, or to declare another design before any fitting.
+- Carried over: block length and support (D-048), equivalence margins (D-049).
+
+**Next:** step 17, plots, reports, configuration and CLI.
 
 ## Step 15 — Water-balance checks and scenario uncertainty (2026-10-17)
 
@@ -95,7 +252,7 @@ The rules are in the module docstrings and D-062 / D-063:
 - Any runoff, deep-percolation or capillary-rise input or scenario.
 - Any measurement, method-choice or footprint scenario.
 
-**Next:** step 16, held-out ensemble experiments.
+**Next (at the time):** step 16. Superseded by the Step 16 entry above.
 
 ## Step 14, part 2 — Event responses and anomalies (2026-10-17)
 

@@ -15,10 +15,18 @@ With ``on_conflict="error"`` (default) either raises
 conflicting candidates are held out of the manifest, listed in
 ``result.conflicts`` and the report carries an error until
 :func:`select_assets` records an explicit choice.
+
+``"collapse_identical"`` (D-069) compares the bytes (SHA-256) of every file in a
+conflict group. A group whose files are all byte-identical keeps one file (the first
+path in sort order), and every dropped copy is logged with its hash
+(``identical_duplicate_collapsed``). A group whose contents differ is held out with
+a warning (``conflicting_assets_held_out``), so those days are missing, never chosen
+or averaged.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -47,7 +55,7 @@ from etcompare.schemas import (
 from etcompare.validation import ValidationReport
 
 OnUnparseable = Literal["error", "skip"]
-OnConflict = Literal["error", "report"]
+OnConflict = Literal["error", "report", "collapse_identical"]
 
 _log = get_logger(__name__)
 _CONFLICT_COLUMNS = ["conflict_type", "conflict_key", "asset_id", "path"]
@@ -105,6 +113,48 @@ def _find_conflicts(rows: pd.DataFrame, id_cols: list[str], key_cols: list[str])
     return pd.DataFrame(out, columns=_CONFLICT_COLUMNS).drop_duplicates()
 
 
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _collapse_identical(conflicts: pd.DataFrame, exclusions: ExclusionLog
+                        ) -> tuple[pd.DataFrame, set[str], int]:
+    """Split conflict groups into byte-identical ones (collapsed) and differing ones.
+
+    Returns the differing groups' rows, the paths dropped as identical copies and the
+    number of collapsed groups. The kept file of a collapsed group is its first path.
+    """
+    if conflicts.empty:
+        return conflicts, set(), 0
+    digest = {p: _file_sha256(p) for p in sorted(set(conflicts["path"]))}
+    keep: set[str] = set()
+    drop: dict[str, tuple[str, str]] = {}
+    differing = []
+    n_collapsed = 0
+    for key, g in conflicts.groupby("conflict_key", sort=True):
+        paths = sorted(set(g["path"]))
+        hashes = {digest[p] for p in paths}
+        if len(hashes) == 1:
+            n_collapsed += 1
+            keep.add(paths[0])
+            for p in paths[1:]:
+                drop[p] = (str(key), paths[0])
+        else:
+            differing.append(g)
+    dropped = set(drop) - keep
+    for p in sorted(dropped):
+        key, kept = drop[p]
+        exclusions.add("discovery", p, "identical_duplicate_collapsed", severity="info",
+                       detail=f"{key}; identical to {kept} (sha256 {digest[p][:16]})")
+    rest = (pd.concat(differing, ignore_index=True) if differing
+            else conflicts.iloc[0:0].reset_index(drop=True))
+    return rest, dropped, n_collapsed
+
+
 def _finish(
     rows: pd.DataFrame,
     *,
@@ -118,7 +168,23 @@ def _finish(
     with_associations: bool,
 ) -> DiscoveryResult:
     conflicts = _find_conflicts(rows, id_cols, key_cols)
-    if not conflicts.empty:
+    dropped: set[str] = set()
+    if on_conflict == "collapse_identical":
+        conflicts, dropped, n_collapsed = _collapse_identical(conflicts, exclusions)
+        if n_collapsed:
+            report.info("identical_duplicates_collapsed",
+                        f"{n_collapsed} conflict group(s) are byte-identical; one file of each "
+                        f"is kept and {len(dropped)} copies are dropped", n_rows=len(dropped))
+        if not conflicts.empty:
+            n = conflicts["conflict_key"].nunique()
+            report.warning("conflicting_assets_held_out",
+                           f"{n} conflict group(s) differ in content; every file of them is held "
+                           "out (never chosen or averaged), so those days are missing",
+                           n_rows=len(conflicts))
+            for r in conflicts.itertuples():
+                exclusions.add("discovery", r.path, "conflicting_assets_held_out",
+                               severity="warning", detail=r.conflict_key)
+    elif not conflicts.empty:
         summary = conflicts.groupby("conflict_type")["conflict_key"].nunique().to_dict()
         examples = conflicts.drop_duplicates("conflict_key").head(3)["conflict_key"].tolist()
         msg = (f"{summary} -- duplicates need an explicit selection (select_assets) or a "
@@ -129,9 +195,10 @@ def _finish(
         for r in conflicts.itertuples():
             exclusions.add("discovery", r.path, "unresolved_" + r.conflict_type,
                            severity="error", detail=r.conflict_key)
-    held = set(conflicts["path"])
+    held = set(conflicts["path"]) | dropped
     accepted = rows[~rows["path"].isin(held)]
-    manifest = CanonicalTable.build(accepted.reset_index(drop=True), schema, attributes)
+    manifest = CanonicalTable.build(accepted.reset_index(drop=True), schema,
+                                    {**attributes, "on_conflict": on_conflict})
     assoc = None
     if with_associations:
         a = manifest.frame[["asset_id", "member_sites", "model", "date"]].copy()
@@ -161,15 +228,20 @@ def openet_manifest_from_paths(
     on_conflict: OnConflict = "error",
     subject: str = "openet rasters",
     attributes: Mapping[str, Any] | None = None,
+    processing_tags: Sequence[str] = (),
 ) -> DiscoveryResult:
-    """Build a model manifest from an explicit list of raster paths."""
+    """Build a model manifest from an explicit list of raster paths.
+
+    ``processing_tags`` are the declared tags allowed after the API suffix (D-069).
+    """
     report = ValidationReport(subject)
     exclusions = ExclusionLog()
     rows, failures = [], []
     for p in paths:
         p = Path(p)
         try:
-            a = parse_openet_filename(p, models=models, sites=sites)
+            a = parse_openet_filename(p, models=models, sites=sites,
+                                      processing_tags=tuple(processing_tags))
         except FilenameParseError as exc:
             failures.append((p, str(exc)))
             continue
@@ -200,7 +272,8 @@ def openet_manifest_from_paths(
             report.warning("products_undeclared", f"models {missing} have no product declaration")
     frame = pd.DataFrame(rows, columns=MODEL_MANIFEST.names)
     aliases = sorted({r["site_aliases_applied"] for r in rows if r["site_aliases_applied"]})
-    attrs = {"site_aliases_applied": aliases, **(attributes or {})}
+    attrs = {"site_aliases_applied": aliases, "processing_tags": list(processing_tags),
+             **(attributes or {})}
     result = _finish(frame, schema=MODEL_MANIFEST, id_cols=["asset_id"],
                      key_cols=["model", "date", "variable"], on_conflict=on_conflict,
                      report=report, exclusions=exclusions, attributes=attrs,
@@ -220,6 +293,7 @@ def discover_openet_rasters(
     extensions: Sequence[str] = DEFAULT_EXTENSIONS,
     on_unparseable: OnUnparseable = "error",
     on_conflict: OnConflict = "error",
+    processing_tags: Sequence[str] = (),
 ) -> DiscoveryResult:
     """Index OpenET rasters under ``root`` (recursively by default)."""
     files = list_files(root, recursive=recursive, extensions=extensions)
@@ -227,6 +301,7 @@ def discover_openet_rasters(
         files, models=models, sites=sites, products=products, on_unparseable=on_unparseable,
         on_conflict=on_conflict, subject=f"openet rasters under {root}",
         attributes={"root": str(root), "recursive": recursive},
+        processing_tags=processing_tags,
     )
 
 
