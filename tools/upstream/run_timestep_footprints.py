@@ -81,11 +81,12 @@ def build_inputs(args: argparse.Namespace, compute_aerodynamic_params) -> pd.Dat
     df["z0"] = df["roughness_length"].astype(float)
     check = compute_aerodynamic_params(df[["measurement_height", "crop_height_m"]].dropna(),
                                        inst_height="measurement_height",
-                                       crop_height="crop_height_m", veg_type="alfalfa")
+                                       crop_height="crop_height_m", veg_type=args.veg_type)
     j = df.loc[check.index]
     dz = float(np.nanmax(np.abs(check["zm"] - j["zm"])))
     d0 = float(np.nanmax(np.abs(check["z0"] - j["z0"])))
-    print(f"zm/z0 vs compute_aerodynamic_params(alfalfa): max |dzm| {dz:.2e}, |dz0| {d0:.2e}")
+    print(f"zm/z0 vs compute_aerodynamic_params({args.veg_type}): max |dzm| {dz:.2e}, "
+          f"|dz0| {d0:.2e} (diagnostic only; zm/z0 are the DB values)")
 
     n = pd.read_csv(args.nldas, parse_dates=["timestamp_local"]).set_index("timestamp_local")
     if not n.index.is_unique or (n.index.to_series().diff().dropna() != pd.Timedelta("1h")).any():
@@ -128,6 +129,8 @@ def main() -> None:
     ap.add_argument("--start", default="2024-06-05")
     ap.add_argument("--end", default="2025-10-09 23:59")
     ap.add_argument("--months", nargs="*")
+    ap.add_argument("--veg-type", default="alfalfa",
+                    help="fluxfootprints preset for the zm/z0 cross-check only")
     args = ap.parse_args()
 
     sys.path.insert(0, str(FOOTPRINTS_SRC))

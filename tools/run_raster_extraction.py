@@ -39,7 +39,9 @@ def main() -> None:
     models = []
     for src in cfg.openet_rasters:
         d = discover_openet_rasters(src.root, models=cfg.model_registry(), sites=sites,
-                                    products=cfg.products, recursive=src.recursive)
+                                    products=cfg.products, recursive=src.recursive,
+                                    processing_tags=src.processing_tags,
+                                    on_conflict=src.on_conflict)  # type: ignore[arg-type]
         reports.append(d.report.summary())
         models.append(d.manifest)
     if len(models) != 1:

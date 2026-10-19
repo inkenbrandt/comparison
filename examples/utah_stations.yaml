@@ -1,0 +1,162 @@
+# Seven Utah stations for the held-out ensemble experiments (guide step 16; D-069, D-070).
+# Data paths are the user's local directories (never distributed; D-014). Every choice here
+# was made by the user on 2026-10-18 unless marked otherwise:
+#   - footprints rebuilt as NLDAS-ETo weighted from per-timestep stacks, as for US-UTJ (D-037);
+#     US-UTM uses its production top-level footprints;
+#   - OpenET from the clipped raster set for every station (US-UTJ re-extracted);
+#   - byte-identical duplicate rasters collapse to one file; differing ones are held out;
+#   - every station: UTC-7, local standard time, interval start, mm/day (as US-UTJ);
+#   - US-UTB, US-CdM, US-UTL and US-UTZ are left out;
+#   - calendar-year folds (April-October growing season); April-October reported separately.
+
+x-station: &station
+  timezone: "UTC-07:00"
+  day_definition: local_standard_time
+  interval_label: start
+stations:
+  # Coordinates: UGS station_attribute_view (read-only query, 2026-10-18); US-UTM from US-UTM.ini.
+  US-UTD: {<<: *station, latitude: 38.1038, longitude: -109.5952}
+  US-UTE: {<<: *station, latitude: 37.735287, longitude: -111.570816}
+  US-UTG: {<<: *station, latitude: 39.018806, longitude: -110.162766}
+  US-UTJ: {<<: *station, latitude: 37.281746, longitude: -109.53489, land_cover: CRO}
+  US-UTM: {<<: *station, latitude: 38.5879, longitude: -109.5775}
+  US-UTV: {<<: *station, latitude: 40.12641, longitude: -109.954735}
+  US-UTW: {<<: *station, latitude: 39.445362, longitude: -110.72905}
+
+x-scaling: &scaling {raster_scaling: declared, scale_factor: 1.0, add_offset: 0.0, nodata: -9999.0}
+products:
+  disalexi: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  eemetric: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  ensemble: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling, is_ensemble: true}
+  geesebal: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  ptjpl:    {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  sims:     {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  ssebop:   {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+
+x-table: &table
+  date_column: date
+  date_format: "%Y-%m-%d"
+  reference_columns: {et_raw: ET, et_corrected: ET_corr}
+  gap_flag_column: ET_gap
+  closure_factor_column: ebc_cf
+  reference_et_column: gridMET_ETr
+  units: {ET: mm/day, ET_corr: mm/day, gridMET_ETr: mm/day}   # as US-UTJ (user, 2026-10-18)
+station_tables:
+  - {<<: *table, site_id: US-UTD, path: "C:/Users/Hutto/Documents/database/daily_output/US-UTD_daily.csv"}
+  - {<<: *table, site_id: US-UTE, path: "C:/Users/Hutto/Documents/database/daily_output/US-UTE_daily.csv"}
+  - {<<: *table, site_id: US-UTG, path: "C:/Users/Hutto/Documents/database/daily_output/US-UTG_daily.csv"}
+  - {<<: *table, site_id: US-UTJ, path: "C:/Users/Hutto/Documents/database/daily_output/US-UTJ_daily.csv"}
+  - {<<: *table, site_id: US-UTM, path: "C:/Users/Hutto/Documents/database/daily_output/US-UTM_daily.csv"}
+  - {<<: *table, site_id: US-UTV, path: "C:/Users/Hutto/Documents/database/daily_output/US-UTV_daily.csv"}
+  - {<<: *table, site_id: US-UTW, path: "C:/Users/Hutto/Documents/database/daily_output/US-UTW_daily.csv"}
+
+# Clipped rasters (400 m buffer around each station; D-069). The clip is a declared processing
+# tag; byte-identical repeat downloads collapse to one file, differing ones are held out.
+openet_rasters:
+  - root: "C:/Users/Hutto/Documents/OpenET_Daily_Tiffs"
+    processing_tags: [buffer400m_clip]
+    on_conflict: collapse_identical
+
+x-nldas-set: &nldas_set
+  layers: [nldaseto]
+  weighting_method: "etcompare_aggregation:nldas_eto_weighted"
+  temporal_weighting: reference_et_weighted     # NLDAS-forcing grass ETo, not land-model ET
+  value_semantics: normalized_cell_weight
+footprint_sets:
+  - {<<: *nldas_set, set_id: US-UTD_nldas_eto_20261018, root: ../outputs/footprints/US-UTD/nldas_eto_weighted}
+  - {<<: *nldas_set, set_id: US-UTE_nldas_eto_20261018, root: ../outputs/footprints/US-UTE/nldas_eto_weighted}
+  - {<<: *nldas_set, set_id: US-UTG_nldas_eto_20261018, root: ../outputs/footprints/US-UTG/nldas_eto_weighted}
+  - {<<: *nldas_set, set_id: US-UTJ_nldas_eto_20261014, root: ../outputs/footprints/US-UTJ/nldas_eto_weighted}
+  - {<<: *nldas_set, set_id: US-UTV_nldas_eto_20261018, root: ../outputs/footprints/US-UTV/nldas_eto_weighted}
+  - {<<: *nldas_set, set_id: US-UTW_nldas_eto_20261018, root: ../outputs/footprints/US-UTW/nldas_eto_weighted}
+  # US-UTM: production top-level daily footprints (user, 2026-10-18). footprint_workflow_v2-1
+  # weights by NLDAS grass ETo (code-inferred; not verified by reproduction as US-UTJ was, D-036).
+  - set_id: US-UTM_production_etw
+    root: "C:/Users/Hutto/Documents/footprints/US-UTM"
+    recursive: false
+    layers: [etw]
+    weighting_method: production_nldas_eto_weighted_unverified
+    temporal_weighting: reference_et_weighted
+    value_semantics: normalized_cell_weight
+
+# Identical to the US-UTJ primary aggregation (D-037).
+footprint_aggregations:
+  - method_id: nldas_eto_weighted
+    temporal_weighting: reference_et_weighted
+    weight_column: nldas_eto_mm_h
+    include_duration: true
+    basis: renormalized_per_timestep
+    negative_weight_policy: exclude_timestep
+    gap_policy: exclude_timestep
+    night_policy: include
+
+x-extraction: &extraction
+  methods: [footprint]
+  negative_weight_tolerance: 1.0e-9
+raster_extractions:
+  - {<<: *extraction, name: utd_nldas_clip, site_id: US-UTD, footprint_set_id: US-UTD_nldas_eto_20261018, start: "2023-05-24", end: "2025-10-22"}
+  - {<<: *extraction, name: ute_nldas_clip, site_id: US-UTE, footprint_set_id: US-UTE_nldas_eto_20261018, start: "2024-06-18", end: "2025-10-09"}
+  - {<<: *extraction, name: utg_nldas_clip, site_id: US-UTG, footprint_set_id: US-UTG_nldas_eto_20261018, start: "2025-03-24", end: "2025-10-10"}
+  - {<<: *extraction, name: utj_nldas_clip, site_id: US-UTJ, footprint_set_id: US-UTJ_nldas_eto_20261014, start: "2024-06-05", end: "2025-10-09"}
+  - {<<: *extraction, name: utm_production_clip, site_id: US-UTM, footprint_set_id: US-UTM_production_etw, start: "2022-10-19", end: "2025-10-09"}
+  - {<<: *extraction, name: utv_nldas_clip, site_id: US-UTV, footprint_set_id: US-UTV_nldas_eto_20261018, start: "2023-09-27", end: "2025-10-14"}
+  - {<<: *extraction, name: utw_nldas_clip, site_id: US-UTW, footprint_set_id: US-UTW_nldas_eto_20261018, start: "2021-03-10", end: "2025-10-10"}
+
+# As US-UTJ (D-044, D-047): tolerances, block lengths and seed fixed before any scoring.
+metric_sets:
+  - metric_set_id: utah_metrics
+    metrics: [mbe, mae, rmse, bias_corrected_rmse, percent_bias, nrmse_mean, pearson_r,
+              pearson_r_squared, ols_slope, ols_intercept, nse, kge_2009]
+    daily_tolerance: {mean: 0.01, std: 0.001}
+    cumulative_error: false
+bootstrap:
+  - bootstrap_id: utah_block_bootstrap
+    metric_set: utah_metrics
+    block_lengths: [7, 14, 28]
+    seed: 20261018
+    n_replicates: 2000
+    confidence_level: 0.95
+    interval_methods: [percentile]
+    min_blocks: 10
+    min_valid_fraction: 0.9
+    segment_boundary: year            # calendar years, as the folds
+    acf_max_lag: 28
+    contrasts: true
+
+ensembles:
+  - ensemble_id: utah_ensemble
+    members: [disalexi, eemetric, geesebal, ptjpl, sims, ssebop]
+    official: ensemble
+    reference_variant: et_corrected_measured
+    side: {extraction_method: footprint_conservative, footprint_set_id: utah_per_site_footprints}
+    site_footprint_sets:              # each station's own set; US-UTM's is the production build
+      US-UTD: US-UTD_nldas_eto_20261018
+      US-UTE: US-UTE_nldas_eto_20261018
+      US-UTG: US-UTG_nldas_eto_20261018
+      US-UTJ: US-UTJ_nldas_eto_20261014
+      US-UTM: US-UTM_production_etw
+      US-UTV: US-UTV_nldas_eto_20261018
+      US-UTW: US-UTW_nldas_eto_20261018
+    sources: [utd_nldas_clip, ute_nldas_clip, utg_nldas_clip, utj_nldas_clip,
+              utm_production_clip, utv_nldas_clip, utw_nldas_clip]
+    sites: [US-UTD, US-UTE, US-UTG, US-UTJ, US-UTM, US-UTV, US-UTW]
+    missing_member_policy: require_all
+    combinations: [mean, median]
+    metric_set: utah_metrics
+    bootstrap: utah_block_bootstrap
+    contrast_metrics: [mae, rmse, mbe]
+    designs: [leave_one_year_out, leave_one_site_out]
+    fold_unit: year
+    buffer_days: 28
+    min_training_folds: 2
+    min_training_days_per_fold: 180
+    method: simplex_least_squares
+    regularisation: shrink_to_equal
+    shrinkage_grid: [0, 0.25, 0.5, 0.75, 1]
+    selection_metric: rmse
+    preprocessing: none
+    insufficient_data: decline
+    subsets:
+      - {subset_id: apr_oct, months: [4, 5, 6, 7, 8, 9, 10]}
+
+output_dir: ../outputs/utah

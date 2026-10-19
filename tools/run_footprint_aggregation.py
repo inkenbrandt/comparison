@@ -70,13 +70,23 @@ def main() -> None:
     if not files:
         raise SystemExit(f"no stacks in {args.stack_dir}")
 
+    # One target set per aggregation method and station: the set whose weighting_method is
+    # the method's tag and whose set_id starts with '<site>_'. A method without such a set
+    # is skipped for this station.
     targets = {}
     for agg in cfg.footprint_aggregations:
         tag = f"etcompare_aggregation:{agg.method_id}"
-        sets = [f for f in cfg.footprint_sets if f.weighting_method == tag]
-        if len(sets) != 1:
-            raise SystemExit(f"declare exactly one footprint set with weighting_method {tag}")
+        sets = [f for f in cfg.footprint_sets
+                if f.weighting_method == tag and f.set_id.startswith(f"{args.site}_")]
+        if len(sets) > 1:
+            raise SystemExit(f"{args.site}: more than one footprint set with weighting_method "
+                             f"{tag}")
+        if not sets:
+            print(f"{args.site}: no footprint set for {tag}; method skipped")
+            continue
         targets[agg.method_id] = (agg, sets[0])
+    if not targets:
+        raise SystemExit(f"{args.site}: no footprint set to write")
 
     chunks: dict[str, list] = {m: [] for m in targets}
     for path in files:

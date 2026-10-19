@@ -260,7 +260,21 @@ Keep context stable. Update it when verified input semantics or scope changes, i
 
 Do not claim the source raster paths are accessible until checked in the user's runtime. Do not expose or package private station data publicly without permission. Use small synthetic fixtures for distributable tests and keep user-supplied examples as local integration inputs unless authorized otherwise.
 
-**Current handoff (updated 2026-10-17, after step 15):** Guide steps 1–15 are implemented, and step 16 (held-out ensemble experiments) is next.
+**Current handoff (updated 2026-10-18, after step 16):** Guide steps 1–16 are implemented, and step 17 (plots, reports, configuration and CLI) is next.
+- **Ensembles (step 16):** `etcompare.ensemble.run_ensemble` (D-065) compares the official ensemble, the mean and median of the declared members, and an optional fitted ensemble on the same frozen days. It reuses `build_cohort`, `score_comparison`, `bootstrap_comparison` and `rank_comparison`.
+  - Ensembles are post-extraction, never pixel-level. The official ensemble is never a member, and measured-LE footprints never enter.
+  - Fitted weights are simplex least squares shrunk toward equal weights. α is chosen by inner grouped folds on training data, with a time buffer. Every fold's membership, weights, α, inner scores and member availability are saved.
+  - Too little independent data gives `declined` (or `exploratory`, in sample only). One station gives `not_available` for leave-one-site-out. Member spread is disagreement, not an interval.
+- **US-UTJ (D-066, user decisions 2026-10-18): the fitted ensemble is declined.**
+  - The declaration: six members, `et_corrected_measured`, `require_all`, calendar-year folds, a 28-day buffer, ≥ 2 training folds of ≥ 180 days, α ∈ {0, 0.25, 0.5, 0.75, 1}, and the primary NLDAS footprints.
+  - The six coexist only in 2025 (188 measured days), so there is one fold. Water-year folds and an eemetric + ssebop pair would be declined too. No weights and no held-out improvement exist.
+  - Baseline on 188 frozen days (nothing fitted): MAE official 0.699, mean 0.683, median 0.725 mm d⁻¹. No contrast is separated. `tools/run_ensembles.py` runs it.
+  - **Calendar years are the project standard** (user, 2026-10-18): the focus is the April–October growing season, which a water year would split.
+  - **Seven stations (D-069 to D-071, 2026-10-19):** `examples/utah_stations.yaml` declares US-UTD, UTE, UTG, UTJ, UTM, UTV and UTW.
+    - Footprints were rebuilt as NLDAS-ETo weighted from stacks (US-UTM uses its production set), and OpenET is the clipped raster set (identical to the unclipped values for US-UTJ).
+    - Leave-one-year-out has no held-out claim.
+    - Leave-one-site-out is held out on 1,798 station-days: lower RMSE than the member mean at 6 of 7 stations (equal-station mean −0.058 mm d⁻¹), but worse at the corn station US-UTG. Few station intervals are separated, and there is no network interval.
+    - **Open:** the 186 US-UTE conflicting duplicates, a minimum held-out size, US-UTG's footprints, and whether to rebuild US-UTM.
 - **Water balance (step 15):** `etcompare.water_balance.compute_water_balance` (D-062) checks `residual = P + I + CR − ET − RO − DP − ΔS` over a declared boundary and the step-8 periods.
   - Every term is declared. An unknown term is never zero and makes the residual unknown, with every unknown term listed.
   - Scenario residuals are separate rows. Support mismatches are flagged, never equated.

@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 from etcompare.errors import ContractError
 
@@ -30,6 +30,8 @@ REFERENCE_VARIANT_SOURCES: Final = ("et_raw", "et_corrected")
 #: Reference variants built from those sources (decisions.md D-004; :mod:`etcompare.references`).
 REFERENCE_VARIANTS: Final = ("et_raw", "et_corrected_measured", "et_corrected_inclusive")
 RASTER_SCALING: Final = ("declared", "from_header")
+#: Same-site/model/day raster conflicts (D-021, D-069).
+ON_CONFLICT_POLICIES: Final = ("error", "report", "collapse_identical")
 EXTRACTION_METHODS: Final = (
     "footprint", "footprint_common_support", "pixel_window", "nearest_tower_pixel",
 )
@@ -163,6 +165,31 @@ ANOMALY_METHODS: Final = ("held_out_climatology", "exploratory_moving_mean")
 FOLD_UNITS: Final = ("year", "water_year")
 #: Leap-day rule: 29 February takes 28 February's day of year in a 365-day calendar.
 LEAP_DAY_RULES: Final = ("as_feb28",)
+
+#: Held-out ensemble experiments (guide step 16; ``etcompare.ensemble``). Ensembles are built
+#: after spatial extraction from per-member extracted values; none is a pixel-level ensemble.
+#: ``leave_one_year_out``: temporal transfer, folds by ``fold_unit``; ``leave_one_site_out``:
+#: spatial transfer, folds by station.
+ENSEMBLE_DESIGNS: Final = ("leave_one_year_out", "leave_one_site_out")
+#: ``require_all``: a day counts only when every member has a value; ``reweight_available``:
+#: weights are renormalised over the available members (at least ``min_members``), and every
+#: such row is reported as reweighted.
+MISSING_MEMBER_POLICIES: Final = ("require_all", "reweight_available")
+#: Unweighted combinations of the members under the declared eligibility rule.
+ENSEMBLE_COMBINATIONS: Final = ("mean", "median")
+#: Fitted weights: nonnegative, summing to one, least squares on training rows only.
+ENSEMBLE_METHODS: Final = ("simplex_least_squares",)
+#: ``shrink_to_equal``: w = (1 - alpha) * w_fit + alpha / K; alpha = 1 is the simple mean.
+ENSEMBLE_REGULARISATIONS: Final = ("shrink_to_equal",)
+#: Inner grouped-validation criterion for alpha.
+ENSEMBLE_SELECTION_METRICS: Final = ("rmse",)
+#: No feature transformation: weights act on the extracted ET values in mm d-1.
+ENSEMBLE_PREPROCESSING: Final = ("none",)
+#: Too little independent data: ``decline`` (no weights) or ``exploratory`` (in-sample
+#: weights, labelled exploratory, never held-out predictions).
+INSUFFICIENT_DATA_POLICIES: Final = ("decline", "exploratory")
+#: Largest member count (the exact simplex solver enumerates member subsets).
+MAX_ENSEMBLE_MEMBERS: Final = 12
 
 #: Water-balance terms (guide step 15; ``etcompare.water_balance``). Every term must be
 #: declared; a term without an input is ``unknown``, never zero.
@@ -524,10 +551,29 @@ class ExtractedTableSpec:
 
 @dataclass(frozen=True)
 class OpenETRasterSource:
-    """A directory of OpenET GeoTIFFs to index (discovery recurses by default)."""
+    """A directory of OpenET GeoTIFFs to index (discovery recurses by default).
+
+    - ``processing_tags``: declared tags allowed after the API suffix of processed copies
+      (e.g. ``buffer400m_clip``); any other trailing text is a parse error (D-069).
+    - ``on_conflict``: ``error`` (default), ``report`` (held out until selected) or
+      ``collapse_identical`` (byte-identical copies collapse to one file; differing
+      copies are held out, D-069).
+    """
 
     root: Path
     recursive: bool = True
+    processing_tags: tuple[str, ...] = ()
+    on_conflict: str = "error"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "processing_tags", tuple(self.processing_tags or ()))
+        for t in self.processing_tags:
+            if not re.fullmatch(r"[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*", str(t)):
+                raise ContractError(f"openet_rasters: processing tag {t!r} must be "
+                                    "underscore-separated letters and digits",
+                                    config_key="openet_rasters[].processing_tags")
+        _choice(self.on_conflict, ON_CONFLICT_POLICIES, input="openet_rasters",
+                field="on_conflict", config_key="openet_rasters[].on_conflict")
 
 
 @dataclass(frozen=True)
@@ -3237,6 +3283,239 @@ class ScenarioSpec:
 
 
 @dataclass(frozen=True)
+class EnsembleSpec:
+    """Held-out ensemble experiment (guide step 16; ``etcompare.ensemble``).
+
+    Three products are compared on the same frozen cohort days: the downloaded ``official``
+    ensemble (a comparison product, never a member), the unweighted ``combinations`` of the
+    declared ``members`` and, when ``designs`` are declared, a fitted weighted ensemble whose
+    held-out predictions come only from weights fitted on other folds.
+
+    - **Members and eligibility.** ``members`` are the declared component products (2 to
+      :data:`MAX_ENSEMBLE_MEMBERS`). ``missing_member_policy`` is fixed in advance:
+      ``require_all``, or ``reweight_available`` with ``min_members``.
+    - **Inputs.** One ``reference_variant`` and one extraction ``side``, from ``sources``
+      (``raster_extractions`` or ``extracted_tables``), optionally limited to ``sites`` and
+      ``start``/``end``. Ensembles are post-extraction, never pixel-level.
+    - **Fitting** (only with ``designs``): ``method: simplex_least_squares`` (weights >= 0,
+      summing to 1), ``regularisation: shrink_to_equal`` over ``shrinkage_grid`` (alpha in
+      [0, 1]; must include 1, the simple mean), ``selection_metric: rmse`` from inner grouped
+      leave-one-fold-out validation on training folds only, ``preprocessing: none``.
+      ``fold_unit`` (year or water_year, for ``leave_one_year_out``), ``buffer_days``
+      (training days removed on each side of every held-out fold, inner folds too),
+      ``min_training_folds`` (>= 2, so inner validation is grouped) and
+      ``min_training_days_per_fold``. ``insufficient_data`` (``decline`` or ``exploratory``)
+      says what happens when no fold can be fitted.
+    - **Gap-filled reference days** are training rows only with ``gap_filled_training: true``
+      (``et_corrected_inclusive`` only); they share gridMET drivers with OpenET (D-005).
+    - ``metric_set``, ``bootstrap`` (optional) and ``contrast_metrics`` (score metrics with a
+      ranking direction) evaluate the products through steps 9-11.
+    - ``site_footprint_sets``: with several stations whose footprints are different sets,
+      ``{site: footprint_set_id}`` names each station's set, and ``side.footprint_set_id`` is
+      then a label for the combination (not a declared set). Every mapped set must be
+      target-independent, and every station in ``sites`` must be mapped.
+    - ``subsets``: extra evaluation subsets, each ``{subset_id, months}``. Every compared
+      scope is also evaluated on its days in those calendar months (e.g. ``apr_oct``,
+      months 4-10), as a separate frozen cohort. Training and folds are unchanged.
+    """
+
+    ensemble_id: str
+    members: tuple[str, ...]
+    reference_variant: str
+    side: ExtractionSide
+    metric_set: str
+    missing_member_policy: str
+    official: str | None = None
+    sources: tuple[str, ...] = ()
+    sites: tuple[str, ...] | None = None
+    start: str | None = None
+    end: str | None = None
+    min_members: int | None = None
+    combinations: tuple[str, ...] = ENSEMBLE_COMBINATIONS
+    bootstrap: str | None = None
+    contrast_metrics: tuple[str, ...] = ("mae", "rmse", "mbe")
+    designs: tuple[str, ...] = ()
+    fold_unit: str | None = None
+    water_year_start_month: int = 10
+    buffer_days: int | None = None
+    min_training_folds: int | None = None
+    min_training_days_per_fold: int | None = None
+    method: str | None = None
+    regularisation: str | None = None
+    shrinkage_grid: tuple[float, ...] = ()
+    selection_metric: str | None = None
+    preprocessing: str | None = None
+    insufficient_data: str | None = None
+    gap_filled_training: bool = False
+    subsets: tuple[Mapping[str, Any], ...] = ()
+    site_footprint_sets: Mapping[str, str] | None = None
+    description: str | None = None
+
+    _FIT_FIELDS: ClassVar[tuple[str, ...]] = (
+        "buffer_days", "min_training_folds", "min_training_days_per_fold", "method",
+        "regularisation", "selection_metric", "preprocessing", "insufficient_data")
+
+    def __post_init__(self) -> None:
+        eid = self.ensemble_id
+        _require(eid, input="ensemble", field="ensemble_id", config_key="ensembles[].ensemble_id")
+        key = f"ensembles.{eid}"
+        if not _METHOD_ID.match(str(eid)):
+            raise ContractError(f"{key}: ensemble_id must be snake_case", config_key=key)
+        for f in ("members", "sources", "combinations", "contrast_metrics", "designs"):
+            object.__setattr__(self, f, tuple(getattr(self, f) or ()))
+        if self.sites is not None:
+            object.__setattr__(self, "sites", tuple(self.sites))
+        k = len(self.members)
+        if len(set(self.members)) != k or not 2 <= k <= MAX_ENSEMBLE_MEMBERS:
+            raise ContractError(f"{key}: members must be 2-{MAX_ENSEMBLE_MEMBERS} distinct "
+                                "products", config_key=f"{key}.members")
+        if self.official is not None and self.official in self.members:
+            raise ContractError(f"{key}: the official ensemble {self.official!r} is a comparison "
+                                "product, never a member of the ensemble it is compared with",
+                                config_key=f"{key}.members")
+        _choice(self.reference_variant, REFERENCE_VARIANTS, input=key, field="reference_variant",
+                config_key=f"{key}.reference_variant")
+        side = self.side
+        if isinstance(side, Mapping):
+            _check_keys(side, {"extraction_method", "footprint_set_id"}, f"{key}.side")
+            parts: dict[str, Any] = {f: side.get(f) for f in ("extraction_method",
+                                                              "footprint_set_id")}
+            side = ExtractionSide(**parts)
+            object.__setattr__(self, "side", side)
+        if not isinstance(side, ExtractionSide):
+            raise ContractError(f"{key}: side must name extraction_method and footprint_set_id",
+                                config_key=f"{key}.side")
+        for f in ("extraction_method", "footprint_set_id"):
+            _require(getattr(side, f), input=key, field=f, config_key=f"{key}.side.{f}")
+        _require(self.metric_set, input=key, field="metric_set", config_key=f"{key}.metric_set")
+        _choice(self.missing_member_policy, MISSING_MEMBER_POLICIES, input=key,
+                field="missing_member_policy", config_key=f"{key}.missing_member_policy")
+        if self.missing_member_policy == "reweight_available":
+            if self.min_members is None:
+                raise ContractError(f"{key}: reweight_available needs min_members",
+                                    config_key=f"{key}.min_members")
+            _positive_int(self.min_members, key=key, field="min_members", minimum=2)
+            if self.min_members > k:
+                raise ContractError(f"{key}: min_members exceeds the {k} members",
+                                    config_key=f"{key}.min_members")
+        elif self.min_members is not None:
+            raise ContractError(f"{key}: min_members applies only to reweight_available",
+                                config_key=f"{key}.min_members")
+        for f, values, allowed in (("combinations", self.combinations, ENSEMBLE_COMBINATIONS),
+                                   ("designs", self.designs, ENSEMBLE_DESIGNS),
+                                   ("contrast_metrics", self.contrast_metrics,
+                                    tuple(RANKING_DIRECTIONS))):
+            if len(set(values)) != len(values):
+                raise ContractError(f"{key}: duplicate {f}", config_key=f"{key}.{f}")
+            for v in values:
+                _choice(v, allowed, input=key, field=f, config_key=f"{key}.{f}")
+        if not self.combinations:
+            raise ContractError(f"{key}: no combinations declared ({list(ENSEMBLE_COMBINATIONS)})",
+                                config_key=f"{key}.combinations")
+        if not self.contrast_metrics:
+            raise ContractError(f"{key}: no contrast_metrics declared",
+                                config_key=f"{key}.contrast_metrics")
+        object.__setattr__(self, "start", _iso_date(self.start, key=key, field="start"))
+        object.__setattr__(self, "end", _iso_date(self.end, key=key, field="end"))
+        if self.start and self.end and self.start > self.end:
+            raise ContractError(f"{key}: start {self.start} is after end {self.end}",
+                                config_key=f"{key}.start")
+        if not isinstance(self.gap_filled_training, bool):
+            raise ContractError(f"{key}: gap_filled_training must be true or false",
+                                config_key=f"{key}.gap_filled_training")
+        if self.gap_filled_training and self.reference_variant != "et_corrected_inclusive":
+            raise ContractError(f"{key}: gap_filled_training applies only to "
+                                "et_corrected_inclusive", config_key=f"{key}.gap_filled_training")
+        self._check_subsets(key)
+        if self.site_footprint_sets is not None:
+            m = self.site_footprint_sets
+            if not isinstance(m, Mapping) or not m:
+                raise ContractError(f"{key}: site_footprint_sets maps each site to its "
+                                    "footprint set", config_key=f"{key}.site_footprint_sets")
+            if self.sites is None or set(m) != set(self.sites):
+                raise ContractError(f"{key}: site_footprint_sets must map exactly the declared "
+                                    "sites", config_key=f"{key}.site_footprint_sets")
+            object.__setattr__(self, "site_footprint_sets",
+                               MappingProxyType({str(k): str(v) for k, v in m.items()}))
+        self._check_fit(key)
+
+    def _check_subsets(self, key: str) -> None:
+        out = []
+        for i, sub in enumerate(self.subsets or ()):
+            skey = f"{key}.subsets[{i}]"
+            if not isinstance(sub, Mapping):
+                raise ContractError(f"{skey}: a subset is {{subset_id, months}}", config_key=skey)
+            _check_keys(sub, {"subset_id", "months"}, skey)
+            sid = sub.get("subset_id")
+            if not isinstance(sid, str) or not _METHOD_ID.match(sid) or sid == "all":
+                raise ContractError(f"{skey}: subset_id must be snake_case and not 'all'",
+                                    config_key=f"{skey}.subset_id")
+            months = sub.get("months")
+            if (not isinstance(months, list | tuple) or not months
+                    or len(set(months)) != len(months)
+                    or any(isinstance(m, bool) or not isinstance(m, int) or not 1 <= m <= 12
+                           for m in months)):
+                raise ContractError(f"{skey}: months must be distinct calendar months 1-12",
+                                    config_key=f"{skey}.months")
+            out.append(MappingProxyType({"subset_id": sid, "months": tuple(sorted(months))}))
+        ids = [o["subset_id"] for o in out]
+        if len(set(ids)) != len(ids):
+            raise ContractError(f"{key}: duplicate subset_id", config_key=f"{key}.subsets")
+        object.__setattr__(self, "subsets", tuple(out))
+
+    def _check_fit(self, key: str) -> None:
+        fit = bool(self.designs)
+        grid = tuple(self.shrinkage_grid or ())
+        if not fit:
+            given = [f for f in (*self._FIT_FIELDS, "fold_unit") if getattr(self, f) is not None]
+            if grid:
+                given.append("shrinkage_grid")
+            if self.gap_filled_training:
+                given.append("gap_filled_training")
+            if given:
+                raise ContractError(f"{key}: {given} apply only when designs are declared",
+                                    config_key=f"{key}.designs")
+            return
+        for f in self._FIT_FIELDS:
+            if getattr(self, f) is None:
+                raise ContractError(f"{key}: {f} not declared; fitting choices are fixed in "
+                                    "advance, never tuned on agreement", config_key=f"{key}.{f}")
+        if "leave_one_year_out" in self.designs:
+            _choice(self.fold_unit, FOLD_UNITS, input=key, field="fold_unit",
+                    config_key=f"{key}.fold_unit")
+        elif self.fold_unit is not None:
+            raise ContractError(f"{key}: fold_unit applies only to leave_one_year_out",
+                                config_key=f"{key}.fold_unit")
+        wy = self.water_year_start_month
+        if isinstance(wy, bool) or not isinstance(wy, int) or not 1 <= wy <= 12:
+            raise ContractError(f"{key}: water_year_start_month must be 1..12",
+                                config_key=f"{key}.water_year_start_month")
+        _positive_int(self.buffer_days, key=key, field="buffer_days", minimum=0)
+        _positive_int(self.min_training_folds, key=key, field="min_training_folds", minimum=2)
+        _positive_int(self.min_training_days_per_fold, key=key, field="min_training_days_per_fold")
+        for f, allowed in (("method", ENSEMBLE_METHODS),
+                           ("regularisation", ENSEMBLE_REGULARISATIONS),
+                           ("selection_metric", ENSEMBLE_SELECTION_METRICS),
+                           ("preprocessing", ENSEMBLE_PREPROCESSING),
+                           ("insufficient_data", INSUFFICIENT_DATA_POLICIES)):
+            _choice(getattr(self, f), allowed, input=key, field=f, config_key=f"{key}.{f}")
+        values = []
+        for a in grid:
+            if isinstance(a, bool) or not isinstance(a, int | float) or not 0 <= a <= 1:
+                raise ContractError(f"{key}: shrinkage_grid values must lie in [0, 1], got {a!r}",
+                                    config_key=f"{key}.shrinkage_grid")
+            values.append(float(a))
+        if not values or len(set(values)) != len(values):
+            raise ContractError(f"{key}: shrinkage_grid must be a non-empty list without "
+                                "duplicates", config_key=f"{key}.shrinkage_grid")
+        if 1.0 not in values:
+            raise ContractError(f"{key}: shrinkage_grid must include 1 (equal weights, the "
+                                "simple mean), so shrinkage can always return to it",
+                                config_key=f"{key}.shrinkage_grid")
+        object.__setattr__(self, "shrinkage_grid", tuple(sorted(values)))
+
+
+@dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
 
@@ -3264,6 +3543,7 @@ class Config:
     anomalies: tuple[AnomalySpec, ...] = ()
     water_balances: tuple[WaterBalanceSpec, ...] = ()
     scenarios: tuple[ScenarioSpec, ...] = ()
+    ensembles: tuple[EnsembleSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -3330,6 +3610,85 @@ class Config:
                                     "not declared",
                                     config_key=f"anomalies.{an.anomaly_id}.metric_set")
         self._check_water_balances()
+        self._check_ensembles()
+
+    def _check_ensembles(self) -> None:
+        eids = [e.ensemble_id for e in self.ensembles]
+        if len(set(eids)) != len(eids):
+            raise ContractError(f"duplicate ensemble_id in {eids}", config_key="ensembles")
+        msets = {m.metric_set_id: m for m in self.metric_sets}
+        boots = {b.bootstrap_id: b for b in self.bootstrap}
+        sets = {f.set_id: f for f in self.footprint_sets}
+        sources = ({x.name for x in self.raster_extractions}
+                   | {t.name for t in self.extracted_tables})
+        for e in self.ensembles:
+            key = f"ensembles.{e.ensemble_id}"
+            for m in e.members:
+                p = self.products.get(m)
+                if p is None:
+                    raise ContractError(f"{key}: member {m!r} is not a declared product",
+                                        config_key="products")
+                if p.is_ensemble:
+                    raise ContractError(f"{key}: {m!r} is an ensemble product (is_ensemble); "
+                                        "the official ensemble is a comparison product, never "
+                                        "an independent member", config_key=f"{key}.members")
+            if e.official is not None:
+                p = self.products.get(e.official)
+                if p is None or not p.is_ensemble:
+                    raise ContractError(f"{key}: official {e.official!r} must be a declared "
+                                        "product with is_ensemble: true",
+                                        config_key=f"{key}.official")
+            ms = msets.get(e.metric_set)
+            if ms is None:
+                raise ContractError(f"{key}: metric set {e.metric_set!r} not declared",
+                                    config_key=f"{key}.metric_set")
+            missing = set(e.contrast_metrics) - set(ms.metrics)
+            if missing:
+                raise ContractError(f"{key}: contrast_metrics {sorted(missing)} are not computed "
+                                    f"by metric set {e.metric_set}",
+                                    config_key=f"{key}.contrast_metrics")
+            if e.bootstrap is not None:
+                b = boots.get(e.bootstrap)
+                if b is None:
+                    raise ContractError(f"{key}: bootstrap {e.bootstrap!r} not declared",
+                                        config_key=f"{key}.bootstrap")
+                if b.metric_set != e.metric_set:
+                    raise ContractError(f"{key}: bootstrap {e.bootstrap} resamples metric set "
+                                        f"{b.metric_set!r}, not {e.metric_set!r}",
+                                        config_key=f"{key}.bootstrap")
+            unknown = set(e.sources) - sources
+            if unknown:
+                raise ContractError(f"{key}: sources {sorted(unknown)} not declared",
+                                    config_key=f"{key}.sources")
+            for s in e.sites or ():
+                if s not in self.stations:
+                    raise ContractError(f"{key}: station {s} not declared",
+                                        config_key=f"stations.{s}")
+            fp = e.side.footprint_set_id
+            if e.site_footprint_sets is not None:
+                if fp in sets:
+                    raise ContractError(f"{key}: with site_footprint_sets, side.footprint_set_id "
+                                        f"is a label and must not be the declared set {fp!r}",
+                                        config_key=f"{key}.side")
+                mapped = list(e.site_footprint_sets.values())
+            else:
+                mapped = [fp] if fp != "none" else []
+            for set_id in mapped:
+                f = sets.get(set_id)
+                if f is None:
+                    raise ContractError(f"{key}: footprint set {set_id!r} not declared; its "
+                                        "dependence on the target measurements is unknown",
+                                        config_key="footprint_sets")
+                if f.target_dependence != "no":
+                    raise ContractError(f"{key}: footprint set {set_id} is weighted by the "
+                                        "target measurements (D-037); it never enters an "
+                                        "ensemble experiment", config_key=f"{key}.side")
+
+    def ensemble(self, ensemble_id: str) -> EnsembleSpec:
+        for e in self.ensembles:
+            if e.ensemble_id == ensemble_id:
+                return e
+        raise KeyError(ensemble_id)
 
     def _check_water_balances(self) -> None:
         wids = [w.water_balance_id for w in self.water_balances]
@@ -3736,7 +4095,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
            "footprint_aggregations", "comparisons", "period_aggregations",
            "crop_height_tables", "metric_sets", "bootstrap", "rankings", "diagnostics",
            "representativeness", "satellite_support", "event_tables", "event_analyses",
-           "anomalies", "water_balances", "scenarios", "output_dir"}
+           "anomalies", "water_balances", "scenarios", "ensembles", "output_dir"}
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -3790,8 +4149,11 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         _check_keys(body, set(OpenETRasterSource.__dataclass_fields__), f"openet_rasters[{i}]")
         _require(body.get("root"), input="openet raster source", field="root",
                  config_key=f"openet_rasters[{i}].root")
-        rasters.append(OpenETRasterSource(root=_path(body["root"], base_dir),  # type: ignore[arg-type]
-                                          recursive=bool(body.get("recursive", True))))
+        rasters.append(OpenETRasterSource(
+            root=_path(body["root"], base_dir),  # type: ignore[arg-type]
+            recursive=bool(body.get("recursive", True)),
+            processing_tags=tuple(body.get("processing_tags") or ()),
+            on_conflict=body.get("on_conflict", "error")))
 
     footprints = []
     for i, body in enumerate(data.get("footprint_sets") or []):
@@ -3989,6 +4351,15 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
                               for a in (kw.get("alternatives") or [])]
         scenarios.append(ScenarioSpec(**kw))
 
+    ensembles = []
+    en_fields = set(EnsembleSpec.__dataclass_fields__) - {"_FIT_FIELDS"}
+    for i, body in enumerate(data.get("ensembles") or []):
+        _check_keys(body, en_fields, f"ensembles[{i}]")
+        kw = {f: body.get(f) for f in ("ensemble_id", "members", "reference_variant", "side",
+                                       "metric_set", "missing_member_policy")}
+        kw.update({k: v for k, v in body.items() if k not in kw})
+        ensembles.append(EnsembleSpec(**kw))
+
     return Config(
         stations=stations,
         products=products,
@@ -4014,6 +4385,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         anomalies=tuple(anomalies),
         water_balances=tuple(balances),
         scenarios=tuple(scenarios),
+        ensembles=tuple(ensembles),
         output_dir=_path(data.get("output_dir"), base_dir),
     )
 

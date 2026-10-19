@@ -137,3 +137,46 @@ def test_site_alias_recorded_in_manifest(tmp_path):
     assert row["member_sites"] == "US-UTD;US-UTM"
     assert row["site_aliases_applied"] == "US_UTM=US-UTM"
     assert r.manifest.attributes["site_aliases_applied"] == ["US_UTM=US-UTM"]
+
+
+def write(root: Path, name: str, content: bytes) -> Path:
+    p = root / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(content)
+    return p
+
+
+def test_declared_processing_tag_is_parsed_and_others_refused(tmp_path):
+    touch(tmp_path, "US-UTJ_sims_et_2025_01_01_d04f3_buffer400m_clip.tif")
+    with pytest.raises(FilenameParseError):
+        discover_openet_rasters(tmp_path, models=MODELS, products=PRODUCTS)
+    r = discover_openet_rasters(tmp_path, models=MODELS, products=PRODUCTS,
+                                processing_tags=("buffer400m_clip",))
+    m = r.manifest.frame
+    assert len(m) == 1 and m["model"][0] == "sims" and m["member_sites"][0] == "US-UTJ"
+    assert r.manifest.attributes["processing_tags"] == ["buffer400m_clip"]
+    touch(tmp_path, "US-UTJ_sims_et_2025_01_02_d04f3_buffer500m_clip.tif")
+    with pytest.raises(FilenameParseError):
+        discover_openet_rasters(tmp_path, models=MODELS, products=PRODUCTS,
+                                processing_tags=("buffer400m_clip",))
+
+
+def test_collapse_identical_keeps_one_copy_and_holds_out_differing(tmp_path):
+    a = write(tmp_path, "US-UTW_sims_et_2021_01_01_7ab87.tif", b"same bytes")
+    b = write(tmp_path, "US-UTW_sims_et_2021_01_01_9a039.tif", b"same bytes")
+    c = write(tmp_path, "US-UTE_geesebal_et_2025_01_18_aa6bd.tif", b"one")
+    d = write(tmp_path, "US-UTE_geesebal_et_2025_01_18_aec2f.tif", b"two")
+    write(tmp_path, "US-UTE_geesebal_et_2025_01_19_aa6bd.tif", b"single")
+    r = discover_openet_rasters(tmp_path, models=MODELS, products=PRODUCTS,
+                                on_conflict="collapse_identical")
+    paths = set(r.manifest.frame["path"])
+    assert str(a) in paths and str(b) not in paths              # identical: first path kept
+    assert str(c) not in paths and str(d) not in paths          # differing: both held out
+    assert len(paths) == 2
+    assert r.report.ok and "conflicting_assets_held_out" in r.report.codes("warning")
+    assert set(r.conflicts["path"]) == {str(c), str(d)}
+    ex = r.exclusions.to_frame().set_index("input_key")
+    assert ex.loc[str(b), "reason_code"] == "identical_duplicate_collapsed"
+    assert str(a) in ex.loc[str(b), "detail"]
+    assert set(ex.loc[[str(c), str(d)], "reason_code"]) == {"conflicting_assets_held_out"}
+    assert r.manifest.attributes["on_conflict"] == "collapse_identical"

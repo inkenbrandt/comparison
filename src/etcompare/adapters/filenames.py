@@ -9,6 +9,11 @@ using the model registry, then reads the prefix as an unordered set of site
 tokens (decisions.md D-013). It never splits blindly on underscores, because
 site aliases such as ``US_UTM`` contain one.
 
+Processed copies may carry a declared processing tag after the API suffix, e.g.
+``US-UTJ_sims_et_2025_01_01_d04f3_buffer400m_clip.tif`` (tag ``buffer400m_clip``,
+D-069). Only tags passed in ``processing_tags`` are accepted; any other text after
+the suffix is still a parse error. The tag is recorded on the asset.
+
 Footprint names look like ``ffp_US-UTJ_daily_etw_20240605.tif`` or
 ``ffp_US-UTJ_monthly_etw_202406.tif``. The layer token (``etw``, ``mean``) is
 recorded as text; it does not establish a weighting method (D-009).
@@ -55,6 +60,7 @@ class OpenETAsset:
     suffix: str
     site_aliases_applied: tuple[tuple[str, str], ...] = ()
     path: Path | None = None
+    processing_tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,14 +79,16 @@ class FootprintAsset:
 
 @lru_cache(maxsize=64)
 def _openet_regex(
-    tokens: tuple[str, ...], variables: tuple[str, ...], suffix: str, exts: tuple[str, ...]
+    tokens: tuple[str, ...], variables: tuple[str, ...], suffix: str, exts: tuple[str, ...],
+    tags: tuple[str, ...] = (),
 ) -> re.Pattern[str]:
     alt = "|".join(re.escape(t) for t in tokens)
     var = "|".join(re.escape(v) for v in variables)
     ext = "|".join(re.escape(e) for e in exts)
+    tag = rf"(?:_(?P<tag>{'|'.join(re.escape(t) for t in tags)}))?" if tags else ""
     return re.compile(
         rf"^(?P<prefix>.+)_(?P<model>{alt})_(?P<variable>{var})_(?P<y>\d{{4}})_(?P<m>\d{{2}})_"
-        rf"(?P<d>\d{{2}})_(?P<suffix>{suffix})(?P<ext>{ext})$"
+        rf"(?P<d>\d{{2}})_(?P<suffix>{suffix}){tag}(?P<ext>{ext})$"
     )
 
 
@@ -143,13 +151,17 @@ def parse_openet_filename(
     variables: tuple[str, ...] = DEFAULT_VARIABLES,
     suffix_pattern: str = DEFAULT_SUFFIX_PATTERN,
     extensions: tuple[str, ...] = DEFAULT_EXTENSIONS,
+    processing_tags: tuple[str, ...] = (),
 ) -> OpenETAsset:
-    """Parse an OpenET raster filename into sites, model, variable and date label."""
+    """Parse an OpenET raster filename into sites, model, variable and date label.
+
+    ``processing_tags`` lists the declared tags allowed after the API suffix.
+    """
     path = Path(name) if isinstance(name, PurePath) else None
     filename = PurePath(name).name
     sites = sites or SiteRegistry()
     rx = _openet_regex(tuple(models.tokens()), tuple(variables), suffix_pattern,
-                       tuple(extensions))
+                       tuple(extensions), tuple(processing_tags))
     m = rx.match(filename)
     if not m:
         raise FilenameParseError(_diagnose_openet(filename, models, variables, suffix_pattern,
@@ -166,6 +178,7 @@ def parse_openet_filename(
         suffix=m["suffix"],
         site_aliases_applied=applied,
         path=path,
+        processing_tag=m.groupdict().get("tag"),
     )
 
 
