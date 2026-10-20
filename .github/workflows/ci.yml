@@ -34,10 +34,19 @@ jobs:
       - name: Lint and type-check
         shell: bash   # PowerShell on Windows runners does not expand tools/run_*.py
         run: |
-          uv run ruff check src tests tools/run_*.py tools/make_data_dictionary.py
-          uv run mypy
+          # Problems are also emitted as GitHub annotations, readable without the raw log.
+          uv run ruff check --output-format=github src tests tools/run_*.py tools/make_data_dictionary.py
+          uv run mypy > mypy.txt 2>&1 && status=0 || status=$?
+          cat mypy.txt
+          sed -nE 's/^([^:]+):([0-9]+): error: (.*)$/::error file=\1,line=\2::\3/p' mypy.txt
+          exit $status
       - name: Tests (synthetic only)
-        run: uv run pytest -ra
+        shell: bash
+        run: |
+          uv run pytest -ra > pytest.txt 2>&1 && status=0 || status=$?
+          tail -n 60 pytest.txt
+          grep -E "^(ERROR|FAILED) " pytest.txt | head -n 20 | sed 's/^/::error::/'
+          exit $status
       - name: Offline demonstration with rasters, through the console script
         shell: bash
         run: |
@@ -57,7 +66,11 @@ jobs:
       - name: Install with lowest-direct resolution
         run: uv sync --resolution lowest-direct
       - name: Tests
-        run: uv run pytest -ra
+        run: |
+          uv run pytest -ra > pytest.txt 2>&1 && status=0 || status=$?
+          tail -n 60 pytest.txt
+          grep -E "^(ERROR|FAILED) |^E   " pytest.txt | head -n 20 | sed 's/^/::error::/'
+          exit $status
 
   pinned-demo:
     # The pinned demonstration environment (examples/demo/requirements-demo.txt).
