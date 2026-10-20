@@ -43,7 +43,7 @@ jobs:
       - name: Tests (synthetic only)
         shell: bash
         run: |
-          uv run pytest -ra > pytest.txt 2>&1 && status=0 || status=$?
+          uv run pytest -ra --color=no > pytest.txt 2>&1 && status=0 || status=$?
           tail -n 60 pytest.txt
           grep -E "^(ERROR|FAILED) " pytest.txt | head -n 20 | sed 's/^/::error::/'
           exit $status
@@ -67,7 +67,7 @@ jobs:
         run: uv sync --resolution lowest-direct
       - name: Tests
         run: |
-          uv run pytest -ra > pytest.txt 2>&1 && status=0 || status=$?
+          uv run pytest -ra --color=no > pytest.txt 2>&1 && status=0 || status=$?
           tail -n 60 pytest.txt
           grep -E "^(ERROR|FAILED) |^E   " pytest.txt | head -n 20 | sed 's/^/::error::/'
           exit $status
