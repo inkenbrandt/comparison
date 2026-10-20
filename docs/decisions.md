@@ -1760,3 +1760,26 @@ Raster extraction and representativeness are not declared. The declared footprin
 - leave-one-site-out is held out, and leave-one-year-out is declined;
 - satellite support is `not_available`;
 - the water balance is unknown.
+
+### D-078 — Step-17 runs on the real stations (Information, 2026-10-19/20)
+Local and git-ignored (D-014). Real-station reports were authorized by the user on 2026-10-19.
+
+**US-UTJ** (`python -m etcompare run examples/us_utj.yaml`, 5 min 42 s; 77 units completed):
+- **Index and all four raster extractions are `not_available`** (`input_missing`): `openet_rasters.root` is stale (D-054). The analyses read the existing extraction outputs by content.
+- **Footprint aggregation is `skipped`** (`run_skip`), as declared.
+- **Both footprint-set comparisons, now declared in `footprint_comparisons`, reproduce D-035 and D-038:**
+  - set B `mean` − `etw`: −0.046 to −0.001 mm d⁻¹, maximum 0.48;
+  - measured LE − NLDAS: +0.002 to +0.015, maximum 1.12.
+- **Report:** 151 figures, HTML 12 MB.
+  - The open decisions list the 11 declared entries plus the ones read from the tables: no block length adopted (7, 14 and 28 days), 20,034 contrast rows `not_assessed`, contrasts exploratory, `single_site` summaries, leave-one-site-out `not_available` and leave-one-year-out `declined`, five unknown water-balance terms.
+  - Two figures are `not_available` with their reason: retained-fraction bins on the 3×3-window side (`empty_bin`), and no held-out ensemble contrast (nothing fitted).
+
+**Seven Utah stations** (`python -m etcompare run examples/utah_stations.yaml`; this checkout had no Utah outputs):
+- **Index:** J: was indexed in 18 s.
+- **Extractions:** all eight completed. Seven took 17–138 s each. `utm_nldas_clip` took 32,382 s of wall time, but 32,305 s of it is a single pause between two consecutive progress records. **The machine was asleep** (established 2026-10-20 from the Windows System log): the last progress record (US-UTM day 950) is at 21:11:24.7 MDT; Kernel-Power event 42 "The system is entering sleep", reason *System Idle*, follows at 21:11:25.1; the system resumed at 06:09:40 (wake source: the USB host controller), and the next record came 10 s later. The AC idle-sleep timeout is 900 s and nothing kept the system awake during a run. J: is a USB SSD (Samsung T7, exFAT), so no spin-down is involved; no disk event was logged and no read failed (the exclusions hold only `footprint_missing` and `no_valid_cells`). Whether the USB drive was briefly disconnected during sleep cannot be established. Step 18 adds `run.keep_awake`.
+- **The ensemble reproduces D-073:**
+  - 1,839 eligible station-days (1,264 in April–October);
+  - leave-one-site-out held out on 6 of 7 folds (1,798 days compared);
+  - leave-one-year-out declined;
+  - `tests/integration/test_utah_ensemble.py` (8) passes on these outputs.
+- **Report:** ensemble section only (no comparisons are declared in that configuration).

@@ -20,7 +20,104 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 14 — Anomalies and management events | **Done** 2026-10-17 (station level; defaults Provisional, chosen by the assistant at the user's request; uncontrolled before/after only; no held-out anomaly skill possible for US-UTJ) |
 | 15 — Water-balance checks and scenario uncertainty | **Done** 2026-10-17 (station level; US-UTJ declaration Provisional; **the US-UTJ residual is unknown**: five terms have no input; no scenario declared) |
 | 16 — Held-out ensemble experiments | **Done** 2026-10-18 (station level; post-extraction ensembles; US-UTJ choices made by the user; **the US-UTJ fitted ensemble is declined**: one calendar-year fold, one station) |
-| 17–18 | Not started |
+| 17 — Plots, reports, configuration and CLI | **Done** 2026-10-19 (workflow units with exact cache invalidation, run manifests, reports from saved tables, synthetic demo; US-UTJ and the seven Utah stations rerun through the CLI) |
+| 18 | Not started |
+
+## Step 17 — Plots, reports, configuration and CLI (2026-10-19)
+
+**User decisions (2026-10-19; D-074 to D-077):** the assistant's recommendations were accepted:
+- `argparse` with the console script `etcompare`;
+- analyses run when declared, with `run.skip`;
+- Markdown plus self-contained HTML, and PNG plus SVG figures;
+- a per-unit cache with a `stat` raster identity (SHA-256 opt-in);
+- versioned run manifests;
+- local real-station reports;
+- a minimal synthetic demo now;
+- cumulative gaps as a break, a shaded span and a count;
+- a `decisions:` section;
+- verdicts carried verbatim.
+
+**Run it**
+```bash
+python -m etcompare run examples/us_utj.yaml            # or: etcompare run ...
+python -m etcompare report examples/us_utj.yaml         # report only (reuses everything)
+python -c "from etcompare.demo import write_demo; write_demo('demo')"
+python -m etcompare run demo/config.yaml                # synthetic, offline
+uv run python -m pytest                                 # 834 passed, 3 skipped (opt-in Drive raster tests)
+uv run ruff check src tests tools/run_*.py && uv run mypy   # clean
+```
+
+### API
+- **`etcompare.cli`:** `validate`, `index`, `extract`, `analyze`, `report`, `run`, plus `--force`, `--log-format` and `--log-level`. Exit codes: 0, 2 (configuration or data error), 1.
+- **`etcompare.runner.run_stages(cfg, stages, command=, force=, select=)`** returns `(RunManifest, records)`. `tool_main` serves the `tools/run_*.py` wrappers.
+- **`etcompare.workflow.Workflow`:**
+  - planning: `plan(stage)` returns `Unit`s;
+  - running: `execute`, `status_of` (completed, stale, not_run, ...), `validate()` and `undeclared()`;
+  - helpers: `landscape`, plus the text summaries moved from the tools.
+- **`etcompare.runrecord`:** `RunManifest` (JSON, version 1, round trip), `UnitRecord`, `Cache`, `status_table`.
+- **`etcompare.provenance`:** `file_identity` (`sha256` or `stat`), `canonical_hash`, `code_identity(exclude=)`, `git_state`, `detect_upstream`.
+- **`etcompare.plots`** (`plot` extra): `scorecard`, `scatter_1to1`, `cumulative`, `contrast_intervals`, `conditional_errors`, `coverage`, `ranking_stability`, `ensemble_folds`, `ensemble_improvement`, `ensemble_disagreement`; `caption_meta`, `check_meta`, `save_figure`; `NothingToDraw` and `CaptionMismatch`.
+- **`etcompare.reporting`:** `build_report`, `report_unit`, `check_language`, `table_status_rows`, `derived_decisions`.
+- **`etcompare.demo.write_demo`.**
+- **New schemas:** `analysis_status` v1 and `skipped_analyses` v1.
+- **New configuration:**
+  - sections `run`, `report`, `cache`, `upstream`, `decisions`, `footprint_stacks` and `footprint_comparisons`;
+  - fields `raster_extractions[].strict` and `crop_height_tables[].on_missing`.
+
+### Delivered
+- **Tool logic moved into the library.** The eight `tools/run_*.py` scripts are thin wrappers over the workflow units and write the same files, now cached and with a manifest. The former flags are configuration fields (D-074).
+- **Cache.** One stamp per unit. The key covers the code (without the presentation modules), the configuration entries read and the input identities (upstream outputs by content; rasters by size + mtime unless `sha256`). Invalidation is exact, and the workflow tests check this for station tables, configuration entries, masks, rasters, raster windows and modified outputs.
+- **Run manifest** per invocation, versioned, never overwritten, plus `analysis_status` and `log.jsonl` (D-075).
+- **Reports and figures from saved tables only** (D-076):
+  - every guide figure, plus the ensemble figures;
+  - captions read from the rows and checked against the declaration;
+  - a `not_available` entry instead of an empty figure;
+  - the skipped-analyses table, open decisions and guarded wording;
+  - synthetic labels on every page and caption.
+- **Example configs:**
+  - `footprint_stacks`, plus `footprint_comparisons` for the two step-6 comparisons (D-035, D-038);
+  - `run.skip: [footprint_aggregation]`, so the verified footprints are never rewritten;
+  - declared upstream versions;
+  - every open or provisional decision with its D-number.
+- **Synthetic demo** (D-077).
+
+### Checks
+- **`tests/test_workflow.py`** (15): exact invalidation (station, configuration entry, mask, raster in and outside the window, SHA-256 identity, modified output); reuse; `--force`; `run.skip` and dependency skips; missing input gives `not_available`; undeclared analyses; a failed unit recorded then raised; the crop-height policy; validation outputs.
+- **`tests/test_runrecord.py`** (13): manifest round trip, versioning and refusal of unknown keys; identities; canonical hash; code identity; git outside a checkout; stamps; the CLI help, exit code 2 on configuration errors, and the manifest and JSON log of `validate`.
+- **`tests/test_reporting.py`** (18):
+  - the synthetic end-to-end gate: every status recorded; a rerun reuses everything, the report included; seeds, exclusions and versions in the manifest; synthetic labels on every page and caption; no real station ID; report sample counts equal the tables'; the skipped-analyses table; open decisions;
+  - figures: drawn rows equal input rows; captions; no cumulative line spans a gap; statuses in place of intervals; sparse bins marked; caption mismatches raise; folds labelled held out, exploratory or declined; disagreement is not an interval;
+  - guarded words.
+- **`tests/test_config_workflow.py`** (11): the new sections and their refusals, and the example configs.
+- **`test_water_balance`:** the isolation test now lists the orchestration and presentation modules and checks that every selecting module still never names the water balance.
+- **Regression:** the pre-step-17 runners and the workflow produce identical US-UTJ tables (177 Parquet files, frames and attributes).
+- **Full suite:** 834 passed, 3 skipped (6 min 16 s). ruff (src, tests, tools/run_*.py) and mypy are clean.
+
+### Real stations (local, git-ignored; D-078)
+See D-078.
+**US-UTJ** (`python -m etcompare run examples/us_utj.yaml`, 5 min 42 s; 77 units completed):
+- **Index and all four raster extractions are `not_available`** (`input_missing`): `openet_rasters.root` is stale (D-054). The analyses read the existing extraction outputs by content.
+- **Footprint aggregation is `skipped`** (`run_skip`), as declared.
+- **Both footprint-set comparisons, now declared in `footprint_comparisons`, reproduce D-035 and D-038:**
+  - set B `mean` − `etw`: −0.046 to −0.001 mm d⁻¹, maximum 0.48;
+  - measured LE − NLDAS: +0.002 to +0.015, maximum 1.12.
+- **Report:** 151 figures, HTML 12 MB.
+  - The open decisions list the 11 declared entries plus the ones read from the tables: no block length adopted (7, 14 and 28 days), 20,034 contrast rows `not_assessed`, contrasts exploratory, `single_site` summaries, leave-one-site-out `not_available` and leave-one-year-out `declined`, five unknown water-balance terms.
+  - Two figures are `not_available` with their reason: retained-fraction bins on the 3×3-window side (`empty_bin`), and no held-out ensemble contrast (nothing fitted).
+
+**Seven Utah stations** (`python -m etcompare run examples/utah_stations.yaml`; this checkout had no Utah outputs):
+- **Index:** J: was indexed in 18 s.
+- **Extractions:** all eight completed. Seven took 17–138 s each. `utm_nldas_clip` took 32,382 s of wall time, but 32,305 s of it is a single pause between two consecutive progress records. **The machine was asleep** (established 2026-10-20 from the Windows System log): the last progress record (US-UTM day 950) is at 21:11:24.7 MDT; Kernel-Power event 42 "The system is entering sleep", reason *System Idle*, follows at 21:11:25.1; the system resumed at 06:09:40 (wake source: the USB host controller), and the next record came 10 s later. The AC idle-sleep timeout is 900 s and nothing kept the system awake during a run. J: is a USB SSD (Samsung T7, exFAT), so no spin-down is involved; no disk event was logged and no read failed (the exclusions hold only `footprint_missing` and `no_valid_cells`). Whether the USB drive was briefly disconnected during sleep cannot be established. Step 18 adds `run.keep_awake`.
+- **The ensemble reproduces D-073:**
+  - 1,839 eligible station-days (1,264 in April–October);
+  - leave-one-site-out held out on 6 of 7 folds (1,798 days compared);
+  - leave-one-year-out declined;
+  - `tests/integration/test_utah_ensemble.py` (8) passes on these outputs.
+- **Report:** ensemble section only (no comparisons are declared in that configuration).
+
+### Open
+- Step 18: concurrency, retries, staging, resumable extraction, the release artifacts and a full raster demo.
+- Carried over: every decision listed in `decisions:` of the two example configs.
 
 ## Step 16, part 4 — US-UTE files swapped, US-UTM rebuilt (2026-10-19)
 
@@ -228,7 +325,7 @@ The rules are in the module docstring and D-065:
 - Whether to keep the declined designs declared, or to declare another design before any fitting.
 - Carried over: block length and support (D-048), equivalence margins (D-049).
 
-**Next:** step 17, plots, reports, configuration and CLI.
+**Next:** step 17 (done 2026-10-19, above).
 
 ## Step 15 — Water-balance checks and scenario uncertainty (2026-10-17)
 
