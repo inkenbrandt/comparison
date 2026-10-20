@@ -233,7 +233,8 @@ def test_caption_disagreeing_with_the_declaration_raises(demo):
     spec = cfg.comparison("syn_closure")
     check_meta(fr.meta, spec)
     with pytest.raises(CaptionMismatch, match="reference variant"):
-        check_meta(fr.meta, replace(spec, reference_variants=("et_corrected_measured",)))
+        check_meta(fr.meta, replace(spec, reference_variants=("et_corrected_measured",
+                                                              "et_corrected_inclusive")))
     with pytest.raises(CaptionMismatch, match="extraction side"):
         check_meta(fr.meta, replace(spec, sides=(ExtractionSide("source_region_mean",
                                                                 "synthetic_fp"),)))

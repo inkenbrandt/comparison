@@ -222,7 +222,7 @@ class Workflow:
                                "unit": unit.unit_id, "parts": parts})
 
     def execute(self, units: Sequence[Unit]) -> list[UnitRecord]:
-        """Run ``units`` in order; reuse valid outputs. A failing unit is recorded, then re-raised."""
+        """Run ``units`` in order, reusing valid outputs. A failure is recorded, then raised."""
         done = []
         for unit in units:
             done.append(self._execute(unit))
@@ -328,7 +328,7 @@ class Workflow:
 
         t = next(t for t in self.cfg.station_tables if t.site_id == site)
         return self._once(("station", site), lambda: adapt_station_daily(
-            t.path, t, self.cfg.stations[site]))  # type: ignore[arg-type]
+            t.path, t, self.cfg.stations[site]))
 
     def stations(self, sites: Sequence[str] | None = None) -> list[CanonicalTable]:
         have = [t.site_id for t in self.cfg.station_tables]
@@ -355,7 +355,7 @@ class Workflow:
         return self._once(("source", name), lambda: adapt_extracted_table(
             t.path, t, models=self.cfg.model_registry(),
             sites=SiteRegistry(self.cfg.site_aliases), products=self.cfg.products,
-            stations=self.cfg.stations).table)  # type: ignore[arg-type]
+            stations=self.cfg.stations).table)
 
     def source_ident(self, name: str) -> Any:
         if name in {x.name for x in self.cfg.raster_extractions}:
@@ -375,7 +375,7 @@ class Workflow:
             if n in raster and not self.extraction_path(n).is_file():
                 return ("input_missing", f"raster extraction {n} has no output "
                         f"{self.extraction_path(n).name}; run `etcompare extract` first")
-            if n in tables and not Path(tables[n].path or "").is_file():  # type: ignore[arg-type]
+            if n in tables and not Path(tables[n].path or "").is_file():
                 return ("input_missing", f"extracted table {tables[n].path} not found")
             if n not in raster and n not in tables:
                 raise ContractError(f"source {n!r} is not declared",
@@ -384,7 +384,7 @@ class Workflow:
 
     def stations_missing(self, sites: Sequence[str] | None = None) -> tuple[str, str] | None:
         for t in self.cfg.station_tables:
-            if (sites is None or t.site_id in sites) and not Path(t.path or "").is_file():  # type: ignore[arg-type]
+            if (sites is None or t.site_id in sites) and not Path(t.path or "").is_file():
                 return ("input_missing", f"station table {t.path} not found")
         return None
 
@@ -420,19 +420,19 @@ class Workflow:
 
         for t in self.cfg.station_tables:
             keep(self.station_result(t.site_id), f"station_table:{t.site_id}")
-        for t in self.cfg.extracted_tables:
+        for xt in self.cfg.extracted_tables:
             from etcompare.adapters.extracted import adapt_extracted_table
             from etcompare.registry import SiteRegistry
 
             r = adapt_extracted_table(
-                t.path, t, models=self.cfg.model_registry(),  # type: ignore[arg-type]
+                xt.path, xt, models=self.cfg.model_registry(),
                 sites=SiteRegistry(self.cfg.site_aliases), products=self.cfg.products,
                 stations=self.cfg.stations)
-            self._memo[("source", t.name)] = r.table
-            keep(r, f"extracted_table:{t.name}")
+            self._memo[("source", xt.name)] = r.table
+            keep(r, f"extracted_table:{xt.name}")
         notes = []
         for c in self.cfg.crop_height_tables:
-            if not Path(c.path or "").is_file():  # type: ignore[arg-type]
+            if not Path(c.path or "").is_file():
                 if c.on_missing == "error":
                     raise ContractError(f"crop-height table {c.path} not found (set "
                                         "on_missing: skip_growing_season to leave out only "
@@ -444,11 +444,11 @@ class Workflow:
                 continue
             from etcompare.adapters.crop_height import adapt_crop_height
 
-            keep(adapt_crop_height(c.path, c), f"crop_height:{c.name}")  # type: ignore[arg-type]
+            keep(adapt_crop_height(c.path, c), f"crop_height:{c.name}")
         for e in self.cfg.event_tables:
             from etcompare.adapters.event_log import adapt_event_table
 
-            keep(adapt_event_table(e.path, e, stations=self.cfg.stations),  # type: ignore[arg-type]
+            keep(adapt_event_table(e.path, e, stations=self.cfg.stations),
                  f"event_table:{e.name}")
         dirs = [(f"openet_rasters[{i}]", s.root) for i, s in enumerate(self.cfg.openet_rasters)]
         dirs += [(f"footprint_sets.{f.set_id}", f.root) for f in self.cfg.footprint_sets]
@@ -641,18 +641,19 @@ class Workflow:
         for set_id in st.compare_sets:
             man = self.footprint_discovery(set_id).manifest.frame
             man = man[man.period == "day"].set_index("date")
-            for m, r in results.items():
-                for p in r.periods:
-                    if not p.ok or p.date not in man.index:
+            for m, res in results.items():
+                for period in res.periods:
+                    if (not period.ok or period.grid is None or period.contribution is None
+                            or period.date not in man.index):
                         continue
-                    other, grid, nodata = read_footprint(man.loc[p.date, "path"])
+                    other, grid, nodata = read_footprint(man.loc[period.date, "path"])
                     if nodata is not None and not np.isnan(nodata):
                         other = np.where(other == nodata, 0.0, other)
-                    win = common_window(p.grid, grid)
+                    win = common_window(period.grid, grid)
                     if win is None:
                         raise EtcompareError(f"{set_id}: grid not aligned with the aggregate")
-                    rows.append({"date": p.date, "aggregate": m, "existing_set": set_id,
-                                 "tv_distance": tv_distance(p.contribution[win[0], win[1]],
+                    rows.append({"date": period.date, "aggregate": m, "existing_set": set_id,
+                                 "tv_distance": tv_distance(period.contribution[win[0], win[1]],
                                                             other[win[2], win[3]]),
                                  "existing_has_negative": bool((other < 0).any())})
         if rows:
@@ -805,7 +806,7 @@ class Workflow:
         spec = self.cfg.comparison(cid)
         return self._once(("cohort", cid), lambda: build_cohort(
             self.stations(self.comparison_sites(spec)), [self.source(s) for s in spec.sources],
-            spec, footprint_sets=self.cfg.footprint_sets))  # type: ignore[arg-type]
+            spec, footprint_sets=self.cfg.footprint_sets))
 
     def cohort_key(self, cid: str) -> Any:
         spec = self.cfg.comparison(cid)
@@ -818,7 +819,7 @@ class Workflow:
         if not (agg.growing_season_source and "growing_season" in agg.periods):
             return None
         crop = self.cfg.crop_height_table(agg.growing_season_source)
-        if Path(crop.path or "").is_file():  # type: ignore[arg-type]
+        if Path(crop.path or "").is_file():
             return None
         if crop.on_missing == "error":
             raise ContractError(f"crop-height table {crop.path} not found",
@@ -837,7 +838,7 @@ class Workflow:
             if agg.growing_season_source and "growing_season" in agg.periods:
                 crop = self.cfg.crop_height_table(agg.growing_season_source)
                 return agg.with_growing_seasons(growing_season_windows(
-                    adapt_crop_height(crop.path, crop)))  # type: ignore[arg-type]
+                    adapt_crop_height(crop.path, crop)))
             return agg
 
         return self._once(("agg", agg.aggregation_id), make)
@@ -919,7 +920,7 @@ class Workflow:
                 day_bs = replace(bs, period_block_lengths=())
                 for label, start, end in year_subsets(c):
                     sub = build_cohort(obs, ext, replace(spec, start=start, end=end),
-                                       footprint_sets=self.cfg.footprint_sets)  # type: ignore[arg-type]
+                                       footprint_sets=self.cfg.footprint_sets)
                     sres = score_comparison(sub, day_ms, products=self.cfg.products)
                     sboot = bootstrap_comparison(sub, day_ms, day_bs, products=self.cfg.products,
                                                  metric_results=sres)
@@ -995,10 +996,11 @@ class Workflow:
                                Path(f"{stem}_report.txt"))
                 return Outcome(details={"notes": [note]} if note else {})
 
+            def key_periods(agg: PeriodAggregationSpec = agg) -> Any:
+                return [self.cohort_key(cid), self.agg_key(agg), to_plain(self.cfg.products)]
+
             units.append(Unit("analyze", "periods", f"periods:{cid}__{agg.aggregation_id}",
-                              lambda agg=agg: [self.cohort_key(cid), self.agg_key(agg),
-                                               to_plain(self.cfg.products)],
-                              run_periods, requires=(cohort_id,)))
+                              key_periods, run_periods, requires=(cohort_id,)))
 
         for ms in self.metric_sets_for(cid):
             mid = ("analyze", f"metrics:{cid}__{ms.metric_set_id}")
@@ -1021,8 +1023,10 @@ class Workflow:
 
             req = (cohort_id, *[("analyze", f"periods:{cid}__{a.aggregation_id}")
                                 for a in self.aggregations_for(cid)])
-            units.append(Unit("analyze", "metrics", mid[1],
-                              lambda ms=ms: self.metric_key(cid, ms), run_metrics,
+            def key_metrics(ms: MetricSpec = ms) -> Any:
+                return self.metric_key(cid, ms)
+
+            units.append(Unit("analyze", "metrics", mid[1], key_metrics, run_metrics,
                               requires=req))
 
             for bs in self.bootstraps_for(cid, ms):
@@ -1043,9 +1047,11 @@ class Workflow:
                                                        "bootstrap_id": bs.bootstrap_id,
                                                        "seed": bs.seed}]})
 
-                units.append(Unit("analyze", "bootstrap", bid[1],
-                                  lambda ms=ms, bs=bs: [self.metric_key(cid, ms), to_plain(bs)],
-                                  run_boot, requires=(mid,)))
+                def key_boot(ms: MetricSpec = ms, bs: BootstrapSpec = bs) -> Any:
+                    return [self.metric_key(cid, ms), to_plain(bs)]
+
+                units.append(Unit("analyze", "bootstrap", bid[1], key_boot, run_boot,
+                                  requires=(mid,)))
 
                 for rs in self.rankings_for(cid, bs):
                     def run_rank(ms: MetricSpec = ms, bs: BootstrapSpec = bs,
@@ -1068,11 +1074,12 @@ class Workflow:
                                                            "bootstrap_id": bs.bootstrap_id,
                                                            "seed": bs.seed}]})
 
-                    units.append(Unit(
-                        "analyze", "rankings", f"rankings:{cid}__{rs.ranking_id}",
-                        lambda ms=ms, bs=bs, rs=rs: [self.metric_key(cid, ms), to_plain(bs),
-                                                     to_plain(rs)],
-                        run_rank, requires=(bid,)))
+                    def key_rank(ms: MetricSpec = ms, bs: BootstrapSpec = bs,
+                                 rs: RankingSpec = rs) -> Any:
+                        return [self.metric_key(cid, ms), to_plain(bs), to_plain(rs)]
+
+                    units.append(Unit("analyze", "rankings", f"rankings:{cid}__{rs.ranking_id}",
+                                      key_rank, run_rank, requires=(bid,)))
 
         for ds in self.cfg.diagnostics:
             if ds.comparisons is not None and cid not in ds.comparisons:
@@ -1105,13 +1112,14 @@ class Workflow:
                     Path(f"{stem}_report.txt"))
                 return Outcome()
 
-            units.append(Unit(
-                "analyze", "diagnostics", f"diagnostics:{cid}__{ds.diagnostics_id}",
-                lambda ds=ds, use_boot=use_boot: [
-                    self.cohort_key(cid), to_plain(ds),
-                    to_plain(self.cfg.metric_set(ds.metric_set)),
-                    to_plain(self.cfg.bootstrap_spec(use_boot)) if use_boot else None],
-                run_diag, requires=(cohort_id,)))
+            def key_diag(ds: Any = ds, use_boot: str | None = use_boot) -> Any:
+                return [self.cohort_key(cid), to_plain(ds),
+                        to_plain(self.cfg.metric_set(ds.metric_set)),
+                        to_plain(self.cfg.bootstrap_spec(use_boot)) if use_boot else None]
+
+            units.append(Unit("analyze", "diagnostics",
+                              f"diagnostics:{cid}__{ds.diagnostics_id}", key_diag, run_diag,
+                              requires=(cohort_id,)))
 
         for ss in self.cfg.satellite_support:
             if (ss.comparisons is not None and cid not in ss.comparisons) or (
@@ -1132,13 +1140,14 @@ class Workflow:
                     self.save(t, Path(f"{stem}_{name}.parquet"))
                 return Outcome()
 
-            units.append(Unit(
-                "analyze", "satellite_support",
-                f"satellite_support:{cid}__{ss.satellite_support_id}",
-                lambda ss=ss: [self.cohort_key(cid), to_plain(ss),
-                               to_plain(self.cfg.metric_set(ss.metric_set)),
-                               self.idents(self.declared_paths(ss))],
-                run_sat, requires=(cohort_id,)))
+            def key_sat(ss: Any = ss) -> Any:
+                return [self.cohort_key(cid), to_plain(ss),
+                        to_plain(self.cfg.metric_set(ss.metric_set)),
+                        self.idents(self.declared_paths(ss))]
+
+            units.append(Unit("analyze", "satellite_support",
+                              f"satellite_support:{cid}__{ss.satellite_support_id}", key_sat,
+                              run_sat, requires=(cohort_id,)))
         return units
 
     def _sensitivity_units(self) -> list[Unit]:
@@ -1177,12 +1186,14 @@ class Workflow:
                                             "_reference_rank_changes.parquet")
                 return Outcome()
 
-            units.append(Unit(
-                "analyze", "ranking_sensitivity", f"ranking_sensitivity:{rs.ranking_id}",
-                lambda files=files: [[self.ident(f, "sha256") for f in files],
-                                     [d.diagnostics_id for d in self.cfg.diagnostics],
-                                     "diagnostics" in self.cfg.run.skip],
-                run, requires=req, blocked=blocked))
+            def key(files: list[Path] = files) -> Any:
+                return [[self.ident(f, "sha256") for f in files],
+                        [d.diagnostics_id for d in self.cfg.diagnostics],
+                        "diagnostics" in self.cfg.run.skip]
+
+            units.append(Unit("analyze", "ranking_sensitivity",
+                              f"ranking_sensitivity:{rs.ranking_id}", key, run, requires=req,
+                              blocked=blocked))
         return units
 
     def _event_units(self) -> list[Unit]:
@@ -1195,13 +1206,20 @@ class Workflow:
                 self.save_csv(r.exclusions.to_frame(), out / f"{et.name}_event_exclusions.csv")
                 return Outcome(details={"exclusions": _counts(r.exclusions, et.name)})
 
-            units.append(Unit("analyze", "events", f"events:table_{et.name}",
-                              lambda et=et: self.event_table_key(et.name), run_table,
-                              blocked=lambda et=et: None if Path(et.path or "").is_file()
-                              else ("input_missing", f"event table {et.path} not found")))
-        for an_kind, specs, id_field in (("events", self.cfg.event_analyses,
-                                          "event_analysis_id"),
-                                         ("anomalies", self.cfg.anomalies, "anomaly_id")):
+            def key_table(et: Any = et) -> Any:
+                return self.event_table_key(et.name)
+
+            def blocked_table(et: Any = et) -> tuple[str, str] | None:
+                if Path(et.path or "").is_file():
+                    return None
+                return ("input_missing", f"event table {et.path} not found")
+
+            units.append(Unit("analyze", "events", f"events:table_{et.name}", key_table,
+                              run_table, blocked=blocked_table))
+        kinds: tuple[tuple[str, Sequence[Any], str], ...] = (
+            ("events", self.cfg.event_analyses, "event_analysis_id"),
+            ("anomalies", self.cfg.anomalies, "anomaly_id"))
+        for an_kind, specs, id_field in kinds:
             for s in specs:
                 for cid in (s.comparisons or ()):
                     sid = getattr(s, id_field)
@@ -1232,7 +1250,7 @@ class Workflow:
 
         et = self.cfg.event_table(name)
         return self._once(("events", name), lambda: adapt_event_table(
-            et.path, et, stations=self.cfg.stations))  # type: ignore[arg-type]
+            et.path, et, stations=self.cfg.stations))
 
     def event_table_key(self, name: str) -> Any:
         et = self.cfg.event_table(name)
@@ -1246,19 +1264,19 @@ class Workflow:
         if kind == "events":
             from etcompare.events import analyse_events
 
-            r = analyse_events(c, self.event_table(s.event_table).table, s,
-                               station_daily=self.stations(self.comparison_sites(spec)))
-            self.save(r.responses, Path(f"{stem}_responses.parquet"))
-            self.save_csv(r.overlaps.frame, Path(f"{stem}_overlaps.csv"))
-            self.save_csv(r.conditions.frame, Path(f"{stem}_conditions.csv"))
-            self.save_text(r.report.summary(), Path(f"{stem}_report.txt"))
+            ev = analyse_events(c, self.event_table(s.event_table).table, s,
+                                station_daily=self.stations(self.comparison_sites(spec)))
+            self.save(ev.responses, Path(f"{stem}_responses.parquet"))
+            self.save_csv(ev.overlaps.frame, Path(f"{stem}_overlaps.csv"))
+            self.save_csv(ev.conditions.frame, Path(f"{stem}_conditions.csv"))
+            self.save_text(ev.report.summary(), Path(f"{stem}_report.txt"))
         else:
             from etcompare.anomalies import compute_anomalies
 
-            r = compute_anomalies(c, s, self.cfg.metric_set(s.metric_set))
-            self.save(r.daily, Path(f"{stem}_anomaly_daily.parquet"))
-            self.save(r.metrics, Path(f"{stem}_anomaly_metrics.parquet"))
-            self.save_text(r.report.summary(), Path(f"{stem}_report.txt"))
+            an = compute_anomalies(c, s, self.cfg.metric_set(s.metric_set))
+            self.save(an.daily, Path(f"{stem}_anomaly_daily.parquet"))
+            self.save(an.metrics, Path(f"{stem}_anomaly_metrics.parquet"))
+            self.save_text(an.report.summary(), Path(f"{stem}_report.txt"))
         return Outcome()
 
     def _water_balance_units(self) -> list[Unit]:
@@ -1276,9 +1294,11 @@ class Workflow:
             def run(wb: Any = wb, scen: list[Any] = scen) -> Outcome:
                 return self._run_water_balance(wb, scen)
 
+            def blocked(wb: Any = wb) -> tuple[str, str] | None:
+                return self.stations_missing([wb.site_id])
+
             units.append(Unit("analyze", "water_balance", f"water_balance:{wb.water_balance_id}",
-                              key, run,
-                              blocked=lambda wb=wb: self.stations_missing([wb.site_id])))
+                              key, run, blocked=blocked))
         return units
 
     def _run_water_balance(self, wb: Any, scen: list[Any]) -> Outcome:
@@ -1291,8 +1311,8 @@ class Workflow:
         if "growing_season" in periods:
             agg = self.resolved_aggregation(agg)
         station = self.stations([wb.site_id])
-        kw = {"period_aggregation": agg, "station": self.cfg.stations[wb.site_id]}
-        r = compute_water_balance(wb, station, **kw)
+        st = self.cfg.stations[wb.site_id]
+        r = compute_water_balance(wb, station, period_aggregation=agg, station=st)
         stem = wb.water_balance_id
         self.save(r.terms, out / f"{stem}_terms.parquet")
         self.save(r.residuals, out / f"{stem}_residuals.parquet")
@@ -1305,7 +1325,7 @@ class Workflow:
                 f"unknown terms: {main['unknown_terms'].value_counts(dropna=False).to_dict()}"]
         seeds = []
         for sc in scen:
-            s = run_scenario(sc, wb, station, **kw)
+            s = run_scenario(sc, wb, station, period_aggregation=agg, station=st)
             self.save(s.results, out / f"{stem}__{sc.scenario_id}_scenarios.parquet")
             text += ["", f"scenario {sc.scenario_id} ({sc.category}):", s.report.summary()]
             if getattr(sc, "seed", None) is not None:
@@ -1335,10 +1355,11 @@ class Workflow:
             def run(spec: Any = spec, sites: list[str] = sites) -> Outcome:
                 return self._run_ensemble(spec, sites)
 
-            units.append(Unit(
-                "analyze", "ensembles", f"ensembles:{spec.ensemble_id}", key, run,
-                blocked=lambda spec=spec, sites=sites: self.sources_missing(spec.sources)
-                or self.stations_missing(sites)))
+            def blocked(spec: Any = spec, sites: list[str] = sites) -> tuple[str, str] | None:
+                return self.sources_missing(spec.sources) or self.stations_missing(sites)
+
+            units.append(Unit("analyze", "ensembles", f"ensembles:{spec.ensemble_id}", key, run,
+                              blocked=blocked))
         return units
 
     def _run_ensemble(self, spec: Any, sites: list[str]) -> Outcome:
@@ -1477,7 +1498,9 @@ def landscape(cfg: Config, spec: RepresentativenessSpec) -> tuple[Any, list[str]
     )
     from etcompare.spatial import same_crs, transform_coords
 
-    def tower(lon: float, lat: float, crs: str) -> tuple[float, float]:
+    def tower(lon: float, lat: float, crs: str | None) -> tuple[float, float]:
+        if crs is None:
+            raise ContractError("a grid without a CRS cannot place the tower")
         x, y = transform_coords(np.array([lon]), np.array([lat]), "EPSG:4326", crs)
         return float(x[0]), float(y[0])
 
@@ -1538,6 +1561,8 @@ def landscape(cfg: Config, spec: RepresentativenessSpec) -> tuple[Any, list[str]
     supports = []
     if {"pixel_window", "nearest_tower_pixel"} & set(spec.methods):
         try:
+            if spec.reference_grid_raster is None:
+                raise OSError("reference_grid_raster not declared")
             ref = read_header(spec.reference_grid_raster).grid
         except OSError as exc:
             for m in spec.method_ids():
