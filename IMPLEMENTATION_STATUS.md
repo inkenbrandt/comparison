@@ -22,6 +22,30 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 16 — Held-out ensemble experiments | **Done** 2026-10-18 (station level; post-extraction ensembles; US-UTJ choices made by the user; **the US-UTJ fitted ensemble is declined**: one calendar-year fold, one station) |
 | 17–18 | Not started |
 
+## Step 16, part 4 — US-UTE files swapped, US-UTM rebuilt (2026-10-19)
+
+**User decisions (D-073):** swap the wrong-region US-UTE files; rebuild US-UTM, which the UGS parameter table lacks, using production's constant heights.
+
+### Delivered
+- **J: US-UTE swap:** 171 wrong-region files moved to `J:/FLUX/wrong_region_quarantine/US-UTE/` and their C: US-UTE counterparts copied in, checked by SHA-256. Two 2023 wrong-region files without a counterpart were quarantined. The log is `US-UTE_swap_log.csv` there.
+- **US-UTM:** stack and NLDAS aggregation with zm 3.45 m and z0 0.121 m held constant (`US-UTM_nldas_eto_20261019`; extraction `utm_nldas_clip`). The production set stays declared.
+
+### Checks
+- `tests/integration/test_utah_ensemble.py` (8): 1,839 days; no US-UTE `no_overlap`; the US-UTM rebuild within 0.03 mm d⁻¹ of production.
+- **Full suite:** see the run line of this entry's update (below).
+
+### Results (D-073)
+- **1,839 eligible station-days** (US-UTE 218).
+- **Leave-one-year-out:** declined.
+- **Leave-one-site-out:** 6 of 7 folds fitted.
+  - Fitted RMSE is below the mean at 5 of 6 stations (equal-station mean −0.166 mm d⁻¹; April–October −0.218) and below the official ensemble at 6 of 6 (−0.226).
+  - **Supported at 14-day blocks:** US-UTE and US-UTV.
+- **US-UTM:** the rebuild changes its extracted ET by at most 0.026 mm d⁻¹, and no result changes.
+
+### Open
+- US-UTM's heights are constant; a crop-height model for it would make it match the other stations.
+- Carried over: block length (D-048), equivalence margins (D-049), a network interval, and the corn station (below the 180-day minimum).
+
 ## Step 16, part 3 — J: rasters, minimum held-out size, extraction fix (2026-10-19)
 
 **User decisions (D-072):** use `J:/FLUX` (de-duplicated rasters), `min_test_days_per_fold: 180`, keep the default ffp_xr height filter for US-UTG, and rebuild US-UTM (blocked: the UGS database timed out twice).
@@ -36,6 +60,7 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 - `tests/test_ensemble.py` (+2: the declined fold and its reason; the mandatory field).
 - `tests/integration/test_utah_ensemble.py` (7): the new counts and statuses, and the wrong-region `no_overlap` rows (geesebal and ptjpl only).
 - J: extractions equal the C: ones at six stations (zero difference).
+- **Full suite:** 774 passed, 3 skipped. ruff and mypy are clean. Oldest stack: 384 passed.
 
 ### Results (D-072)
 - **1,801 eligible station-days.** Leave-one-year-out is declined.

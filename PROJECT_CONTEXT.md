@@ -278,7 +278,10 @@ Do not claim the source raster paths are accessible until checked in the user's 
       - Leave-one-year-out is declined.
       - Leave-one-site-out: 6 of 7 folds fitted (US-UTG declined at 41 days). RMSE is lower than the mean at 5 of 6 stations (equal-station mean −0.168 mm d⁻¹).
       - US-UTG keeps the default ffp_xr roughness-sublayer filter (zm > 27.5·z0), which explains its missing footprints.
-    - **Open:** 171 US-UTE files on J: are of another region; US-UTM's rebuild waits for database access.
+    - **Update (D-073):** the wrong-region US-UTE files were swapped on J: (quarantined, with a log), and US-UTM was rebuilt with production's constant heights (the UGS parameter table has no US-UTM rows).
+      - 1,839 eligible days.
+      - Leave-one-site-out: fitted RMSE below the mean at 5 of 6 stations (equal-station mean −0.166 mm d⁻¹), supported at 14-day blocks at US-UTE and US-UTV.
+    - **Open:** constant heights at US-UTM, the corn station below the minimum, and no network interval.
 - **Water balance (step 15):** `etcompare.water_balance.compute_water_balance` (D-062) checks `residual = P + I + CR − ET − RO − DP − ΔS` over a declared boundary and the step-8 periods.
   - Every term is declared. An unknown term is never zero and makes the residual unknown, with every unknown term listed.
   - Scenario residuals are separate rows. Support mismatches are flagged, never equated.
