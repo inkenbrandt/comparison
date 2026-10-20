@@ -80,6 +80,7 @@ def configure_logging(level: int | str = logging.INFO, *, json_lines: bool = Tru
             handler.close()
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter() if json_lines else KeyValueFormatter())
+    handler.setLevel(level)  # the run log file may lower the logger's own level
     handler._etcompare_owned = True  # type: ignore[attr-defined]
     logger.addHandler(handler)
     logger.setLevel(level)

@@ -68,3 +68,18 @@ class GridError(EtcompareError, ValueError):
 
 class OptionalDependencyError(EtcompareError, ImportError):
     """An optional dependency needed for this operation is not installed."""
+
+
+class InputMissingError(EtcompareError, FileNotFoundError):
+    """A file that was indexed no longer exists (never retried)."""
+
+
+class SystematicFailureError(DataValidationError):
+    """Too many inputs failed for skipping to be safe (e.g. every raster of a model).
+
+    ``details`` holds the counts recorded in the run manifest.
+    """
+
+    def __init__(self, message: str, details: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or {}

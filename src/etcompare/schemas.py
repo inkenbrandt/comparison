@@ -2271,3 +2271,42 @@ class CanonicalTable:
 
     def __len__(self) -> int:
         return len(self.frame)
+
+
+def data_dictionary() -> str:
+    """Markdown data dictionary of every canonical table (``docs/data_dictionary.md``).
+
+    Generated from :data:`SCHEMAS`, so the documentation cannot drift from the schemas;
+    ``tools/make_data_dictionary.py`` writes it and a test checks it is current.
+    """
+
+    def cell(text: object) -> str:
+        return str(text).replace("|", r"\|").replace("\n", " ")
+
+    out = ["# Data dictionary", "",
+           "Every table etcompare writes, generated from `etcompare.schemas` "
+           "(`python tools/make_data_dictionary.py`). Parquet files carry the schema name and "
+           "version, the column units and the date semantics in their `etcompare` metadata. "
+           "Dates are station-day labels (Arrow `date32`), never instants (D-019).", "",
+           "Column kinds: `string`, `float` (float64), `int` (nullable Int64), `bool` "
+           "(nullable boolean), `date` (station-day label), `timestamp`. *Key* columns form "
+           "the primary key and are never null.", ""]
+    out += ["| Table | Version | Description |", "|---|---|---|"]
+    out += [f"| [`{s.name}`](#{s.name}) | {s.version} | {cell(s.description)} |"
+            for s in SCHEMAS.values()]
+    for s in SCHEMAS.values():
+        out += ["", f"## {s.name}", "", f"Version {s.version}. {s.description}", ""]
+        if s.primary_key:
+            out += [f"Primary key: {', '.join(f'`{k}`' for k in s.primary_key)}.", ""]
+        if s.allow_extra_columns:
+            out += ["Extra columns are allowed and kept.", ""]
+        out += ["| Column | Kind | Unit | Null | Description |", "|---|---|---|---|---|"]
+        for c in s.columns:
+            null = "key" if c.name in s.primary_key else ("yes" if c.nullable else "no")
+            desc = cell(c.description)
+            if c.allowed:
+                desc += "; one of " + ", ".join(f"`{a}`" for a in c.allowed)
+            if not c.required:
+                desc += " (optional column)"
+            out.append(f"| `{c.name}` | {c.kind} | {cell(c.unit or '')} | {null} | {desc} |")
+    return "\n".join(out) + "\n"

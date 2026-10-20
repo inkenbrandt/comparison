@@ -1,0 +1,4 @@
+# Documentation build only (Read the Docs and CI); library users do not need these.
+sphinx>=7.2
+myst-parser>=2.0
+sphinx-rtd-theme>=2.0

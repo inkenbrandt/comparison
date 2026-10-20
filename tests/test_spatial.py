@@ -191,7 +191,7 @@ def test_rotated_source_grid_conserves():
 def test_cross_crs_against_point_sampling():
     pytest.importorskip("shapely")
     pyproj = pytest.importorskip("pyproj")
-    src = grid(629255.97, 4127759.12, 10, 12, 12)  # 10 m UTM 12N, near US-UTJ
+    src = grid(629255.97, 4127759.12, 10, 12, 12)  # 10 m UTM 12N, near XX-UTJ
     tr = pyproj.Transformer.from_crs(UTM, "EPSG:4326", always_xy=True)
     lon0, lat0 = tr.transform(629255.97 - 60, 4127759.12 + 60)
     step = 0.000269494585

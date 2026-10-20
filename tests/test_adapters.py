@@ -120,7 +120,7 @@ def extracted_frame():
     for model in ("ssebop", "sims"):
         for d in pd.date_range("2025-01-03", periods=3):
             ymd = d.strftime("%Y_%m_%d")
-            fname = f"US-CdM_US-XXX_{model}_et_{ymd}_abc12.tif"
+            fname = f"XX-CdM_US-XXX_{model}_et_{ymd}_abc12.tif"
             rows.append({
                 "station_id": "US-XXX", "model": model,
                 "footprint_file": f"ffp_US-XXX_daily_etw_{d:%Y%m%d}",

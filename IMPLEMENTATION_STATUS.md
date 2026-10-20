@@ -20,7 +20,218 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 14 — Anomalies and management events | **Done** 2026-10-17 (station level; defaults Provisional, chosen by the assistant at the user's request; uncontrolled before/after only; no held-out anomaly skill possible for US-UTJ) |
 | 15 — Water-balance checks and scenario uncertainty | **Done** 2026-10-17 (station level; US-UTJ declaration Provisional; **the US-UTJ residual is unknown**: five terms have no input; no scenario declared) |
 | 16 — Held-out ensemble experiments | **Done** 2026-10-18 (station level; post-extraction ensembles; US-UTJ choices made by the user; **the US-UTJ fitted ensemble is declined**: one calendar-year fold, one station) |
-| 17–18 | Not started |
+| 17 — Plots, reports, configuration and CLI | **Done** 2026-10-19 (workflow units with exact cache invalidation, run manifests, reports from saved tables, synthetic demo; US-UTJ and the seven Utah stations rerun through the CLI) |
+| 18 — Resilient processing and first release | **Done** 2026-10-20 (version 0.1.0, MIT, unpublished; retries, keep-awake, stall detection, checkpoints, systematic-failure rule, atomic outputs; full raster demo; Sphinx docs, notebooks, CI; US-UTJ and Utah tables bit-identical) |
+
+## Step 18 — Resilient processing and a usable first release (2026-10-20)
+
+**User decisions (2026-10-20; D-079, D-080):**
+- No concurrency.
+- Keep-awake on.
+- Retries as proposed.
+- No staging; the user works from a local drive.
+- Monthly checkpoints.
+- Strict off, with a 1 % systematic threshold.
+- An open licence: MIT, chosen by the assistant.
+- Version 0.1.0; the name stays `etcompare`; Keep a Changelog.
+- Plain Markdown docs, plus Sphinx for Read the Docs.
+- GitHub Actions.
+- A pinned demo requirements file.
+- Three committed notebooks, outputs stripped.
+- The full raster demo extends the tables demo.
+- Verification on US-UTJ and the seven Utah stations.
+
+**Run it**
+```bash
+python -m etcompare demo demo --rasters && python -m etcompare run demo/config.yaml   # ~4.5 min offline
+uv run --no-sync python -m pytest            # 867 passed, 3 skipped (opt-in Drive tests), ~16 min
+uv run --no-sync ruff check src tests tools/run_*.py tools/make_data_dictionary.py && uv run --no-sync mypy
+uv run --no-sync python -m sphinx -b html -W --keep-going docs docs/_build/html
+python tools/make_data_dictionary.py         # regenerate docs/data_dictionary.md
+```
+
+### Survey (before building; D-079)
+- **Raster path.** One open per raster, bounded windows, no dense stacks. Memory grows only with output rows and the index.
+- **Failure modes found:**
+  - a non-strict extraction with every raster unreadable completed with zero rows;
+  - an unreadable raster left no row in the extraction table;
+  - CSV, text and figure writes were not atomic;
+  - an interrupted extraction kept no progress;
+  - nothing detected a stall.
+- **Benchmark** (serial, instrumented):
+  - J: clipped US-UTJ: 22 s, 86 % I/O (file opens about 5 ms each), peak +24 MB working set.
+  - M: unclipped US-UTJ, 4 methods: 88–94 s, 95 % I/O (opens about 23 ms each).
+- **The 9-hour pause (D-078) was idle sleep.** The Windows System log shows Kernel-Power 42, *System Idle*, one second after the last progress record; the AC sleep timeout is 900 s.
+
+### API
+- **`etcompare.config.ProcessingSpec`** (`processing:`): `keep_awake`, `io_attempts`, `io_backoff_s`, `stall_warning_s`, `stall_timeout_s`, `checkpoint`, `max_unreadable_fraction`.
+- **`etcompare.resilience`:** `RetryPolicy`, `call_with_retries`, `keep_awake`, `StallWatchdog` (with `beat`/`rest`), `StallTimeoutError`, `Checkpoint`.
+- **`etcompare.io.atomic`:** `atomic_path`, `write_text_atomic`, `write_csv_atomic`, `write_json_atomic`.
+- **`etcompare.errors`:** `InputMissingError` (a `FileNotFoundError`), `SystematicFailureError` (a `DataValidationError`).
+- **`extract_rasters(..., retry=, max_unreadable_fraction=, checkpoint=)`**: new codes `raster_missing` and `footprint_file_missing`; unreadable model-days keep null rows.
+- **`etcompare.demo.write_demo(..., rasters=True)`** and **`etcompare demo DIR [--rasters] [--seed]`**.
+- **`etcompare.schemas.data_dictionary()`** and **`etcompare.reporting.skipped_file_rows`**.
+
+### Delivered
+- **Resilience.** Retries logged as `io_retry`/`io_failed`.
+  - Keep-awake.
+  - Stall and suspend detection, armed only while rasters are read.
+  - Monthly checkpoints under `.etcompare/checkpoints/<unit>/<key>/`, with a SHA-256-sealed record; pruned when the key changes, cleared after success.
+  - The systematic-failure rule: exit 2, manifest `failed`, exclusions written, the table not written.
+  - Atomic writes everywhere.
+  - The manifest is written as `running` at the start.
+- **Release files.**
+  - `LICENSE` (MIT), `CHANGELOG.md`, version 0.1.0.
+  - `pyproject` metadata and a `docs` dependency group.
+  - Sphinx docs: index, getting started, configuration, method guide, limitations, one API page per module, generated data dictionary, references, decisions, input contract, changelog.
+  - `.readthedocs.yaml`, `.github/workflows/ci.yml`, `examples/demo/requirements-demo.txt`, `notebooks/01–03`.
+- **Configuration.**
+  - Both example configs declare `processing:` (Provisional, D-079 in `decisions:`).
+  - `examples/us_utj.yaml` reads the `unclipped/` Drive folder (D-054 resolved), so its four extractions now run.
+- **Fixes.**
+  - Invalid YAML gives exit code 2.
+  - `--log-level` filters stderr.
+  - `write_footprint` removes its `.part` file on a failed write.
+
+### Checks
+- **`tests/test_resilience.py`** (18):
+  - atomic writes keep the old file and leave no temp file, and match the plain writers byte for byte;
+  - retries are finite and logged, and are never applied to contract errors or vanished files;
+  - the processing section is validated;
+  - keep-awake;
+  - stall warning, suspend detection, stall timeout, and disarming after extraction;
+  - checkpoint key and integrity;
+  - a corrupt raster is skipped, counted and kept null;
+  - a missing raster gets its own code;
+  - every raster of one model, every footprint, or the fraction above the threshold is systematic;
+  - an interrupted extraction resumes to an identical frame, attributes and report, without rereading checkpointed months.
+- **`tests/test_release.py`** (9), the final gate on the raster demo:
+  - offline end-to-end run; every unit completed or not declared; a rerun reuses everything;
+  - paired rows and exclusions inspectable;
+  - MAE, RMSE and MBE reproduced from the paired rows for every model, site and comparison (over 300 rows);
+  - a corrupt raster is skipped, counted in the manifest, retried in the log, and listed as `files_skipped` in the report;
+  - a systematic failure gives exit 2, a failed manifest and no table;
+  - an interrupted CLI extraction resumes to identical outputs;
+  - the tables demo is unchanged; invalid YAML exits 2; the data dictionary is current; the limitations list the gaps.
+- **`tests/test_notebooks.py`** (7): outputs stripped, no private paths, the Drive mount only as a commented cell, every code cell runs.
+- **Full suite:** 867 passed, 3 skipped (16 min). ruff and mypy are clean, and Sphinx builds with `-W`.
+- **Not run locally:** Application Control blocks DLLs freshly unpacked outside the project venv (pyarrow 14, matplotlib `_path`). So the lowest-direct stack on Python 3.11 and the pinned demo environment could not be run here. Both are CI jobs.
+
+### Real-file verification (local, git-ignored; D-014)
+The pre-change baselines were run from a worktree at the step-17 commit. The final code (0.1.0.dev0, before the version bump) was run with `--force`. Every Parquet table was compared: frames, dtypes and the full `etcompare` metadata, attributes included.
+
+| Configuration | Units | Wall time | Extractions (s) | Tables compared | Differences |
+|---|---|---|---|---|---|
+| `examples/us_utj.yaml` (M: unclipped Drive, footprints on M:) | 82 completed, 1 skipped (`run_skip`) | 11 min 32 s | set B `etw` 83, set B `mean` 81, NLDAS 73, measured LE 70 | 197 | **0** |
+| `examples/utah_stations.yaml` (J:) | 20 completed, 18 skipped (`run_skip`, `not_declared`) | 10 min 23 s | UTD 71, UTE 24, UTG 14, UTJ 25, UTM production 88, UTM NLDAS 86, UTV 35, UTW 140 | 58 | **0** |
+
+- **Run health.** Neither run had a read failure: no `io_retry`, `io_failed`, `io_stall` or `system_suspended` event, and no unreadable or missing file in any exclusions file.
+- **Keep-awake** was held in both runs. 64 and 220 monthly checkpoints were written and all were cleared afterwards.
+- **US-UTJ** extracts again for the first time since D-054. Its extracted values equal the stored tables except `source_path` (D-079 benchmark).
+- **Comparison series.** An intermediate comparison after the raster-path changes was also identical (US-UTJ 197 tables, Utah 58).
+
+### Open
+- **Publishing needs authorization:** PyPI, a Read the Docs project, pushing the branch (which runs CI).
+- **Licence holder:** Paul Inkenbrandt (user, 2026-10-20).
+- **Distribution trimmed for privacy (D-080):** allow-listed sdist, published docs without the decision log and input contract, synthetic IDs in unit tests. One station ID remains in a diagnostics reason string that is written into output tables.
+- **Local environment:** Windows Code Integrity now blocks pyarrow in the venv (since about 10:15 on 2026-10-20). The final trimming was verified without Parquet tests; CI must pass before any upload.
+- **Carried over:** every decision in `decisions:` of the example configs, and the gaps in `docs/limitations.md`.
+
+## Step 17 — Plots, reports, configuration and CLI (2026-10-19)
+
+**User decisions (2026-10-19; D-074 to D-077):** the assistant's recommendations were accepted:
+- `argparse` with the console script `etcompare`;
+- analyses run when declared, with `run.skip`;
+- Markdown plus self-contained HTML, and PNG plus SVG figures;
+- a per-unit cache with a `stat` raster identity (SHA-256 opt-in);
+- versioned run manifests;
+- local real-station reports;
+- a minimal synthetic demo now;
+- cumulative gaps as a break, a shaded span and a count;
+- a `decisions:` section;
+- verdicts carried verbatim.
+
+**Run it**
+```bash
+python -m etcompare run examples/us_utj.yaml            # or: etcompare run ...
+python -m etcompare report examples/us_utj.yaml         # report only (reuses everything)
+python -c "from etcompare.demo import write_demo; write_demo('demo')"
+python -m etcompare run demo/config.yaml                # synthetic, offline
+uv run python -m pytest                                 # 834 passed, 3 skipped (opt-in Drive raster tests)
+uv run ruff check src tests tools/run_*.py && uv run mypy   # clean
+```
+
+### API
+- **`etcompare.cli`:** `validate`, `index`, `extract`, `analyze`, `report`, `run`, plus `--force`, `--log-format` and `--log-level`. Exit codes: 0, 2 (configuration or data error), 1.
+- **`etcompare.runner.run_stages(cfg, stages, command=, force=, select=)`** returns `(RunManifest, records)`. `tool_main` serves the `tools/run_*.py` wrappers.
+- **`etcompare.workflow.Workflow`:**
+  - planning: `plan(stage)` returns `Unit`s;
+  - running: `execute`, `status_of` (completed, stale, not_run, ...), `validate()` and `undeclared()`;
+  - helpers: `landscape`, plus the text summaries moved from the tools.
+- **`etcompare.runrecord`:** `RunManifest` (JSON, version 1, round trip), `UnitRecord`, `Cache`, `status_table`.
+- **`etcompare.provenance`:** `file_identity` (`sha256` or `stat`), `canonical_hash`, `code_identity(exclude=)`, `git_state`, `detect_upstream`.
+- **`etcompare.plots`** (`plot` extra): `scorecard`, `scatter_1to1`, `cumulative`, `contrast_intervals`, `conditional_errors`, `coverage`, `ranking_stability`, `ensemble_folds`, `ensemble_improvement`, `ensemble_disagreement`; `caption_meta`, `check_meta`, `save_figure`; `NothingToDraw` and `CaptionMismatch`.
+- **`etcompare.reporting`:** `build_report`, `report_unit`, `check_language`, `table_status_rows`, `derived_decisions`.
+- **`etcompare.demo.write_demo`.**
+- **New schemas:** `analysis_status` v1 and `skipped_analyses` v1.
+- **New configuration:**
+  - sections `run`, `report`, `cache`, `upstream`, `decisions`, `footprint_stacks` and `footprint_comparisons`;
+  - fields `raster_extractions[].strict` and `crop_height_tables[].on_missing`.
+
+### Delivered
+- **Tool logic moved into the library.** The eight `tools/run_*.py` scripts are thin wrappers over the workflow units and write the same files, now cached and with a manifest. The former flags are configuration fields (D-074).
+- **Cache.** One stamp per unit. The key covers the code (without the presentation modules), the configuration entries read and the input identities (upstream outputs by content; rasters by size + mtime unless `sha256`). Invalidation is exact, and the workflow tests check this for station tables, configuration entries, masks, rasters, raster windows and modified outputs.
+- **Run manifest** per invocation, versioned, never overwritten, plus `analysis_status` and `log.jsonl` (D-075).
+- **Reports and figures from saved tables only** (D-076):
+  - every guide figure, plus the ensemble figures;
+  - captions read from the rows and checked against the declaration;
+  - a `not_available` entry instead of an empty figure;
+  - the skipped-analyses table, open decisions and guarded wording;
+  - synthetic labels on every page and caption.
+- **Example configs:**
+  - `footprint_stacks`, plus `footprint_comparisons` for the two step-6 comparisons (D-035, D-038);
+  - `run.skip: [footprint_aggregation]`, so the verified footprints are never rewritten;
+  - declared upstream versions;
+  - every open or provisional decision with its D-number.
+- **Synthetic demo** (D-077).
+
+### Checks
+- **`tests/test_workflow.py`** (15): exact invalidation (station, configuration entry, mask, raster in and outside the window, SHA-256 identity, modified output); reuse; `--force`; `run.skip` and dependency skips; missing input gives `not_available`; undeclared analyses; a failed unit recorded then raised; the crop-height policy; validation outputs.
+- **`tests/test_runrecord.py`** (13): manifest round trip, versioning and refusal of unknown keys; identities; canonical hash; code identity; git outside a checkout; stamps; the CLI help, exit code 2 on configuration errors, and the manifest and JSON log of `validate`.
+- **`tests/test_reporting.py`** (18):
+  - the synthetic end-to-end gate: every status recorded; a rerun reuses everything, the report included; seeds, exclusions and versions in the manifest; synthetic labels on every page and caption; no real station ID; report sample counts equal the tables'; the skipped-analyses table; open decisions;
+  - figures: drawn rows equal input rows; captions; no cumulative line spans a gap; statuses in place of intervals; sparse bins marked; caption mismatches raise; folds labelled held out, exploratory or declined; disagreement is not an interval;
+  - guarded words.
+- **`tests/test_config_workflow.py`** (11): the new sections and their refusals, and the example configs.
+- **`test_water_balance`:** the isolation test now lists the orchestration and presentation modules and checks that every selecting module still never names the water balance.
+- **Regression:** the pre-step-17 runners and the workflow produce identical US-UTJ tables (177 Parquet files, frames and attributes).
+- **Full suite:** 834 passed, 3 skipped (6 min 16 s). ruff (src, tests, tools/run_*.py) and mypy are clean.
+
+### Real stations (local, git-ignored; D-078)
+See D-078.
+**US-UTJ** (`python -m etcompare run examples/us_utj.yaml`, 5 min 42 s; 77 units completed):
+- **Index and all four raster extractions are `not_available`** (`input_missing`): `openet_rasters.root` is stale (D-054). The analyses read the existing extraction outputs by content.
+- **Footprint aggregation is `skipped`** (`run_skip`), as declared.
+- **Both footprint-set comparisons, now declared in `footprint_comparisons`, reproduce D-035 and D-038:**
+  - set B `mean` − `etw`: −0.046 to −0.001 mm d⁻¹, maximum 0.48;
+  - measured LE − NLDAS: +0.002 to +0.015, maximum 1.12.
+- **Report:** 151 figures, HTML 12 MB.
+  - The open decisions list the 11 declared entries plus the ones read from the tables: no block length adopted (7, 14 and 28 days), 20,034 contrast rows `not_assessed`, contrasts exploratory, `single_site` summaries, leave-one-site-out `not_available` and leave-one-year-out `declined`, five unknown water-balance terms.
+  - Two figures are `not_available` with their reason: retained-fraction bins on the 3×3-window side (`empty_bin`), and no held-out ensemble contrast (nothing fitted).
+
+**Seven Utah stations** (`python -m etcompare run examples/utah_stations.yaml`; this checkout had no Utah outputs):
+- **Index:** J: was indexed in 18 s.
+- **Extractions:** all eight completed. Seven took 17–138 s each. `utm_nldas_clip` took 32,382 s of wall time, but 32,305 s of it is a single pause between two consecutive progress records. **The machine was asleep** (established 2026-10-20 from the Windows System log): the last progress record (US-UTM day 950) is at 21:11:24.7 MDT; Kernel-Power event 42 "The system is entering sleep", reason *System Idle*, follows at 21:11:25.1; the system resumed at 06:09:40 (wake source: the USB host controller), and the next record came 10 s later. The AC idle-sleep timeout is 900 s and nothing kept the system awake during a run. J: is a USB SSD (Samsung T7, exFAT), so no spin-down is involved; no disk event was logged and no read failed (the exclusions hold only `footprint_missing` and `no_valid_cells`). Whether the USB drive was briefly disconnected during sleep cannot be established. Step 18 adds `run.keep_awake`.
+- **The ensemble reproduces D-073:**
+  - 1,839 eligible station-days (1,264 in April–October);
+  - leave-one-site-out held out on 6 of 7 folds (1,798 days compared);
+  - leave-one-year-out declined;
+  - `tests/integration/test_utah_ensemble.py` (8) passes on these outputs.
+- **Report:** ensemble section only (no comparisons are declared in that configuration).
+
+### Open
+- Step 18: concurrency, retries, staging, resumable extraction, the release artifacts and a full raster demo.
+- Carried over: every decision listed in `decisions:` of the two example configs.
 
 ## Step 16, part 4 — US-UTE files swapped, US-UTM rebuilt (2026-10-19)
 
@@ -228,7 +439,7 @@ The rules are in the module docstring and D-065:
 - Whether to keep the declined designs declared, or to declare another design before any fitting.
 - Carried over: block length and support (D-048), equivalence margins (D-049).
 
-**Next:** step 17, plots, reports, configuration and CLI.
+**Next:** step 17 (done 2026-10-19, above).
 
 ## Step 15 — Water-balance checks and scenario uncertainty (2026-10-17)
 

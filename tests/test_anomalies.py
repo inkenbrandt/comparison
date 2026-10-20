@@ -114,7 +114,7 @@ def test_metrics_match_compute_metrics():
 
 
 def test_too_few_years_is_insufficient_not_fitted():
-    days = pd.date_range("2024-06-05", "2025-10-09")       # two calendar years, like US-UTJ
+    days = pd.date_range("2024-06-05", "2025-10-09")       # two calendar years, like XX-UTJ
     obs = seasonal(days)
     r = compute_anomalies(cohort(obs, obs, days=days), clim_spec(), METRICS)
     assert set(r.metrics.frame.status) == {"insufficient_training_years"}

@@ -1,13 +1,17 @@
-# Private user data stays local (decisions.md D-014)
-/US-UTJ_daily.csv
-/US-UTJ_20240101_20251230.csv
+# Private user data stays local (decisions.md D-014): data files in the repository root,
+# raster and table formats anywhere, and local input folders.
+/*.csv
+/*.gpkg
+/*.ini
+/*.vrt
 *.parquet
 *.ipynb
 *.tif
 *.tiff
 *.tif.aux.xml
 *.tif.ovr
-station_oet_US-UTJ.parquet
+/NLCD/*
+/2024_30m_cdls/*
 
 # Python / tooling
 __pycache__/
@@ -23,6 +27,9 @@ uv.lock
 
 # Run outputs
 outputs/
-/NLCD/*
-/2024_30m_cdls/*
-eddy_events_202610171141.csv
+
+# Notebooks are committed with outputs stripped (tests/test_notebooks.py checks)
+!notebooks/*.ipynb
+
+# Documentation build
+docs/_build/

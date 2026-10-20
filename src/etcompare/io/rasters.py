@@ -109,7 +109,7 @@ def write_footprint(path: str | os.PathLike[str], values: np.ndarray, grid: Grid
 
     float64 keeps the weights exactly; zero cells are zero contribution. The file
     is read back and must be bit-identical to ``values``; otherwise it is removed
-    and :class:`OSError` is raised. (A US-UTJ run in a OneDrive-synced folder left
+    and :class:`OSError` is raised. (A real-station run in a OneDrive-synced folder left
     three footprints with garbage values although the arrays were correct.)
     """
     rasterio = require("rasterio", "Writing rasters")
@@ -121,11 +121,16 @@ def write_footprint(path: str | os.PathLike[str], values: np.ndarray, grid: Grid
     if grid.crs is None:
         raise GridError("cannot write a footprint without a CRS")
     tmp = f"{os.fspath(path)}.part"
-    with rasterio.open(tmp, "w", driver="GTiff", height=grid.height, width=grid.width,
-                       count=1, dtype="float64", crs=grid.crs,
-                       transform=Affine(*grid.transform)) as ds:
-        ds.write(arr, 1)
-    os.replace(tmp, path)
+    try:
+        with rasterio.open(tmp, "w", driver="GTiff", height=grid.height, width=grid.width,
+                           count=1, dtype="float64", crs=grid.crs,
+                           transform=Affine(*grid.transform)) as ds:
+            ds.write(arr, 1)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     with rasterio.open(path) as ds:
         back = ds.read(1)
     if back.shape != arr.shape or not np.array_equal(back, arr, equal_nan=True):

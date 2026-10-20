@@ -38,6 +38,7 @@ import pandas as pd
 
 from etcompare.config import Config, to_plain
 from etcompare.errors import EtcompareError
+from etcompare.io.atomic import write_csv_atomic, write_text_atomic
 from etcompare.io.tables import read_table, write_table
 from etcompare.plots import (
     SYNTHETIC_LABEL,
@@ -208,9 +209,9 @@ def _glob_frames(root: Path, pattern: str) -> list[tuple[Path, pd.DataFrame]]:
     return [(p, read_table(p).frame) for p in sorted(root.glob(pattern))]
 
 
-#: Status columns read into the skipped-analyses table:
-#: (glob under output_dir, analysis, status column, values that count as a result,
-#:  detail columns, reason-code column, reason column).
+#: Status columns read into the skipped-analyses table. Each entry is: glob under
+#: output_dir, analysis, status column, values that count as a result, detail columns,
+#: reason-code column, reason column.
 STATUS_SOURCES: tuple[tuple[str, str, str, tuple[str, ...], tuple[str, ...], str | None,
                             str | None], ...] = (
     ("cohorts/*_availability.parquet", "diagnostics", "status", ("available",),
@@ -244,6 +245,32 @@ STATUS_SOURCES: tuple[tuple[str, str, str, tuple[str, ...], tuple[str, ...], str
     ("ensembles/*_improvement.parquet", "ensembles", "held_out_improvement",
      ("supported", "not_supported"), ("ensemble_id", "scope", "block_length"), None, "status"),
 )
+
+
+#: Exclusion codes of files that could not be read (raster extraction, step 18).
+FILE_FAILURE_CODES = ("unreadable_raster", "raster_missing", "unreadable_footprint",
+                      "footprint_file_missing")
+
+
+def skipped_file_rows(records: list[UnitRecord]) -> list[dict[str, Any]]:
+    """One row per unit and reason for files skipped as unreadable or missing.
+
+    The counts come from the units' exclusion counts (the same ones the run manifest
+    records); the exclusions CSV of the unit lists every file.
+    """
+    rows = []
+    for r in records:
+        for e in (r.details or {}).get("exclusions", []):
+            if e.get("reason_code") not in FILE_FAILURE_CODES:
+                continue
+            name = r.unit_id.split(":", 1)[-1]
+            rows.append({"source": "workflow", "stage": r.stage, "unit_id": r.unit_id,
+                         "analysis": r.analysis, "detail": "files skipped",
+                         "status": "files_skipped", "reason_code": e["reason_code"],
+                         "reason": f"{e['n']} file(s) could not be read and were skipped; "
+                                   "their model-days are null in coverage",
+                         "table": f"{name}_exclusions.csv", "n_rows": int(e["n"])})
+    return rows
 
 
 def table_status_rows(out: Path) -> pd.DataFrame:
@@ -358,7 +385,7 @@ class _Builder:
             check(fr)
         stem = self.dir / "figures" / _safe(section) / _safe(name)
         paths = save_figure(fr, stem, self.cfg.report.figure_formats, dpi=self.cfg.report.dpi)
-        fr.rows.to_csv(stem.parent / f"{stem.name}_rows.csv", index=False)
+        write_csv_atomic(fr.rows, stem.parent / f"{stem.name}_rows.csv")
         if fr.figure is not None:
             fr.figure.clear()
         self.n_figures += 1
@@ -373,7 +400,7 @@ class _Builder:
             return
         stem = self.dir / "figures" / _safe(section) / _safe(name)
         stem.parent.mkdir(parents=True, exist_ok=True)
-        fr.rows.to_csv(stem.parent / f"{stem.name}_rows.csv", index=False)
+        write_csv_atomic(fr.rows, stem.parent / f"{stem.name}_rows.csv")
         self.add("table", fr.caption, frame=fr.table)
 
 
@@ -601,7 +628,7 @@ def build_report(cfg: Config, records: list[UnitRecord], *, run_id: str,
 
     status = status_table(records)
     write_table(status, b.dir / "analysis_status.parquet")
-    status.frame.to_csv(b.dir / "analysis_status.csv", index=False)
+    write_csv_atomic(status.frame, b.dir / "analysis_status.csv")
     f = status.frame
     b.add("heading", "Analyses that ran", level=2)
     ran = f[f["status"].isin(["completed", "cached"])]
@@ -625,13 +652,14 @@ def build_report(cfg: Config, records: list[UnitRecord], *, run_id: str,
              "reason_code": r.reason_code, "reason": r.reason, "table": None, "n_rows": None}
             for r in workflow_skips.itertuples()]
     rows += [{**s, "table": None, "n_rows": None} for s in b.skips]
+    rows += skipped_file_rows(records)
     table_rows = table_status_rows(out)
     skipped = pd.concat([pd.DataFrame(rows), table_rows], ignore_index=True) \
         if rows or len(table_rows) else SKIPPED_ANALYSES.empty()
     skipped["n_rows"] = pd.to_numeric(skipped["n_rows"], errors="raise").astype("Int64")
     skipped_t = CanonicalTable.build(skipped, SKIPPED_ANALYSES, {"run_id": run_id})
     write_table(skipped_t, b.dir / "skipped_analyses.parquet")
-    skipped_t.frame.to_csv(b.dir / "skipped_analyses.csv", index=False)
+    write_csv_atomic(skipped_t.frame, b.dir / "skipped_analyses.csv")
 
     tail: list[Block] = []
     tail.append(Block("heading", "Skipped, not available or not run", level=2))
@@ -660,11 +688,11 @@ def build_report(cfg: Config, records: list[UnitRecord], *, run_id: str,
     paths = []
     if "markdown" in cfg.report.formats:
         p = b.dir / "report.md"
-        p.write_text(md, encoding="utf-8")
+        write_text_atomic(md, p)
         paths.append(p)
     if "html" in cfg.report.formats:
         p = b.dir / "report.html"
-        p.write_text(render_html(blocks, title), encoding="utf-8")
+        write_text_atomic(render_html(blocks, title), p)
         paths.append(p)
     paths += [b.dir / "analysis_status.parquet", b.dir / "analysis_status.csv",
               b.dir / "skipped_analyses.parquet", b.dir / "skipped_analyses.csv"]

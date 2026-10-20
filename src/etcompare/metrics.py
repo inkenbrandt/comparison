@@ -3,27 +3,27 @@
 With ``P`` the modeled ET, ``O`` the station ET and ``e = P - O`` over one
 sample of ``n`` paired values, :func:`compute_metrics` returns:
 
-==========================  ==============================================  =========  ===========
-Metric ID                   Definition                                      Units      Role
-==========================  ==============================================  =========  ===========
-``mbe``                     ``mean(e)``                                     value      score
-``mae``                     ``mean(|e|)``                                   value      score
-``rmse``                    ``sqrt(mean(e**2))``                            value      score
-``bias_corrected_rmse``     ``sqrt(mean((e - mean(e))**2))``                value      diagnostic
-``percent_bias``            ``100 * sum(e) / sum(O)``                       ``%``      score
-``nrmse_mean``              ``rmse / mean(O)``                              ``1``      score
-``nrmse_mean_percent``      ``100 * rmse / mean(O)`` (optional)             ``%``      score
-``pearson_r``               ``Sxy / sqrt(Sxx * Syy)`` (Pearson correlation)  ``1``      score
-``pearson_r_squared``       ``pearson_r**2``                                ``1``      score
-``ols_slope``               ``Sxy / Sxx``, ordinary least squares P on O    ``1``      descriptive
-``ols_intercept``           ``mean(P) - ols_slope * mean(O)``               value      descriptive
-``nse`` (optional)          ``1 - sum(e**2) / sum((O - mean(O))**2)``       ``1``      score
-``kge_2009`` (optional)     ``1 - sqrt((r-1)**2 + (alpha-1)**2 + (beta-1)**2)``  ``1`` score
-``kge_2009_r``              ``pearson_r``                                   ``1``      component
-``kge_2009_alpha``          ``std(P) / std(O)``                             ``1``      component
-``kge_2009_beta``           ``mean(P) / mean(O)``                           ``1``      component
-``mape`` (optional)         ``100 * mean(|e| / |O|)``                       ``%``      diagnostic
-==========================  ==============================================  =========  ===========
+=======================  ===================================================  =====  ===========
+Metric ID                Definition                                           Units  Role
+=======================  ===================================================  =====  ===========
+``mbe``                  ``mean(e)``                                          value  score
+``mae``                  ``mean(|e|)``                                        value  score
+``rmse``                 ``sqrt(mean(e**2))``                                 value  score
+``bias_corrected_rmse``  ``sqrt(mean((e - mean(e))**2))``                     value  diagnostic
+``percent_bias``         ``100 * sum(e) / sum(O)``                            ``%``  score
+``nrmse_mean``           ``rmse / mean(O)``                                   ``1``  score
+``nrmse_mean_percent``   ``100 * rmse / mean(O)`` (optional)                  ``%``  score
+``pearson_r``            ``Sxy / sqrt(Sxx * Syy)`` (Pearson correlation)      ``1``  score
+``pearson_r_squared``    ``pearson_r**2``                                     ``1``  score
+``ols_slope``            ``Sxy / Sxx``, ordinary least squares P on O         ``1``  descriptive
+``ols_intercept``        ``mean(P) - ols_slope * mean(O)``                    value  descriptive
+``nse`` (optional)       ``1 - sum(e**2) / sum((O - mean(O))**2)``            ``1``  score
+``kge_2009`` (optional)  ``1 - sqrt((r-1)**2 + (alpha-1)**2 + (beta-1)**2)``  ``1``  score
+``kge_2009_r``           ``pearson_r``                                        ``1``  component
+``kge_2009_alpha``       ``std(P) / std(O)``                                  ``1``  component
+``kge_2009_beta``        ``mean(P) / mean(O)``                                ``1``  component
+``mape`` (optional)      ``100 * mean(|e| / |O|)``                            ``%``  diagnostic
+=======================  ===================================================  =====  ===========
 
 ``Sxx = sum((O - mean(O))**2)``, ``Syy = sum((P - mean(P))**2)``,
 ``Sxy = sum((O - mean(O)) * (P - mean(P)))``; ``std`` is the population standard

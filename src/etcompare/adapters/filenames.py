@@ -2,7 +2,7 @@
 
 OpenET export names look like::
 
-    US-UTD_US-UTG_US-UTM_US-UTW_ensemble_et_2021_01_01_9abcf.tif
+    XX-UTD_XX-UTG_XX-UTM_XX-UTW_ensemble_et_2021_01_01_9abcf.tif
 
 The parser anchors on the ``_<model>_<variable>_YYYY_MM_DD_<suffix>.tif`` tail
 using the model registry, then reads the prefix as an unordered set of site
@@ -10,12 +10,12 @@ tokens (decisions.md D-013). It never splits blindly on underscores, because
 site aliases such as ``US_UTM`` contain one.
 
 Processed copies may carry a declared processing tag after the API suffix, e.g.
-``US-UTJ_sims_et_2025_01_01_d04f3_buffer400m_clip.tif`` (tag ``buffer400m_clip``,
+``XX-UTJ_sims_et_2025_01_01_d04f3_buffer400m_clip.tif`` (tag ``buffer400m_clip``,
 D-069). Only tags passed in ``processing_tags`` are accepted; any other text after
 the suffix is still a parse error. The tag is recorded on the asset.
 
-Footprint names look like ``ffp_US-UTJ_daily_etw_20240605.tif`` or
-``ffp_US-UTJ_monthly_etw_202406.tif``. The layer token (``etw``, ``mean``) is
+Footprint names look like ``ffp_XX-UTJ_daily_etw_20240605.tif`` or
+``ffp_XX-UTJ_monthly_etw_202406.tif``. The layer token (``etw``, ``mean``) is
 recorded as text; it does not establish a weighting method (D-009).
 
 A filename date is a label, never evidence of temporal support.
@@ -95,7 +95,7 @@ def _openet_regex(
 def parse_site_prefix(
     prefix: str, sites: SiteRegistry, *, filename: str = ""
 ) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
-    """Parse ``US-UTJ_US-CdM`` into sorted site IDs plus the aliases applied.
+    """Parse ``XX-UTJ_XX-CdM`` into sorted site IDs plus the aliases applied.
 
     Tokens are matched left to right: an explicit alias first (longest first),
     then the site pattern. Each token must end at ``_`` or the end of the

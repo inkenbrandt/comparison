@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,7 +7,21 @@ name = "etcompare"  # working name; check availability before distributing
 dynamic = ["version"]
 description = "Compare OpenET model estimates against quality-controlled eddy covariance station ET."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Paul Inkenbrandt" }]
 requires-python = ">=3.11"
+keywords = ["evapotranspiration", "OpenET", "eddy covariance", "flux footprint", "validation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Hydrology",
+]
 # Lower bounds, not pins: the oldest releases tested with `uv run --resolution lowest-direct`.
 dependencies = [
     "numpy>=1.26",
@@ -16,6 +30,9 @@ dependencies = [
     "scipy>=1.11",
     "pyyaml>=6.0.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/inkenbrandt/comparison"
 
 [project.scripts]
 etcompare = "etcompare.cli:main"
@@ -41,12 +58,28 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
+# Sphinx documentation (docs/; Read the Docs installs docs/requirements.txt).
+docs = [
+    "sphinx>=7.2",
+    "myst-parser>=2.0",
+    "sphinx-rtd-theme>=2.0",
+]
 
 [tool.hatch.version]
 path = "src/etcompare/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/etcompare"]
+
+[tool.hatch.build.targets.sdist]
+# An allow-list: only public material is distributed. The decision log, status files,
+# real-station example configurations, integration tests and tools that name real
+# stations or local paths stay in the repository (D-014).
+only-include = ["src", "tests", "docs", "notebooks", "examples/demo",
+                "tools/make_data_dictionary.py", "LICENSE", "README.md", "CHANGELOG.md",
+                ".readthedocs.yaml"]
+exclude = [".gitignore", "tests/integration", "docs/decisions.md", "docs/input_contract.md",
+           "**/__pycache__", "docs/_build"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

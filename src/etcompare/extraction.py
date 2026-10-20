@@ -44,11 +44,18 @@ from etcompare.config import (
     StationSpec,
     to_plain,
 )
-from etcompare.errors import ContractError, EtcompareError, GridError
+from etcompare.errors import (
+    ContractError,
+    EtcompareError,
+    GridError,
+    InputMissingError,
+    SystematicFailureError,
+)
 from etcompare.footprints import PreparedFootprint, prepare_footprint
 from etcompare.io.rasters import read_footprint, read_header, read_model_window
 from etcompare.log import get_logger, log_event
 from etcompare.provenance import package_versions
+from etcompare.resilience import Checkpoint, RetryPolicy, beat, call_with_retries, rest
 from etcompare.results import AdapterResult, ExclusionLog, format_key
 from etcompare.schemas import EXTRACTIONS, CanonicalTable
 from etcompare.spatial import (
@@ -138,15 +145,32 @@ def extract_rasters(
     start: str | pd.Timestamp | None = None,
     end: str | pd.Timestamp | None = None,
     strict: bool = False,
+    retry: RetryPolicy | None = None,
+    max_unreadable_fraction: float | None = None,
+    checkpoint: Checkpoint | None = None,
 ) -> AdapterResult:
     """Extract model ET at one station with every method in ``spec``.
 
     ``start``/``end`` override the period declared in ``spec`` (inclusive labels).
 
-    ``strict=True`` raises on the first unreadable raster; otherwise it is
-    recorded as an ``unreadable_raster`` exclusion and counted. Contract
-    violations (undeclared scaling, missing coordinates, missing CRS) always
-    raise.
+    ``strict=True`` raises on the first unreadable raster. Otherwise the file is
+    recorded as an ``unreadable_raster`` exclusion (``raster_missing`` when it no
+    longer exists; ``unreadable_footprint`` / ``footprint_file_missing`` for
+    footprints), counted, and its model-day keeps null rows for every method, so
+    coverage shows it. Contract violations (undeclared scaling, missing coordinates,
+    missing CRS) always raise.
+
+    Step 18 (none of these changes a value):
+
+    - ``retry``: transient read errors are retried
+      (:func:`~etcompare.resilience.call_with_retries`); default: one attempt.
+    - Skipping stops being safe when every file of one model, every model raster or
+      every footprint fails, or (with ``max_unreadable_fraction``) when more than that
+      fraction of either fails: :class:`~etcompare.errors.SystematicFailureError` is
+      raised, carrying the report and exclusions.
+    - ``checkpoint``: progress is saved after each calendar month and restored when the
+      checkpoint was written for the same cache key, dates and spec; the result equals
+      an uninterrupted run (frame and attributes).
     """
     site = station.site_id
     if spec.site_id != site:
@@ -190,23 +214,55 @@ def extract_rasters(
                 & (fm["period"] == "day")]
         fps = {r.date: r for r in fm.itertuples()}
 
+    try:
+        return _extract(spec, site, station, assets, products, footprint_set, fps, methods,
+                        uses_fp, sizes, strict, retry, max_unreadable_fraction, checkpoint)
+    finally:
+        rest()  # raster reading ended: no stall watch during analyses
+
+
+def _extract(spec: RasterExtractionSpec, site: str, station: StationSpec, assets: pd.DataFrame,
+             products: Mapping[str, ProductSpec], footprint_set: FootprintSetSpec | None,
+             fps: dict[pd.Timestamp, Any], methods: set[str], uses_fp: bool, sizes: list[int],
+             strict: bool, retry: RetryPolicy | None, max_unreadable_fraction: float | None,
+             checkpoint: Checkpoint | None) -> AdapterResult:
     report = ValidationReport(f"raster extraction {spec.name} ({site})")
     exclusions = ExclusionLog()
     plans: dict[tuple[str, str | None], _Plan] = {}
+    #: (transfer method, window grid id) per plan key, in order of first use (attributes).
+    plan_info: dict[tuple[str, str | None], tuple[str | None, str | None]] = {}
     known_grid: Grid | None = None
     half = (max(sizes) // 2) if sizes else None
     rows: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
+    #: Files attempted and files unreadable or missing, per model and for footprints.
+    tried: dict[str, int] = {}
+    failed: dict[str, int] = {}
     fp_set_id = footprint_set.set_id if footprint_set else "none"
     fp_method = footprint_set.weighting_method if footprint_set else "none"
 
     def bump(key: str) -> None:
         counts[key] = counts.get(key, 0) + 1
 
+    def read(fn: Any, path: str, what: str) -> Any:
+        return call_with_retries(fn, path, policy=retry, what=what)
+
+    def plan_for(grid: Grid, fp_grid: Grid | None) -> _Plan:
+        key = (grid.grid_id, fp_grid.grid_id if fp_grid is not None else None)
+        if key not in plans:
+            # A plan restored from a checkpoint already reported its transfer.
+            plans[key] = _make_plan(grid, fp_grid, station, half,
+                                    ValidationReport("restored") if key in plan_info
+                                    else report)
+            p = plans[key]
+            plan_info.setdefault(key, (p.transfer.method if p.transfer else None,
+                                       p.grid.grid_id if p.grid else None))
+        return plans[key]
+
     def emit(asset: Any, method: str, value: float, *, status: str, fp_row: Any = None,
              wsum: float | None = None, retained: float | None = None, in_extent: float | None
              = None, denom: str | None = None, support: str | None = None,
-             ncells: int | None = None, grid: Grid | None = None) -> None:
+             ncells: int | None = None, grid: Grid | None = None, record: bool = True) -> None:
         footprint_based = method in (FOOTPRINT, FOOTPRINT_COMMON)
         rows.append({
             "site_id": site, "date": asset.date, "period": "day", "model": asset.model,
@@ -227,13 +283,36 @@ def extract_rasters(
             "source_path": asset.path,
         })
         bump(f"{method}:{status}")
-        if status != "ok":
+        if status != "ok" and record:
             exclusions.add(STAGE, format_key(site_id=site, date=asset.date, model=asset.model,
                                              method=method), status, severity="warning")
 
-    dates = sorted(assets["date"].unique())
-    for n_day, date in enumerate(dates, 1):
-        date = pd.Timestamp(date)
+    def method_ids(fp_ok: bool) -> list[str]:
+        return ([FOOTPRINT] if "footprint" in methods and fp_ok else []) + \
+            ([FOOTPRINT_COMMON] if "footprint_common_support" in methods and fp_ok
+             else []) + \
+            ([NEAREST] if "nearest_tower_pixel" in methods else []) + \
+            ([pixel_window_id(n) for n in spec.window_sizes]
+             if "pixel_window" in methods else [])
+
+    dates = [pd.Timestamp(d) for d in sorted(assets["date"].unique())]
+    start_at = 0
+    if checkpoint is not None:
+        state = checkpoint.load()
+        if state is not None and state.get("dates") == dates and state.get("spec") == \
+                to_plain(spec):
+            rows.extend(state["rows"])
+            exclusions.records.extend(state["exclusions"])
+            counts.update(state["counts"])
+            plan_info.update(state["plan_info"])
+            report.issues.extend(state["issues"])
+            tried.update(state["tried"])
+            failed.update(state["failed"])
+            start_at = int(state["n_done"])
+            log_event(_log, "extraction_resumed", site_id=site, unit=spec.name,
+                      days_done=start_at, days_total=len(dates), n_rows=len(rows))
+
+    for n_day, date in enumerate(dates[start_at:], start_at + 1):
         group = assets[assets["date"] == date]
         fp_row = fps.get(date)
         prepared: PreparedFootprint | None = None
@@ -243,18 +322,24 @@ def extract_rasters(
                                severity="info", detail=f"no daily footprint in {fp_set_id}")
                 bump("footprint_missing")
             else:
+                tried["footprint"] = tried.get("footprint", 0) + 1
                 try:
-                    raw, fgrid, fnodata = read_footprint(fp_row.path)
+                    raw, fgrid, fnodata = read(lambda p=fp_row.path: read_footprint(p),
+                                               fp_row.path, "footprint")
                     prepared = prepare_footprint(
                         raw, fgrid, value_semantics=footprint_set.value_semantics,  # type: ignore[union-attr]
                         nodata=fnodata, negative_tolerance=spec.negative_weight_tolerance)
                 except (OSError, EtcompareError) as exc:
                     if strict or isinstance(exc, GridError):
                         raise
-                    exclusions.add(STAGE, fp_row.path, "unreadable_footprint", severity="error",
+                    code = ("footprint_file_missing" if isinstance(exc, InputMissingError)
+                            else "unreadable_footprint")
+                    exclusions.add(STAGE, fp_row.path, code, severity="error",
                                    detail=str(exc))
-                    bump("unreadable_footprint")
+                    bump(code)
+                    failed["footprint"] = failed.get("footprint", 0) + 1
                     prepared = None
+                beat(fp_row.path)
                 if prepared is not None and not prepared.ok:
                     exclusions.add(STAGE, format_key(site_id=site, date=date),
                                    f"footprint_{prepared.status}", detail=prepared.detail())
@@ -266,69 +351,59 @@ def extract_rasters(
                     bump("footprint_roundoff_negatives_zeroed")
 
         fp_ok = prepared is not None and prepared.ok
+        fp_grid = prepared.grid if fp_ok else None  # type: ignore[union-attr]
         loaded: list[tuple[Any, np.ndarray, _Plan, np.ndarray | None]] = []
         for asset in group.itertuples():
             product = products[asset.model]
+            tried[asset.model] = tried.get(asset.model, 0) + 1
             try:
                 if known_grid is None:
-                    known_grid = read_header(asset.path).grid
-                fkey = prepared.grid.grid_id if fp_ok else None  # type: ignore[union-attr]
-                key = (known_grid.grid_id, fkey)
-                if key not in plans:
-                    plans[key] = _make_plan(known_grid, prepared.grid if fp_ok else None,  # type: ignore[union-attr]
-                                            station, half, report)
-                plan = plans[key]
+                    known_grid = read(lambda p=asset.path: read_header(p).grid, asset.path,
+                                      "raster_header")
+                plan = plan_for(known_grid, fp_grid)
                 if plan.window is None:
                     # The cached grid is the previous raster's: check this raster's own grid
                     # before declaring that it does not overlap (D-072).
-                    own = read_header(asset.path).grid
+                    own = read(lambda p=asset.path: read_header(p).grid, asset.path,
+                               "raster_header")
                     if own.grid_id != known_grid.grid_id:
                         known_grid = own
-                        key = (known_grid.grid_id, fkey)
-                        if key not in plans:
-                            plans[key] = _make_plan(known_grid,
-                                                    prepared.grid if fp_ok else None,  # type: ignore[union-attr]
-                                                    station, half, report)
-                        plan = plans[key]
+                        plan = plan_for(known_grid, fp_grid)
                 if plan.window is None:
-                    ids =([FOOTPRINT] if "footprint" in methods and fp_ok else []) + \
-                        ([FOOTPRINT_COMMON] if "footprint_common_support" in methods and fp_ok
-                         else []) + \
-                        ([NEAREST] if "nearest_tower_pixel" in methods else []) + \
-                        ([pixel_window_id(n) for n in spec.window_sizes]
-                         if "pixel_window" in methods else [])
-                    for mid in ids:
+                    for mid in method_ids(fp_ok):
                         emit(asset, mid, math.nan, status="no_overlap", fp_row=fp_row)
+                    beat(asset.path)
                     continue
                 try:
-                    values, _ = read_model_window(asset.path, product, plan.window,
-                                                  expect_grid=known_grid)
+                    values, _ = read(lambda p=asset.path, w=plan.window, g=known_grid, pr=product:
+                                     read_model_window(p, pr, w, expect_grid=g),
+                                     asset.path, "raster_window")
                 except GridError:
                     # A raster on a different grid: re-plan for its own grid.
-                    known_grid = read_header(asset.path).grid
-                    key = (known_grid.grid_id, fkey)
-                    if key not in plans:
-                        plans[key] = _make_plan(known_grid, prepared.grid if fp_ok else None,  # type: ignore[union-attr]
-                                                station, half, report)
-                    plan = plans[key]
-                    values, _ = read_model_window(asset.path, product, plan.window,
-                                                  expect_grid=known_grid)
+                    known_grid = read(lambda p=asset.path: read_header(p).grid, asset.path,
+                                      "raster_header")
+                    plan = plan_for(known_grid, fp_grid)
+                    values, _ = read(lambda p=asset.path, w=plan.window, g=known_grid, pr=product:
+                                     read_model_window(p, pr, w, expect_grid=g),
+                                     asset.path, "raster_window")
             except ContractError:
                 raise
-            except (OSError, EtcompareError) as exc:
-                if strict:
+            except Exception as exc:  # OSError, etcompare errors, rasterio.errors.*
+                if strict or not (isinstance(exc, OSError | EtcompareError)
+                                  or type(exc).__module__.split(".")[0] == "rasterio"):
                     raise
-                exclusions.add(STAGE, asset.path, "unreadable_raster", severity="error",
-                               detail=str(exc))
-                bump("unreadable_raster")
+                code = ("raster_missing" if isinstance(exc, InputMissingError)
+                        else "unreadable_raster")
+                exclusions.add(STAGE, asset.path, code, severity="error", detail=str(exc))
+                bump(code)
+                failed[asset.model] = failed.get(asset.model, 0) + 1
+                # Null rows keep the model-day visible in coverage; the file-level
+                # exclusion above says why.
+                for mid in method_ids(fp_ok):
+                    emit(asset, mid, math.nan, status=code, fp_row=fp_row, record=False)
+                beat(asset.path)
                 continue
-            except Exception as exc:  # rasterio.errors.RasterioIOError and similar
-                if strict or type(exc).__module__.split(".")[0] != "rasterio":
-                    raise
-                exclusions.add(STAGE, asset.path, "unreadable_raster", severity="error",
-                               detail=str(exc))
-                bump("unreadable_raster")
-                continue
+            beat(asset.path)
 
             contrib = None
             if fp_ok and plan.transfer is not None:
@@ -378,12 +453,21 @@ def extract_rasters(
         if n_day % 50 == 0:
             log_event(_log, "extraction_progress", site_id=site, days_done=n_day,
                       days_total=len(dates), n_rows=len(rows))
+        if checkpoint is not None and n_day < len(dates) and (
+                dates[n_day].to_period("M") != date.to_period("M")):
+            checkpoint.save({"dates": dates, "spec": to_plain(spec), "n_done": n_day,
+                             "rows": rows, "exclusions": exclusions.records,
+                             "counts": counts, "plan_info": plan_info,
+                             "issues": report.issues, "tried": tried, "failed": failed},
+                            through=date.date().isoformat(), n_rows=len(rows))
 
     report.info("extraction_counts", f"{counts}")
-    for code in ("unreadable_raster", "unreadable_footprint"):
+    for code in ("unreadable_raster", "raster_missing", "unreadable_footprint",
+                 "footprint_file_missing"):
         if counts.get(code):
             report.warning(code, f"{counts[code]} file(s) could not be read and were skipped; "
                            "coverage reflects this", n_rows=counts[code])
+    _check_systematic(spec.name, tried, failed, max_unreadable_fraction, report, exclusions)
     frame = pd.DataFrame(rows, columns=EXTRACTIONS.names) if rows else EXTRACTIONS.empty()
     frame = frame.sort_values(["site_id", "model", "extraction_method", "date"],
                               kind="stable").reset_index(drop=True)
@@ -391,10 +475,8 @@ def extract_rasters(
         "workflow": "etcompare.extraction.extract_rasters",
         "spec": to_plain(spec), "station": to_plain(station),
         "footprint_set": to_plain(footprint_set) if footprint_set else None,
-        "transfers": {f"{k[0]}<-{k[1]}": (p.transfer.method if p.transfer else None)
-                      for k, p in plans.items()},
-        "window_grids": {f"{k[0]}<-{k[1]}": (p.grid.grid_id if p.grid else None)
-                         for k, p in plans.items()},
+        "transfers": {f"{k[0]}<-{k[1]}": v[0] for k, v in plan_info.items()},
+        "window_grids": {f"{k[0]}<-{k[1]}": v[1] for k, v in plan_info.items()},
         "counts": counts,
         "package_versions": package_versions("etcompare", "numpy", "pandas", "scipy",
                                              "rasterio", "pyproj", "shapely"),
@@ -403,3 +485,38 @@ def extract_rasters(
     log_event(_log, "raster_extraction_done", site_id=site, n_days=len(dates),
               n_rows=len(table), **{k.replace(":", "_"): v for k, v in counts.items()})
     return AdapterResult(table, report, exclusions)
+
+
+def _check_systematic(name: str, tried: Mapping[str, int], failed: Mapping[str, int],
+                      max_fraction: float | None, report: ValidationReport,
+                      exclusions: ExclusionLog) -> None:
+    """Raise :class:`SystematicFailureError` when skipping would hide a systematic fault.
+
+    Always: every file of one model, every model raster, or every footprint unreadable or
+    missing. With ``max_fraction``: more than that fraction of the model rasters, or of
+    the footprints, attempted.
+    """
+    problems = []
+    models = {m: n for m, n in tried.items() if m != "footprint"}
+    n_models, bad_models = sum(models.values()), sum(failed.get(m, 0) for m in models)
+    for m, n in sorted(models.items()):
+        if n and failed.get(m, 0) == n:
+            problems.append(f"every {m} raster ({n}) is unreadable or missing")
+    groups = [("model rasters", n_models, bad_models),
+              ("footprints", tried.get("footprint", 0), failed.get("footprint", 0))]
+    for what, n, bad in groups:
+        if n and bad == n:
+            problems.append(f"every one of the {n} {what} is unreadable or missing")
+        elif n and max_fraction is not None and bad / n > max_fraction:
+            problems.append(f"{bad} of {n} {what} ({bad / n:.1%}) are unreadable or missing, "
+                            f"above processing.max_unreadable_fraction = {max_fraction:g}")
+    if problems:
+        msg = (f"raster extraction {name}: " + "; ".join(problems) + ". This looks "
+               "systematic (wrong path, format or drive), so the run stops instead of "
+               "skipping; the exclusions list every file.")
+        report.error("systematic_read_failure", msg)
+        err = SystematicFailureError(msg, details={
+            "files_tried": dict(tried), "files_failed": dict(failed)})
+        err.report = report
+        err.exclusions = exclusions  # type: ignore[attr-defined]
+        raise err

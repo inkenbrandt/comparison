@@ -50,6 +50,7 @@ from etcompare.config import (
     to_plain,
 )
 from etcompare.errors import ContractError, GridError, SchemaError
+from etcompare.io.atomic import write_csv_atomic, write_text_atomic
 from etcompare.results import ExclusionLog, format_key
 from etcompare.spatial import Grid, is_metric_projected
 from etcompare.validation import ValidationReport
@@ -410,7 +411,7 @@ def write_footprint_set(
     csv = None
     if capture_rows:
         csv = out / f"{set_id}_domain_capture.csv"
-        pd.DataFrame(capture_rows).to_csv(csv, index=False)
+        write_csv_atomic(pd.DataFrame(capture_rows), csv)
     spec = result.spec
     fs = FootprintSetSpec(
         set_id=set_id, root=out, layers=(layer,), value_semantics=semantics.pop(),
@@ -418,9 +419,9 @@ def write_footprint_set(
         temporal_weighting=spec.temporal_weighting,
         domain_capture_csv=csv, domain_capture_column="domain_capture_frac" if csv else None,
         domain_capture_units="fraction")
-    (out / f"{set_id}_aggregation.json").write_text(
+    write_text_atomic(
         json.dumps({"aggregation": to_plain(spec), "footprint_set": to_plain(fs)}, indent=2),
-        encoding="utf-8")
+        out / f"{set_id}_aggregation.json")
     return fs
 
 

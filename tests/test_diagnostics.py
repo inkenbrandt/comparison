@@ -618,26 +618,3 @@ def test_config_rejects_duplicates_and_mismatched_bootstrap():
     d["diagnostics"] = [{**GOOD, "bootstrap": "bs2"}]
     with pytest.raises(ContractError, match="resamples metric set mset2"):
         config_from_dict(d)
-
-
-
-def test_example_us_utj_declarations():
-    from pathlib import Path
-
-    from etcompare.config import load_config
-
-    cfg = load_config(Path(__file__).parents[1] / "examples" / "us_utj.yaml")
-    d = cfg.diagnostics_spec("utj_diagnostics")
-    assert d.min_bin_days == 20 and d.bootstrap == "utj_block_bootstrap"
-    assert d.wind_direction_variable is None
-    assert "utj_closure_all_models" in d.comparisons
-    status = {k: v.status for k, v in d.variables.items()}
-    assert {k for k, s in status.items() if s == "unverified"} == {
-        "h_subday_gaps", "le_subday_gaps"}
-    # Units confirmed by the user on 2026-10-16 (D-053); ebr/ebr_5day_clim windows unresolved.
-    assert {k for k, s in status.items() if s == "provisional"} == {"ebr", "ebr_5day_clim"}
-    assert d.variables["vpd"].units == "kPa" and d.variables["rh"].units == "%"
-    assert not d.variables["rh"].binned
-    assert all(v.column.startswith("src_") for v in d.variables.values() if v.source == "station")
-    assert d.variables["ebr_corr"].measured_days_only
-    assert all(v.quantiles is None for v in d.variables.values())  # fixed edges only
