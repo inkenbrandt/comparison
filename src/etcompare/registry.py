@@ -16,12 +16,12 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from etcompare.config import ProductSpec
 
-#: OpenET products present in the US-UTJ example. ``ensemble`` is the official
+#: The seven OpenET products (six models and the official ensemble). ``ensemble`` is the official
 #: OpenET ensemble: a comparison product, not an independent member model.
 OPENET_MODELS: Final = ("disalexi", "eemetric", "ensemble", "geesebal", "ptjpl", "sims", "ssebop")
 OPENET_ENSEMBLE: Final = "ensemble"
 
-#: AmeriFlux-style site identifier, e.g. ``US-UTJ``.
+#: AmeriFlux-style site identifier, e.g. ``XX-UTJ``.
 DEFAULT_SITE_PATTERN: Final = r"[A-Z]{2}-[A-Za-z0-9]{3}"
 
 
@@ -45,7 +45,7 @@ class ModelRegistry:
 
     @classmethod
     def default(cls) -> ModelRegistry:
-        """The seven OpenET products of the US-UTJ example."""
+        """The seven OpenET products: six models and the official ensemble."""
         return cls(frozenset(OPENET_MODELS), ensembles=frozenset({OPENET_ENSEMBLE}))
 
     @classmethod
@@ -79,7 +79,7 @@ class SiteRegistry:
     """Site-token rules: a pattern for canonical IDs plus explicit aliases.
 
     ``aliases`` maps a source token (e.g. ``US_UTM``) to a canonical site ID
-    (``US-UTM``). Source files are never renamed.
+    (``XX-UTM``). Source files are never renamed.
     """
 
     aliases: Mapping[str, str] = field(default_factory=dict)

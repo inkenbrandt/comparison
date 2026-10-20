@@ -45,9 +45,9 @@ def test_model_registry():
 
 
 def test_site_registry():
-    reg = SiteRegistry(aliases={"US_UTM": "US-UTM"})
-    assert reg.resolve("US-UTJ") == ("US-UTJ", False)
-    assert reg.resolve("US_UTM") == ("US-UTM", True)
+    reg = SiteRegistry(aliases={"US_UTM": "XX-UTM"})
+    assert reg.resolve("XX-UTJ") == ("XX-UTJ", False)
+    assert reg.resolve("US_UTM") == ("XX-UTM", True)
     with pytest.raises(KeyError):
         reg.resolve("USUTJ")
     with pytest.raises(ValueError):

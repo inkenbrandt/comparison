@@ -41,7 +41,5 @@ limitations
 api
 data_dictionary
 references
-decisions
-input_contract
 changelog
 ```

@@ -72,8 +72,14 @@ path = "src/etcompare/__init__.py"
 packages = ["src/etcompare"]
 
 [tool.hatch.build.targets.sdist]
-# Station-specific files tracked in the repository stay out of distributions (D-014).
-exclude = ["*.gpkg", "*.ini", "*.vrt", "*.tif", "*.parquet", "*.csv", "!examples/legends/*.csv"]
+# An allow-list: only public material is distributed. The decision log, status files,
+# real-station example configurations, integration tests and tools that name real
+# stations or local paths stay in the repository (D-014).
+only-include = ["src", "tests", "docs", "notebooks", "examples/demo",
+                "tools/make_data_dictionary.py", "LICENSE", "README.md", "CHANGELOG.md",
+                ".readthedocs.yaml"]
+exclude = [".gitignore", "tests/integration", "docs/decisions.md", "docs/input_contract.md",
+           "**/__pycache__", "docs/_build"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

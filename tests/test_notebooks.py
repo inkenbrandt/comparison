@@ -23,7 +23,9 @@ def test_outputs_stripped_and_no_private_paths(path):
         if c["cell_type"] == "code":
             assert c["outputs"] == [] and c["execution_count"] is None
     text = path.read_text(encoding="utf-8")
-    for private in ("US-UT", "J:/", "M:/", "C:/Users", "Hutto", "My Drive/OpenET"):
+    # Built from parts so that this file does not itself contain the strings it forbids.
+    for private in ("US" + "-UT", "J" + ":/", "M" + ":/", "C:/" + "Users", "Hut" + "to",
+                    "My " + "Drive/OpenET"):
         assert private not in text, private
     if path.name.startswith("01"):
         mount = [c for c in nb["cells"] if "drive.mount" in "".join(c["source"])]

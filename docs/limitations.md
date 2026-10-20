@@ -2,7 +2,7 @@
 
 This page lists what etcompare does not do, or does only partly, as of version 0.1.0.
 Nothing listed here is presented elsewhere as complete. Decision numbers (D-…) refer to
-{doc}`decisions`.
+the project's decision log (D-numbers), which is kept with the source repository and not published.
 
 ## Not implemented
 
@@ -16,7 +16,7 @@ Nothing listed here is presented elsewhere as complete. Decision numbers (D-…)
 | **Monthly-raster extraction with monthly footprints** | Period totals are sums of daily extractions. | `aggregation` docs. |
 | **Staging of remote-mounted files to local storage** | Not built (user decision, 2026-10-20: work from a local drive). Reading directly from a network or cloud mount is supported but slower: about 23 ms per raster open on Google Drive for desktop against 5 ms on a USB SSD (D-079). | — |
 | **Concurrency** | Extraction is serial (user decision, 2026-10-20, after the D-079 benchmark: about 1.5 min per station; I/O-bound by file-open latency). | — |
-| **Reuse of a raster shared by several stations or extractions** | Each extraction opens its own rasters. A multi-station file (the unclipped Drive tree) is opened once per station, and once per footprint set of a station. Clipped single-station files (J:) are unaffected. | D-079 benchmark: 3,078 opens for 3,077 files in one extraction. |
+| **Reuse of a raster shared by several stations or extractions** | Each extraction opens its own rasters. A multi-station file (for example an unclipped download covering several stations) is opened once per station, and once per footprint set of a station. Clipped single-station files are unaffected. | D-079 benchmark: 3,078 opens for 3,077 files in one extraction. |
 | **Population inference, formal causal designs for events, controlled event designs** | Event responses are uncontrolled before/after descriptions (D-061). | `event_responses` flags. |
 
 ## Partly implemented or conditional
@@ -25,14 +25,13 @@ Nothing listed here is presented elsewhere as complete. Decision numbers (D-…)
   the case for every station so far (D-011), the analysis is `not_available`.
 - **Held-out anomaly skill** needs a multi-year record. Shorter records get only the
   `exploratory` in-sample moving mean.
-- **Fitted ensembles** are `declined` when folds are too few or too small. For example,
-  US-UTJ alone has one calendar-year fold (D-066).
+- **Fitted ensembles** are `declined` when folds are too few or too small. For example, one
+  station with one complete calendar year has a single fold (D-066).
 - **Equivalence and formal tests** need declared margins and `formal_tests: true`.
   Otherwise results are `not_assessed` and `exploratory`.
 - **No block length is adopted** for intervals (D-048). The declared lengths are reported
   side by side.
-- **Water balance:** a term without an input makes the residual unknown, as with five terms
-  at US-UTJ (D-064).
+- **Water balance:** a term without an input makes the residual unknown, (D-064).
 - **fluxfootprints labels** need fluxfootprints installed separately (GPL-3.0, not an
   extra; D-056).
 
@@ -58,14 +57,14 @@ Nothing listed here is presented elsewhere as complete. Decision numbers (D-…)
   verified. `cache.raster_identity: sha256` avoids the question at the cost of reading
   every byte.
 
-## Data semantics still unverified for the example stations
+## Data semantics the package cannot verify
 
-- **Day alignment.** The OpenET day definition is unknown, so rows carry
-  `day_alignment=unverified` (D-002).
-- **Footprint weighting of set A.** The weighting of the US-UTJ footprint set A was
-  reconstructed, not documented upstream (D-036).
-- **Station meteorology.** Units are confirmed by the user and `US-UTJ.ini`. The subdaily
-  gap columns remain unverified (D-053).
+- **Day alignment.** OpenET's daily day definition is not published with the rasters, so a
+  product declared `day_definition: unknown` gives rows `day_alignment=unverified` (D-002).
+- **Upstream weighting and units.** Footprint weighting, station units and gap-filling
+  semantics are taken from the declarations. etcompare checks what the data can show
+  (for example normalisation and negative weights), but it cannot prove an upstream
+  method.
 
 ## Release status
 

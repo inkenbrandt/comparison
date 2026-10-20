@@ -133,6 +133,8 @@ The pre-change baselines were run from a worktree at the step-17 commit. The fin
 ### Open
 - **Publishing needs authorization:** PyPI, a Read the Docs project, pushing the branch (which runs CI).
 - **Licence holder:** Paul Inkenbrandt (user, 2026-10-20).
+- **Distribution trimmed for privacy (D-080):** allow-listed sdist, published docs without the decision log and input contract, synthetic IDs in unit tests. One station ID remains in a diagnostics reason string that is written into output tables.
+- **Local environment:** Windows Code Integrity now blocks pyarrow in the venv (since about 10:15 on 2026-10-20). The final trimming was verified without Parquet tests; CI must pass before any upload.
 - **Carried over:** every decision in `decisions:` of the example configs, and the gaps in `docs/limitations.md`.
 
 ## Step 17 — Plots, reports, configuration and CLI (2026-10-19)

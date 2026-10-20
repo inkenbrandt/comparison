@@ -10,7 +10,6 @@ from etcompare.config import (
     StationSpec,
     StationTableSpec,
     config_from_dict,
-    load_config,
 )
 from etcompare.errors import ContractError
 
@@ -18,14 +17,14 @@ EXAMPLE = Path(__file__).parents[1] / "examples" / "us_utj.yaml"
 
 
 def station(**kw):
-    base = dict(site_id="US-UTJ", timezone="UTC-07:00", day_definition="local_standard_time",
+    base = dict(site_id="XX-UTJ", timezone="UTC-07:00", day_definition="local_standard_time",
                 interval_label="start")
     base.update(kw)
     return StationSpec(**base)
 
 
 def station_table(**kw):
-    base = dict(site_id="US-UTJ", date_column="date",
+    base = dict(site_id="XX-UTJ", date_column="date",
                 reference_columns={"et_raw": "ET", "et_corrected": "ET_corr"},
                 gap_flag_column="ET_gap", units={"ET": "mm/day", "ET_corr": "mm/day"})
     base.update(kw)
@@ -51,8 +50,8 @@ def test_station_missing_day_semantics(field):
     with pytest.raises(ContractError) as ei:
         station(**{field: None})
     msg = str(ei.value)
-    assert f"station US-UTJ: {field} not declared" in msg
-    assert f"stations.US-UTJ.{field}" in msg
+    assert f"station XX-UTJ: {field} not declared" in msg
+    assert f"stations.XX-UTJ.{field}" in msg
 
 
 def test_station_bad_values():
@@ -105,18 +104,6 @@ def test_footprint_semantics_mandatory():
                          value_semantics="normalized_cell_weight")
 
 
-def test_load_example_config():
-    cfg = load_config(EXAMPLE)
-    assert set(cfg.products) == {"disalexi", "eemetric", "ensemble", "geesebal", "ptjpl",
-                                 "sims", "ssebop"}
-    assert cfg.model_registry().ensembles == {"ensemble"}
-    (st,) = cfg.station_tables
-    assert st.path.name == "US-UTJ_daily.csv" and st.path.is_absolute()
-    (ex,) = cfg.extracted_tables
-    assert ex.value_columns["ET_mean"] == "source_region_mean"
-    assert cfg.footprint_sets[0].recursive is False
-
-
 def test_unknown_keys_rejected():
     with pytest.raises(ContractError, match="unknown configuration key"):
         config_from_dict({"stationz": {}})
@@ -128,7 +115,7 @@ def test_unknown_keys_rejected():
 def test_station_table_requires_station_declaration():
     with pytest.raises(ContractError, match="no station declaration"):
         config_from_dict({"station_tables": [{
-            "site_id": "US-UTJ", "date_column": "date", "gap_flag_column": "ET_gap",
+            "site_id": "XX-UTJ", "date_column": "date", "gap_flag_column": "ET_gap",
             "reference_columns": {"et_raw": "ET", "et_corrected": "ET_corr"},
             "units": {"ET": "mm/day", "ET_corr": "mm/day"}}]})
 
@@ -151,7 +138,7 @@ def test_raster_scaling_contract():
 def test_raster_extraction_spec():
     from etcompare.config import RasterExtractionSpec
 
-    ok = RasterExtractionSpec("x", "US-UTJ", methods=["pixel_window"], window_sizes=[3, 5],
+    ok = RasterExtractionSpec("x", "XX-UTJ", methods=["pixel_window"], window_sizes=[3, 5],
                               start="2024-06-05", end="2025-10-09")
     assert ok.window_sizes == (3, 5) and ok.start == "2024-06-05"
     for kw, match in [
@@ -163,30 +150,7 @@ def test_raster_extraction_spec():
         (dict(methods=[]), "no extraction methods"),
     ]:
         with pytest.raises(ContractError, match=match):
-            RasterExtractionSpec("x", "US-UTJ", **kw)
-
-
-def test_example_raster_extraction_declared():
-    cfg = load_config(EXAMPLE)
-    x, m, nldas, le = cfg.raster_extractions
-    assert x.footprint_set_id == "US-UTJ_set_B_etw_20261012"
-    fs = cfg.footprint_set(x.footprint_set_id)
-    assert fs.domain_capture_column == "et_weighted_coverage_pct"
-    assert fs.temporal_weighting == "reference_et_weighted" and fs.target_dependence == "no"
-    assert cfg.products["sims"].nodata == -9999.0
-    mean = cfg.footprint_set(m.footprint_set_id)
-    assert mean.temporal_weighting == "time_mean" and mean.target_dependence == "no"
-    # Primary NLDAS-ETo set and measured-LE sensitivity set, same rules (D-036, D-037).
-    assert cfg.footprint_set(nldas.footprint_set_id).target_dependence == "no"
-    assert cfg.footprint_set(le.footprint_set_id).target_dependence == "yes"
-    assert len({e.negative_weight_tolerance for e in (x, m, nldas, le)}) == 1
-    aggs = {a.method_id: a for a in cfg.footprint_aggregations}
-    assert aggs["nldas_eto_weighted"].weight_column == "nldas_eto_mm_h"
-    assert aggs["measured_le_weighted"].target_dependence == "yes"
-    shared = ("include_duration", "basis", "negative_weight_policy", "gap_policy",
-              "night_policy")
-    assert all(getattr(aggs["nldas_eto_weighted"], f) == getattr(aggs["measured_le_weighted"], f)
-               for f in shared)
+            RasterExtractionSpec("x", "XX-UTJ", **kw)
 
 
 def test_footprint_set_temporal_weighting_vocabulary():
