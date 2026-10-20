@@ -21,7 +21,7 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 15 — Water-balance checks and scenario uncertainty | **Done** 2026-10-17 (station level; US-UTJ declaration Provisional; **the US-UTJ residual is unknown**: five terms have no input; no scenario declared) |
 | 16 — Held-out ensemble experiments | **Done** 2026-10-18 (station level; post-extraction ensembles; US-UTJ choices made by the user; **the US-UTJ fitted ensemble is declined**: one calendar-year fold, one station) |
 | 17 — Plots, reports, configuration and CLI | **Done** 2026-10-19 (workflow units with exact cache invalidation, run manifests, reports from saved tables, synthetic demo; US-UTJ and the seven Utah stations rerun through the CLI) |
-| 18 — Resilient processing and first release | **Done** 2026-10-20 (version 0.1.0, MIT, unpublished; retries, keep-awake, stall detection, checkpoints, systematic-failure rule, atomic outputs; full raster demo; Sphinx docs, notebooks, CI; US-UTJ and Utah tables bit-identical) |
+| 18 — Resilient processing and first release | **Done** 2026-10-20 (version 0.1.0, MIT, on PyPI; retries, keep-awake, stall detection, checkpoints, systematic-failure rule, atomic outputs; full raster demo; Sphinx docs, notebooks, CI; US-UTJ and Utah tables bit-identical) |
 
 ## Step 18 — Resilient processing and a usable first release (2026-10-20)
 

@@ -7,7 +7,7 @@ All notable changes are recorded here. The format follows
 
 ## [0.1.0] - 2026-10-20
 
-First usable release. Not published to PyPI.
+First usable release, published to PyPI on 2026-10-20.
 
 ### Added
 - **Inputs (guide steps 1–4).**

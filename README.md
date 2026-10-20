@@ -13,7 +13,7 @@ already extracted from them. One YAML file declares the whole analysis. etcompar
   analyses when they are declared;
 - writes a report that states what was skipped and why.
 
-Version 0.1.0 (MIT). It is not published to PyPI.
+Version 0.1.0 (MIT), on PyPI: `pip install "etcompare[geo,plot]"`.
 
 - **Documentation:** `docs/`, built with Sphinx for Read the Docs (method guide,
   configuration, limitations, public API, data dictionary, references).
@@ -24,7 +24,8 @@ Version 0.1.0 (MIT). It is not published to PyPI.
 ## Install
 
 ```bash
-pip install -e ".[geo,plot]"     # from a checkout; geo = rasters, plot = figures
+pip install "etcompare[geo,plot]"   # geo = rasters, plot = figures
+pip install -e ".[geo,plot]"       # or from a checkout
 # or, for development:
 uv sync --extra geo --extra plot
 ```

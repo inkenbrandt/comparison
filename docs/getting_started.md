@@ -7,8 +7,8 @@ rankings, diagnostics, ensembles, reports without figures) depends only on numpy
 pyarrow, scipy and PyYAML.
 
 ```bash
-pip install "etcompare[geo,plot]"   # once published; until then, from a checkout:
-pip install -e ".[geo,plot]"
+pip install "etcompare[geo,plot]"
+pip install -e ".[geo,plot]"        # or from a checkout
 ```
 
 - `geo` (rasterio, pyproj, shapely, geopandas): raster indexing and extraction, footprint

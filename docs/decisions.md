@@ -1902,4 +1902,10 @@ Both comparisons found no difference. The final runs are in D-080.
   - `Bluff.gpkg`, `US-UTJ.ini` and `comparison.vrt` are no longer tracked; they remain in earlier history.
   - The rescan of the sdist and wheel finds one remaining station ID: the `diagnostics` reason string "the US-UTJ daily table has no wind direction", which is written into output tables. Changing it would change results, so it is kept.
 - **Environment (2026-10-20, about 10:15).** Windows Code Integrity began blocking `pyarrow/lib.cp313-win_amd64.pyd` in the project venv (event 3077); the file is unchanged since 2026-10-15. Tests and the docs build that need Parquet cannot run locally until it loads again. The changes after that point (distribution trimming, test-ID renaming) were checked by ruff, mypy, 104 importable tests and the package scan; the CI jobs cover the rest.
-
+- **Publication (2026-10-20, user authorization).**
+  - CI run 39471129119 on commit `dcc59fc` passed every job: Ubuntu and Windows × Python 3.11 and 3.13 (836 passed, 34 integration skipped), lowest dependencies (773 passed), the pinned demonstration, and the strict docs build.
+  - The distributions were built from that commit, scanned (only the `diagnostics` reason string above) and passed `twine check`.
+  - `etcompare` 0.1.0 was uploaded to PyPI. The published wheel and sdist hashes equal the local build (`75226f0d…`, `f9bbdd48…`), and a clean `uvx` install from PyPI runs `etcompare --version`.
+  - The commit is tagged `v0.1.0`.
+- **History rewrite (2026-10-20, user decision).** The database address and the three station files were removed from every commit of `main` and `step18-release` with git-filter-repo and force-pushed; the current tree was unchanged. GitHub still serves the old commits through PR #1 until GitHub Support purges them.
+- **Smart App Control (2026-10-20).** The pyarrow block came from Windows Smart App Control (policy VerifiedAndReputableDesktop, enforcement) refusing an unsigned, renamed copy of `msvcp140_atomic_wait` bundled in the pyarrow wheel. The user turned Smart App Control off. With pyarrow loading again, the full local suite passed (867, 3 skipped), and the real-station reruns matched the baselines (197 and 58 tables; only the etcompare version stamp in the metadata differs).

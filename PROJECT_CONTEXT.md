@@ -260,7 +260,7 @@ Keep context stable. Update it when verified input semantics or scope changes, i
 
 Do not claim the source raster paths are accessible until checked in the user's runtime. Do not expose or package private station data publicly without permission. Use small synthetic fixtures for distributable tests and keep user-supplied examples as local integration inputs unless authorized otherwise.
 
-**Current handoff (updated 2026-10-20, after step 18):** All 18 guide steps are implemented. Version 0.1.0 (MIT) is ready on branch `step18-release`. It is unpublished, unpushed, and has no Read the Docs project yet.
+**Current handoff (updated 2026-10-20, after step 18):** All 18 guide steps are implemented. Version 0.1.0 (MIT) is on PyPI (2026-10-20, tag `v0.1.0`). There is no Read the Docs project yet.
 - **Resilient processing (step 18; D-079):** a new `processing:` section.
   - Keep-awake on Windows; the D-078 9-hour pause was idle sleep.
   - Retries of transient read errors: 3 attempts, 1 s and 4 s backoff, logged as `io_retry`.

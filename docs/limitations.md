@@ -68,10 +68,8 @@ the project's decision log (D-numbers), which is kept with the source repository
 
 ## Release status
 
-- Not published to PyPI. The name `etcompare` was free on PyPI, TestPyPI and conda-forge
-  on 2026-10-20.
+- Published on PyPI as `etcompare` 0.1.0 (2026-10-20).
 - No Read the Docs project exists yet. The configuration (`.readthedocs.yaml`) is ready.
-- The GitHub Actions workflow is written but has not run. The repository has not been
-  pushed for this release.
-- Tested locally on Windows 11 with Python 3.13 (current dependencies) and Python 3.11
-  (lowest declared dependencies, core tests). The CI matrix adds Ubuntu.
+- Tested in CI on Ubuntu and Windows with Python 3.11 and 3.13, on the lowest declared
+  dependencies (Python 3.11, core), and in the pinned demonstration environment; tested
+  locally on Windows 11 with Python 3.13.
