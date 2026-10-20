@@ -1852,7 +1852,7 @@ Both outputs equal the stored tables. The M: table differs only in `source_path`
 Both comparisons found no difference. The final runs are in D-080.
 
 ### D-080 — First release 0.1.0 (Adopted 2026-10-20, user decisions; Information)
-- **Licence:** MIT, chosen by the assistant after the user asked for "an open licence". The copyright holder is "The etcompare contributors". fluxfootprints (GPL-3.0) stays an optional, separately installed dependency, which etcompare imports only when present (D-056).
+- **Licence:** MIT, chosen by the assistant after the user asked for "an open licence". The copyright holder is Paul Inkenbrandt (user, 2026-10-20). fluxfootprints (GPL-3.0) stays an optional, separately installed dependency, which etcompare imports only when present (D-056).
 - **Version** 0.1.0. **Name** `etcompare`: unregistered on PyPI, TestPyPI and conda-forge on 2026-10-20. Nothing was published.
 - **Changelog:** `CHANGELOG.md`, Keep a Changelog format.
 - **Documentation:** Sphinx with MyST Markdown for Read the Docs (`docs/conf.py`, `.readthedocs.yaml`, `docs/requirements.txt`; theme `sphinx_rtd_theme`). The pages are getting started, configuration, method guide, limitations, public API (autodoc, one page per module), data dictionary, references, this log, the input contract and the changelog.

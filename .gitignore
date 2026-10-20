@@ -32,3 +32,8 @@ eddy_events_202610171141.csv
 
 # Documentation build
 docs/_build/
+
+# Station-specific inputs kept local (untracked 2026-10-20; still in earlier history)
+/Bluff.gpkg
+/US-UTJ.ini
+/comparison.vrt
