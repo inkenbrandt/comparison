@@ -1,27 +1,57 @@
 # etcompare
 
-Working name for a Python library that compares OpenET model estimates with
-quality-controlled eddy covariance (EC) station ET.
+etcompare compares daily OpenET model evapotranspiration with quality-controlled eddy
+covariance (EC) station ET. It builds on products you already have: flux-data-qaqc daily
+exports, fluxfootprints footprint rasters, and daily OpenET GeoTIFFs or a table of values
+already extracted from them. One YAML file declares the whole analysis. etcompare then:
 
-Status: under development; see `IMPLEMENTATION_STATUS.md`. The scientific
-contract for inputs is in `docs/input_contract.md` and design decisions are in
-`docs/decisions.md`.
+- extracts model ET over footprints or fixed windows;
+- builds frozen comparison cohorts;
+- scores daily pairs and period totals;
+- adds paired block-bootstrap intervals and rank stability;
+- runs diagnostics, representativeness, event, water-balance and held-out ensemble
+  analyses when they are declared;
+- writes a report that states what was skipped and why.
 
-## Install (development)
+Version 0.1.0 (MIT). It is not published to PyPI.
+
+- **Documentation:** `docs/`, built with Sphinx for Read the Docs (method guide,
+  configuration, limitations, public API, data dictionary, references).
+- **Changes:** `CHANGELOG.md`.
+- **Design decisions:** `docs/decisions.md`.
+- **Development status:** `IMPLEMENTATION_STATUS.md`.
+
+## Install
 
 ```bash
-uv sync                    # core: numpy, pandas, pyarrow, scipy, pyyaml
-uv sync --extra geo        # optional raster/geospatial dependencies
-uv run pytest
+pip install -e ".[geo,plot]"     # from a checkout; geo = rasters, plot = figures
+# or, for development:
+uv sync --extra geo --extra plot
 ```
 
-The tabular core never imports the geospatial or plotting extras, needs no
-credentials, and makes no network calls.
+The core (tables, cohorts, metrics, intervals, rankings, reports without figures) needs
+only numpy, pandas, pyarrow, scipy and PyYAML. Importing etcompare makes no network calls
+and needs no credentials.
+
+## Try it offline
+
+```bash
+etcompare demo demo --rasters      # fixed-seed synthetic stations, models, rasters, footprints
+etcompare run demo/config.yaml     # about 4–5 minutes; the report is in demo/outputs/report/
+```
+
+Every value in the demonstration is generated. Its stations (`XX-SY1..3`) and models are not
+real, and every report page and caption says so. Without `--rasters`, the demonstration
+uses pre-extracted tables only and needs no `geo` extra.
+
+Where the console script is blocked (for example by Windows Application Control), use
+`python -m etcompare` instead. The notebooks in `notebooks/` cover:
+
+- a Colab quickstart (Google Drive is optional);
+- pre-extracted tables;
+- the raster workflow.
 
 ## Command line
-
-Everything an analysis needs is declared in a YAML configuration (see
-`examples/us_utj.yaml`); the command line only chooses the stage.
 
 ```bash
 etcompare validate config.yaml   # read every declared table through its adapter
@@ -29,21 +59,42 @@ etcompare index    config.yaml   # index OpenET rasters and footprint sets
 etcompare extract  config.yaml   # footprint aggregation, raster extraction, footprint sets
 etcompare analyze  config.yaml   # cohorts, periods, metrics, intervals, rankings, ...
 etcompare report   config.yaml   # figures, Markdown/HTML report, skipped-analyses table
-etcompare run      config.yaml   # all five; units whose cache is valid are reused
-python -m etcompare run config.yaml   # the same, where a console script is blocked
+etcompare run      config.yaml   # all five; units whose inputs did not change are reused
+etcompare demo     DIRECTORY     # write the synthetic demonstration (--rasters adds GeoTIFFs)
 ```
 
-Options: `--force` (rebuild instead of reusing cached outputs), `--log-format json|text`
-and `--log-level`. Exit codes: 0 success, 2 configuration or data-validation error,
-1 anything else. Each invocation writes `<output_dir>/runs/<run_id>/run_manifest.json`
-(config hash, input checksums, package versions, git revision, upstream versions,
-grids, masks, seeds, exclusion counts, unit statuses) and a JSON-lines log; the latest
-manifest is copied to `<output_dir>/run_manifest.json`. The report needs the `plot`
-extra (`uv sync --extra plot`).
+Options:
+- `--force` rebuilds instead of reusing the cache.
+- `--log-format json|text` and `--log-level` control stderr logging.
 
-Offline synthetic demonstration (every value generated; labelled synthetic throughout):
+Exit codes:
+- **0:** success.
+- **2:** a configuration or data-validation error, including a systematic read failure.
+- **1:** any other error.
 
-```bash
-python -c "from etcompare.demo import write_demo; write_demo('demo')"
-python -m etcompare run demo/config.yaml       # report in demo/outputs/report/
-```
+Each run writes `<output_dir>/runs/<run_id>/run_manifest.json` and a JSON-lines log. The
+manifest records the configuration hash, input checksums, versions, git revision, grids,
+masks, seeds, exclusion counts and unit statuses.
+
+Long raster runs are protected by the `processing:` section:
+
+- keep-awake on Windows;
+- finite retries of transient read errors;
+- stall and suspend detection;
+- monthly checkpoints, so an interrupted extraction resumes to identical outputs;
+- unreadable files skipped and counted;
+- a run that fails outright when failures look systematic.
+
+See `docs/configuration.md`.
+
+## Limitations
+
+See `docs/limitations.md` for the full list. In short:
+
+- results are station level;
+- ensembles are built after extraction, never pixel-level;
+- there is no hierarchical interval across stations;
+- there is no polygon ET extraction;
+- staging and concurrency are not implemented.
+
+Real-station data and reports stay local and are git-ignored.
