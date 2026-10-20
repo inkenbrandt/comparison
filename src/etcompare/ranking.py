@@ -206,7 +206,7 @@ def adjust_p_values(p: Sequence[float], policy: str) -> np.ndarray:
 def bootstrap_p_value(differences: np.ndarray) -> float:
     """Percentile-inversion p-value of ``H0: contrast = 0`` from replicate differences."""
     d = np.asarray(differences, dtype=float)
-    return float(min(1.0, 2.0 * min(np.mean(d <= 0), np.mean(d >= 0))))
+    return float(min(1.0, 2.0 * min(float(np.mean(d <= 0)), float(np.mean(d >= 0)))))
 
 
 def _bounds(reps: np.ndarray, estimate: float, method: str, alpha: float) -> tuple[float, float]:

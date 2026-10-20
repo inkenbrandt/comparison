@@ -114,19 +114,23 @@ def keep_awake(enabled: bool = True) -> Iterator[bool]:
     Windows only (``SetThreadExecutionState``); the display may still turn off. On other
     systems, or when disabled, nothing is requested.
     """
-    held = False
-    if enabled and sys.platform == "win32":
-        try:
-            held = bool(ctypes.WinDLL("kernel32").SetThreadExecutionState(
-                _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED))
-        except (OSError, AttributeError):
-            held = False
+    held = _set_execution_state(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED) if enabled else False
     log_event(_log, "keep_awake", requested=enabled, held=held, platform=sys.platform)
     try:
         yield held
     finally:
         if held:
-            ctypes.WinDLL("kernel32").SetThreadExecutionState(_ES_CONTINUOUS)
+            _set_execution_state(_ES_CONTINUOUS)
+
+
+def _set_execution_state(flags: int) -> bool:
+    """``SetThreadExecutionState`` on Windows; ``False`` (nothing requested) elsewhere."""
+    if sys.platform != "win32":
+        return False
+    try:
+        return bool(ctypes.WinDLL("kernel32").SetThreadExecutionState(flags))
+    except (OSError, AttributeError):
+        return False
 
 
 # --------------------------------------------------------------------------- watchdog

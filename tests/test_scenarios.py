@@ -6,21 +6,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from tests.test_water_balance import (
-    AGG,
-    BASE,
-    DS,
-    ET,
-    STATION,
-    P,
-    balance,
-    make_closed_terms,
-    spec,
-    station_table,
-    table_term,
-    unknown,
-    write,
-)
 
 from etcompare.config import (
     PerturbationSpec,
@@ -38,6 +23,21 @@ from etcompare.scenarios import (
     scenario_sha256,
 )
 from etcompare.schemas import INTERVALS, SCENARIO_RESULTS
+from test_water_balance import (  # tests/ is on sys.path (pytest rootdir insertion)
+    AGG,
+    BASE,
+    DS,
+    ET,
+    STATION,
+    P,
+    balance,
+    make_closed_terms,
+    spec,
+    station_table,
+    table_term,
+    unknown,
+    write,
+)
 
 
 @pytest.fixture

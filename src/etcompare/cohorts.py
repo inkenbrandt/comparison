@@ -56,6 +56,8 @@ from etcompare.schemas import (
 from etcompare.validation import Issue, ValidationReport
 
 STAGE = "cohort"
+#: A 0-d object array holding None: the null branch of a string-or-null ``np.where``.
+_NONE = np.asarray(None, dtype=object)
 COMMON = "common"
 _UNIT = ["site_id", "date", "model"]
 
@@ -279,7 +281,7 @@ def build_cohort(
     failing = codes != ""
     own_ok = pd.Series(~failing.any(axis=1), index=units.index)
     first = codes[np.arange(len(codes)), failing.argmax(axis=1)] if len(codes) else codes
-    units["reason_code"] = pd.Series(np.where(own_ok, None, first), index=units.index,
+    units["reason_code"] = pd.Series(np.where(own_ok, _NONE, first), index=units.index,
                                      dtype=object)
     units["detail"] = pd.Series([
         ";".join(f"{labels[j]}:{codes[r, j]}" for j in np.flatnonzero(failing[r])) or None

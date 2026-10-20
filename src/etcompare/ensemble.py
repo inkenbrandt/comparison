@@ -122,6 +122,8 @@ LEVEL = "post_extraction"
 BASE_FLAGS = ("post_extraction_ensemble", "not_pixel_level_ensemble")
 _COMBINATION_PRODUCT = {"mean": MEAN, "median": MEDIAN}
 _TIE = 1e-12
+#: A 0-d object array holding None: the null branch of a string-or-null ``np.where``.
+_NONE = np.asarray(None, dtype=object)
 
 
 # --------------------------------------------------------------------------- weights
@@ -569,12 +571,12 @@ def run_ensemble(spec: EnsembleSpec, observations: Tables, extractions: Tables, 
     if spec.missing_member_policy == "require_all":
         eligible = has_ref & (n_avail == k)
         why = np.where(~has_ref, "reference_unavailable",
-                       np.where(n_avail < k, "member_missing", None))
+                       np.where(n_avail < k, "member_missing", _NONE))
     else:
         assert spec.min_members is not None
         eligible = has_ref & (n_avail >= spec.min_members)
         why = np.where(~has_ref, "reference_unavailable",
-                       np.where(n_avail < spec.min_members, "below_min_members", None))
+                       np.where(n_avail < spec.min_members, "below_min_members", _NONE))
     complete = eligible & (n_avail == k)
     reweighted = eligible & ~complete
     filled_ok = (prov != "corrected_filled") | spec.gap_filled_training

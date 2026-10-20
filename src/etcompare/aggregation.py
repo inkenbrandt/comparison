@@ -100,6 +100,8 @@ from etcompare.validation import Issue, ValidationReport
 _GROUP = ["comparison_id", "cohort_id", "site_id", "model", "reference_variant",
           "extraction_method", "footprint_set_id"]
 _SIDE = ["extraction_method", "footprint_set_id"]
+#: A 0-d object array holding None: the null branch of a string-or-null ``np.where``.
+_NONE = np.asarray(None, dtype=object)
 DAILY_SUPPORT = "interpolated_daily"
 
 
@@ -430,7 +432,7 @@ def _products(rows: pd.DataFrame, spec: PeriodAggregationSpec, support: Mapping[
         r["product"] = name
         r["observed_total_mm"] = np.where(ok, r[values[0]] * scale, np.nan)
         r["modeled_total_mm"] = np.where(ok, r[values[1]] * scale, np.nan)
-        r["validity_reason"] = pd.Series(np.where(ok, None, reason), index=r.index, dtype=object)
+        r["validity_reason"] = pd.Series(np.where(ok, _NONE, reason), index=r.index, dtype=object)
         r["estimation_method"] = method
         r["n_days_imputed"] = np.nan
         return r
