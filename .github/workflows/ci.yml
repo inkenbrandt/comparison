@@ -32,6 +32,7 @@ jobs:
       - name: Install (geo and plot extras, dev tools)
         run: uv sync --extra geo --extra plot
       - name: Lint and type-check
+        shell: bash   # PowerShell on Windows runners does not expand tools/run_*.py
         run: |
           uv run ruff check src tests tools/run_*.py tools/make_data_dictionary.py
           uv run mypy
