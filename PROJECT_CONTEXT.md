@@ -260,7 +260,14 @@ Keep context stable. Update it when verified input semantics or scope changes, i
 
 Do not claim the source raster paths are accessible until checked in the user's runtime. Do not expose or package private station data publicly without permission. Use small synthetic fixtures for distributable tests and keep user-supplied examples as local integration inputs unless authorized otherwise.
 
-**Current handoff (updated 2026-10-18, after step 16):** Guide steps 1–16 are implemented, and step 17 (plots, reports, configuration and CLI) is next.
+**Current handoff (updated 2026-10-19, after step 17):** Guide steps 1–17 are implemented, and step 18 (resilient processing and a first release) is next.
+- **Workflow and CLI (step 17; D-074 to D-077):** `etcompare validate|index|extract|analyze|report|run config.yaml` (`python -m etcompare …` where the console script is blocked). The CLI and `tools/run_*.py` are thin layers over `etcompare.workflow.Workflow` units, which call the step 5–16 functions unchanged (177 US-UTJ tables reproduced bit for bit).
+  - Everything is declared in the configuration. The former flags are `run.skip`, `crop_height_tables[].on_missing`, `raster_extractions[].strict`, `footprint_stacks` and `footprint_comparisons`.
+  - Per-unit cache keyed on the code, the configuration entries read and the input identities. Rasters use size + mtime by default (`cache.raster_identity: sha256` opt-in; hashing J: takes about 11 min). Invalidation is exact and tested.
+  - Each run writes a manifest (config hash, inputs, versions, git, upstream, grids, masks, seeds, exclusions, unit statuses) and a JSON log under `<output_dir>/runs/<run_id>/`.
+  - Reports (Markdown plus self-contained HTML; PNG/SVG figures with the rows they drew) are built only from saved tables, with a skipped-analyses table, open decisions (`decisions:` plus status columns) and guarded wording.
+  - `etcompare.demo.write_demo` writes a fixed-seed synthetic dataset and config (stations `XX-SY1..3`, labelled synthetic throughout).
+  - **Open:** none new; every earlier open decision is now listed in `decisions:` of the example configs and in each report.
 - **Ensembles (step 16):** `etcompare.ensemble.run_ensemble` (D-065) compares the official ensemble, the mean and median of the declared members, and an optional fitted ensemble on the same frozen days. It reuses `build_cohort`, `score_comparison`, `bootstrap_comparison` and `rank_comparison`.
   - Ensembles are post-extraction, never pixel-level. The official ensemble is never a member, and measured-LE footprints never enter.
   - Fitted weights are simplex least squares shrunk toward equal weights. α is chosen by inner grouped folds on training data, with a time buffer. Every fold's membership, weights, α, inner scores and member availability are saved.
