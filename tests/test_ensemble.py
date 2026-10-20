@@ -686,7 +686,7 @@ def test_config_per_site_side_is_a_label():
 
 
 def test_too_few_held_out_days_decline_the_fold():
-    """A fold whose training qualifies but which predicts few days is declined (user, 2026-10-19)."""
+    """A fold that predicts too few days is declined, however good its training (D-072)."""
     days = pd.date_range("2021-01-01", "2023-12-31")
     o = observed(days)
     values = members(o, days)

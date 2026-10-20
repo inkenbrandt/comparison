@@ -1604,6 +1604,46 @@ What this implies under the declared rule (calendar years, 28-day buffer, ≥ 2 
   - the US-UTE wrong-region files, which are `no_overlap` for geesebal and ptjpl only.
 
 **Open:**
-- Whether the 171 US-UTE groups on J: should keep the US-UTE file. That would restore at most the 39 in-record days.
-- US-UTM's rebuild, once the database is reachable.
+- ~~Whether the 171 US-UTE groups on J: should keep the US-UTE file.~~ Swapped (D-073).
+- ~~US-UTM's rebuild, once the database is reachable.~~ Rebuilt with constant heights (D-073).
+
+---
+
+**Revision 2026-10-19 (v):** D-073 added. D-072's results are superseded where D-073 restates them.
+
+### D-073 — US-UTE files swapped on J:, US-UTM rebuilt (Adopted 2026-10-19, user decisions; Information)
+**US-UTE wrong-region files swapped** (user: "swap out the wrong region files").
+- **The swap.** Each of the 171 J: files on another region's grid (57 geesebal, 114 ptjpl) was moved, not deleted, to `J:/FLUX/wrong_region_quarantine/US-UTE/<model>/`, outside the raster root, so discovery never sees it. The C: file of the same model and date on the US-UTE grid was copied in.
+- **Two files without a replacement.** ptjpl 2023-06-05 and 06 are also on another region's grid, and no US-UTE file exists for those dates. They were moved to quarantine too; they predate US-UTE's record (from 2024-06-18).
+- **The log** is `J:/FLUX/wrong_region_quarantine/US-UTE_swap_log.csv`: every moved file with its origin and SHA-256, and every replacement with its C: source and SHA-256, checked equal after copying.
+  - The first attempt stopped after the 57 geesebal swaps and one quarantine (a missing replacement was read as NaN). It was resumed, and the log was rebuilt from the quarantine folder; no file was lost.
+- **Result.** J: US-UTE now has 4,753 files, all on the station grid, with no duplicate dates. The US-UTE extraction has no `no_overlap` rows (3,008 ok model-days).
+
+**US-UTM rebuilt** (user: rebuild; then "rebuild with production's constants").
+- **Why the US-UTJ procedure was not possible.** With database access restored, `groundwater.daily_footprint_parameters` has **no US-UTM rows** in any zone (read-only queries, 2026-10-19). The crop-height table has none either.
+- **Production's constant heights are used:** crop height 1.1 m, measurement height 4.22 m, zm = 4.22 − 0.7 × 1.1 = 3.45 m and z0 = 0.11 × 1.1 = 0.121 m for every half-hour (`outputs/footprint_inputs/US-UTM_daily_footprint_parameters.parquet`, `zone_status = production_constant`, flagged `constant_heights` in its JSON).
+  - The stack tool's printed cross-check says "the DB values"; for US-UTM these are production's constants.
+  - The coordinates are station_attribute_view's (38.58785, −109.57749), and the station declaration now uses them too (about 0.5 m from the `.ini`).
+- **The new set.** `US-UTM_nldas_eto_20261019`, with the same stack settings and NLDAS aggregation as the other stations: 34 monthly stacks, every half-hour with footprint mass, and 831 of 832 days written. Extraction `utm_nldas_clip` replaces `utm_production_clip` in the ensemble; the production set stays declared for the record.
+- **Little changes.** Rebuilt minus production footprint ET over 5,237 model-days has a mean of 0.000, a 95th-percentile |difference| below 0.001 and a maximum of 0.026 mm d⁻¹. US-UTM's eligible days and every result are unchanged to three decimals.
+- **The remaining difference in kind:** US-UTM's heights are constant, while the other stations have daily crop heights.
+
+**Current results** (`tools/run_ensembles.py examples/utah_stations.yaml`):
+- **Eligible station-days:** 1,839 (1,264 in April–October). US-UTE has 218, all in 2025.
+- **Leave-one-year-out: declined** (as in D-072).
+- **Leave-one-site-out: held out, 6 of 7 folds.** US-UTG is declined (41 days). SIMS gets 0.56–0.71, SSEBop 0.19–0.29 and geeSEBAL 0.08–0.16. α = 0.25 at US-UTD and 0 elsewhere.
+
+| Station | Days | Official | Mean | Fitted (RMSE, mm d⁻¹) | Fitted − mean |
+|---|---|---|---|---|---|
+| US-UTD | 315 | 1.050 | 1.029 | 0.964 | −0.065 |
+| US-UTE | 218 | 1.684 | 1.611 | 1.321 | −0.290 |
+| US-UTJ | 188 | 1.140 | 1.082 | 0.790 | −0.292 |
+| US-UTM | 267 | 1.311 | 1.171 | 1.186 | +0.015 |
+| US-UTV | 251 | 1.672 | 1.615 | 1.271 | −0.344 |
+| US-UTW | 559 | 1.318 | 1.309 | 1.285 | −0.023 |
+
+- **Point estimates.** The fitted ensemble is lower than the mean at 5 of 6 stations and lower than the official ensemble at 6 of 6. The equal-station mean differences are −0.166 (mean) and −0.226 (official); for April–October they are −0.218 and −0.291.
+- **Supported improvements.** RMSE against the mean is `supported` at US-UTE and US-UTV at 7- and 14-day blocks, and at US-UTJ at 7-day blocks only. It is not supported at US-UTD, UTM or UTW. 28-day blocks lack support except at US-UTW.
+- **Caveats** as in D-071 and D-072: exploratory and station level, with no network interval and shared weather across site folds; the 7- and 14-day intervals are probably too narrow; the corn station is not evaluated.
+- **Integration test** (`tests/integration/test_utah_ensemble.py`, 8 tests): the counts above; US-UTE has no `no_overlap`; the US-UTM rebuild agrees with production within 0.03 mm d⁻¹.
 

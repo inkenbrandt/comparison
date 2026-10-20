@@ -64,7 +64,7 @@ def test_eligible_days_match_an_independent_count(result, independent):
     d = result.days.frame
     got = d[d["eligible"]].groupby("site_id").size().to_dict()
     assert got == {s: len(w) for s, (w, _) in independent.items()}
-    assert sum(got.values()) == 1801
+    assert sum(got.values()) == 1839
     p = result.predictions.frame
     for site, (w, _) in independent.items():
         mean = p[(p["product"] == MEAN) & (p["site_id"] == site)].set_index("date")["value_mm"]
@@ -82,7 +82,7 @@ def test_leave_one_site_out_is_held_out_and_small_stations_are_declined(result):
     m = result.training_membership.frame
     m = m[m["design"] == "leave_one_site_out"]
     trained = set(m[m["in_training"]]["site_id"])
-    assert "US-UTG" not in trained and "US-UTE" in trained       # US-UTE has exactly 180
+    assert "US-UTG" not in trained and "US-UTE" in trained       # US-UTE has 218
     for site in ("US-UTD", "US-UTE", "US-UTJ", "US-UTM", "US-UTV", "US-UTW"):
         own = m[(m["design"] == "leave_one_site_out") & (m["fold"] == site)]
         assert not own[own["site_id"] == site]["in_training"].any()
@@ -122,15 +122,22 @@ def test_april_october_subset_has_only_growing_season_days(result):
     c = result.comparisons["leave_one_site_out__apr_oct"].cohort.paired.frame
     assert set(c["date"].dt.month) <= set(range(4, 11))
     s = result.summary.frame.set_index(["scope", "subset"])
-    assert s.loc[("baseline", "apr_oct"), "n_days_compared"] == 1228
+    assert s.loc[("baseline", "apr_oct"), "n_days_compared"] == 1264
 
 
-def test_us_ute_wrong_region_rasters_are_no_overlap_not_hidden():
-    """J: keeps some US-UTE files of another region (D-072); only those models are affected."""
+def test_us_ute_rasters_all_cover_the_station():
+    """The wrong-region US-UTE files were swapped on J: (D-073): no raster lacks overlap."""
     ex = pd.read_csv(OUT / "ute_nldas_clip_exclusions.csv")  # type: ignore[operator]
-    x = ex[ex["reason_code"] == "no_overlap"]
-    models = set(x["input_key"].str.extract(r"model=(\w+)")[0])
-    assert models <= {"geesebal", "ptjpl"}
+    assert not (ex["reason_code"] == "no_overlap").any()
+
+
+def test_us_utm_rebuilt_footprints_match_production():
+    """US-UTM rebuilt with production's constant heights (D-073) stays within 0.03 mm/day."""
+    a = read_table(OUT / "utm_production_clip_extractions.parquet").frame  # type: ignore[operator]
+    b = read_table(OUT / "utm_nldas_clip_extractions.parquet").frame  # type: ignore[operator]
+    m = a.merge(b, on=["date", "model", "extraction_method"], suffixes=("_p", "_n"))
+    assert len(m) > 5000
+    assert float((m["et_mm_n"] - m["et_mm_p"]).abs().max()) < 0.03
 
 
 @pytest.mark.skipif(not OLD_UTJ.exists(), reason="earlier unclipped US-UTJ extraction absent")

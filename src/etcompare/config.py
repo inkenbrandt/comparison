@@ -3305,8 +3305,9 @@ class EnsembleSpec:
       (training days removed on each side of every held-out fold, inner folds too),
       ``min_training_folds`` (>= 2, so inner validation is grouped),
       ``min_training_days_per_fold`` and ``min_test_days_per_fold`` (a held-out fold with
-      fewer eligible days is declined, so a handful of days never counts as held out). ``insufficient_data`` (``decline`` or ``exploratory``)
-      says what happens when no fold can be fitted.
+      fewer eligible days is declined, so a handful of days never counts as held out).
+      ``insufficient_data`` (``decline`` or ``exploratory``) says what happens when no fold
+      can be fitted.
     - **Gap-filled reference days** are training rows only with ``gap_filled_training: true``
       (``et_corrected_inclusive`` only); they share gridMET drivers with OpenET (D-005).
     - ``metric_set``, ``bootstrap`` (optional) and ``contrast_metrics`` (score metrics with a

@@ -2,7 +2,7 @@
 # Data paths are the user's local directories (never distributed; D-014). Every choice here
 # was made by the user on 2026-10-18 unless marked otherwise:
 #   - footprints rebuilt as NLDAS-ETo weighted from per-timestep stacks, as for US-UTJ (D-037);
-#     US-UTM uses its production top-level footprints;
+#     US-UTM rebuilt with production's constant heights (D-073);
 #   - OpenET from J:/FLUX/OpenET_Daily_Tiffs (user, 2026-10-19; clipped except US-UTE);
 #   - byte-identical duplicate rasters collapse to one file; differing ones are held out;
 #   - every station: UTC-7, local standard time, interval start, mm/day (as US-UTJ);
@@ -14,12 +14,12 @@ x-station: &station
   day_definition: local_standard_time
   interval_label: start
 stations:
-  # Coordinates: UGS station_attribute_view (read-only query, 2026-10-18); US-UTM from US-UTM.ini.
+  # Coordinates: UGS station_attribute_view (read-only queries, 2026-10-18/19).
   US-UTD: {<<: *station, latitude: 38.1038, longitude: -109.5952}
   US-UTE: {<<: *station, latitude: 37.735287, longitude: -111.570816}
   US-UTG: {<<: *station, latitude: 39.018806, longitude: -110.162766}
   US-UTJ: {<<: *station, latitude: 37.281746, longitude: -109.53489, land_cover: CRO}
-  US-UTM: {<<: *station, latitude: 38.5879, longitude: -109.5775}
+  US-UTM: {<<: *station, latitude: 38.58785, longitude: -109.57749}
   US-UTV: {<<: *station, latitude: 40.12641, longitude: -109.954735}
   US-UTW: {<<: *station, latitude: 39.445362, longitude: -110.72905}
 
@@ -71,8 +71,11 @@ footprint_sets:
   - {<<: *nldas_set, set_id: US-UTG_nldas_eto_20261018, root: ../outputs/footprints/US-UTG/nldas_eto_weighted}
   - {<<: *nldas_set, set_id: US-UTJ_nldas_eto_20261014, root: ../outputs/footprints/US-UTJ/nldas_eto_weighted}
   - {<<: *nldas_set, set_id: US-UTV_nldas_eto_20261018, root: ../outputs/footprints/US-UTV/nldas_eto_weighted}
+  # US-UTM: rebuilt from its stack with production's CONSTANT heights (zm 3.45 m, z0 0.121 m;
+  # the UGS parameter table has no US-UTM rows). User decision 2026-10-19 (D-073).
+  - {<<: *nldas_set, set_id: US-UTM_nldas_eto_20261019, root: ../outputs/footprints/US-UTM/nldas_eto_weighted}
   - {<<: *nldas_set, set_id: US-UTW_nldas_eto_20261018, root: ../outputs/footprints/US-UTW/nldas_eto_weighted}
-  # US-UTM: production top-level daily footprints (user, 2026-10-18). footprint_workflow_v2-1
+  # US-UTM production top-level footprints: kept for the record; superseded by the rebuild (D-073). footprint_workflow_v2-1
   # weights by NLDAS grass ETo (code-inferred; not verified by reproduction as US-UTJ was, D-036).
   - set_id: US-UTM_production_etw
     root: "C:/Users/Hutto/Documents/footprints/US-UTM"
@@ -102,6 +105,7 @@ raster_extractions:
   - {<<: *extraction, name: utg_nldas_clip, site_id: US-UTG, footprint_set_id: US-UTG_nldas_eto_20261018, start: "2025-03-24", end: "2025-10-10"}
   - {<<: *extraction, name: utj_nldas_clip, site_id: US-UTJ, footprint_set_id: US-UTJ_nldas_eto_20261014, start: "2024-06-05", end: "2025-10-09"}
   - {<<: *extraction, name: utm_production_clip, site_id: US-UTM, footprint_set_id: US-UTM_production_etw, start: "2022-10-19", end: "2025-10-09"}
+  - {<<: *extraction, name: utm_nldas_clip, site_id: US-UTM, footprint_set_id: US-UTM_nldas_eto_20261019, start: "2022-10-19", end: "2025-10-09"}
   - {<<: *extraction, name: utv_nldas_clip, site_id: US-UTV, footprint_set_id: US-UTV_nldas_eto_20261018, start: "2023-09-27", end: "2025-10-14"}
   - {<<: *extraction, name: utw_nldas_clip, site_id: US-UTW, footprint_set_id: US-UTW_nldas_eto_20261018, start: "2021-03-10", end: "2025-10-10"}
 
@@ -132,16 +136,16 @@ ensembles:
     official: ensemble
     reference_variant: et_corrected_measured
     side: {extraction_method: footprint_conservative, footprint_set_id: utah_per_site_footprints}
-    site_footprint_sets:              # each station's own set; US-UTM's is the production build
+    site_footprint_sets:              # each station's own set (US-UTM: constant heights, D-073)
       US-UTD: US-UTD_nldas_eto_20261018
       US-UTE: US-UTE_nldas_eto_20261018
       US-UTG: US-UTG_nldas_eto_20261018
       US-UTJ: US-UTJ_nldas_eto_20261014
-      US-UTM: US-UTM_production_etw
+      US-UTM: US-UTM_nldas_eto_20261019
       US-UTV: US-UTV_nldas_eto_20261018
       US-UTW: US-UTW_nldas_eto_20261018
     sources: [utd_nldas_clip, ute_nldas_clip, utg_nldas_clip, utj_nldas_clip,
-              utm_production_clip, utv_nldas_clip, utw_nldas_clip]
+              utm_nldas_clip, utv_nldas_clip, utw_nldas_clip]
     sites: [US-UTD, US-UTE, US-UTG, US-UTJ, US-UTM, US-UTV, US-UTW]
     missing_member_policy: require_all
     combinations: [mean, median]
