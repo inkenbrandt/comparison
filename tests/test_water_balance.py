@@ -331,13 +331,20 @@ def test_no_cohort_or_model_input():
 
 
 def test_residuals_feed_no_selection():
-    # Only the scenarios module may import the water balance; rankings, cohorts, metrics,
-    # filters and footprints never see a residual.
+    # Only the scenarios module uses the water balance as an input; rankings, cohorts,
+    # metrics, filters and footprints never see a residual. The step-17 orchestration
+    # (workflow runs the unit), the report (prints its table) and the demo (declares one)
+    # name it without passing a residual anywhere.
     src = Path(etcompare.__file__).parent
     users = sorted(p.name for p in src.rglob("*.py")
                    if "water_balance" in p.read_text(encoding="utf-8")
                    and p.name not in ("water_balance.py", "config.py", "schemas.py"))
-    assert users == ["scenarios.py"]
+    assert users == ["demo.py", "reporting.py", "scenarios.py", "workflow.py"]
+    selecting = ("cohorts.py", "metrics.py", "bootstrap.py", "ranking.py", "diagnostics.py",
+                 "ensemble.py", "extraction.py", "footprints.py", "aggregation.py",
+                 "events.py", "anomalies.py", "satellite.py", "representativeness.py")
+    for name in selecting:
+        assert "water_balance" not in (src / name).read_text(encoding="utf-8"), name
 
 
 # --------------------------------------------------------------------------- declarations
