@@ -274,7 +274,11 @@ Do not claim the source raster paths are accessible until checked in the user's 
     - Footprints were rebuilt as NLDAS-ETo weighted from stacks (US-UTM uses its production set), and OpenET is the clipped raster set (identical to the unclipped values for US-UTJ).
     - Leave-one-year-out has no held-out claim.
     - Leave-one-site-out is held out on 1,798 station-days: lower RMSE than the member mean at 6 of 7 stations (equal-station mean −0.058 mm d⁻¹), but worse at the corn station US-UTG. Few station intervals are separated, and there is no network interval.
-    - **Open:** the 186 US-UTE conflicting duplicates, a minimum held-out size, US-UTG's footprints, and whether to rebuild US-UTM.
+    - **Update (D-072, 2026-10-19):** the rasters now come from `J:/FLUX/OpenET_Daily_Tiffs`, and `min_test_days_per_fold: 180` is set. An extraction bug that hid rasters after a wrong-region file is fixed.
+      - Leave-one-year-out is declined.
+      - Leave-one-site-out: 6 of 7 folds fitted (US-UTG declined at 41 days). RMSE is lower than the mean at 5 of 6 stations (equal-station mean −0.168 mm d⁻¹).
+      - US-UTG keeps the default ffp_xr roughness-sublayer filter (zm > 27.5·z0), which explains its missing footprints.
+    - **Open:** 171 US-UTE files on J: are of another region; US-UTM's rebuild waits for database access.
 - **Water balance (step 15):** `etcompare.water_balance.compute_water_balance` (D-062) checks `residual = P + I + CR − ET − RO − DP − ΔS` over a declared boundary and the step-8 periods.
   - Every term is declared. An unknown term is never zero and makes the residual unknown, with every unknown term listed.
   - Scenario residuals are separate rows. Support mismatches are flagged, never equated.

@@ -3303,8 +3303,9 @@ class EnsembleSpec:
       leave-one-fold-out validation on training folds only, ``preprocessing: none``.
       ``fold_unit`` (year or water_year, for ``leave_one_year_out``), ``buffer_days``
       (training days removed on each side of every held-out fold, inner folds too),
-      ``min_training_folds`` (>= 2, so inner validation is grouped) and
-      ``min_training_days_per_fold``. ``insufficient_data`` (``decline`` or ``exploratory``)
+      ``min_training_folds`` (>= 2, so inner validation is grouped),
+      ``min_training_days_per_fold`` and ``min_test_days_per_fold`` (a held-out fold with
+      fewer eligible days is declined, so a handful of days never counts as held out). ``insufficient_data`` (``decline`` or ``exploratory``)
       says what happens when no fold can be fitted.
     - **Gap-filled reference days** are training rows only with ``gap_filled_training: true``
       (``et_corrected_inclusive`` only); they share gridMET drivers with OpenET (D-005).
@@ -3340,6 +3341,7 @@ class EnsembleSpec:
     buffer_days: int | None = None
     min_training_folds: int | None = None
     min_training_days_per_fold: int | None = None
+    min_test_days_per_fold: int | None = None
     method: str | None = None
     regularisation: str | None = None
     shrinkage_grid: tuple[float, ...] = ()
@@ -3352,7 +3354,8 @@ class EnsembleSpec:
     description: str | None = None
 
     _FIT_FIELDS: ClassVar[tuple[str, ...]] = (
-        "buffer_days", "min_training_folds", "min_training_days_per_fold", "method",
+        "buffer_days", "min_training_folds", "min_training_days_per_fold",
+        "min_test_days_per_fold", "method",
         "regularisation", "selection_metric", "preprocessing", "insufficient_data")
 
     def __post_init__(self) -> None:
@@ -3493,6 +3496,7 @@ class EnsembleSpec:
         _positive_int(self.buffer_days, key=key, field="buffer_days", minimum=0)
         _positive_int(self.min_training_folds, key=key, field="min_training_folds", minimum=2)
         _positive_int(self.min_training_days_per_fold, key=key, field="min_training_days_per_fold")
+        _positive_int(self.min_test_days_per_fold, key=key, field="min_test_days_per_fold")
         for f, allowed in (("method", ENSEMBLE_METHODS),
                            ("regularisation", ENSEMBLE_REGULARISATIONS),
                            ("selection_metric", ENSEMBLE_SELECTION_METRICS),

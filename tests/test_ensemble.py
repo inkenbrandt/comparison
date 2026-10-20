@@ -39,7 +39,7 @@ PRODUCTS = {**{m: product(m) for m in MEMBERS},
             "ens": ProductSpec("ens", "mm/day", "unknown", "interpolated_daily",
                                is_ensemble=True)}
 FIT = dict(designs=("leave_one_year_out",), fold_unit="year", buffer_days=28,
-           min_training_folds=2, min_training_days_per_fold=180,
+           min_training_folds=2, min_training_days_per_fold=180, min_test_days_per_fold=180,
            method="simplex_least_squares", regularisation="shrink_to_equal",
            shrinkage_grid=(0, 0.25, 0.5, 0.75, 1), selection_metric="rmse",
            preprocessing="none", insufficient_data="decline")
@@ -683,3 +683,27 @@ def test_config_per_site_side_is_a_label():
     e = cfg(side={"extraction_method": "footprint_conservative", "footprint_set_id": "lbl"},
             sites=["US-XXX"], site_footprint_sets={"US-XXX": "SET"}).ensemble("e")
     assert dict(e.site_footprint_sets) == {"US-XXX": "SET"}
+
+
+def test_too_few_held_out_days_decline_the_fold():
+    """A fold whose training qualifies but which predicts few days is declined (user, 2026-10-19)."""
+    days = pd.date_range("2021-01-01", "2023-12-31")
+    o = observed(days)
+    values = members(o, days)
+    keep = ~((days.year == 2022) & (days.month > 1))           # 2022 keeps 31 January days
+    obs = station(days[keep], o[keep])
+    exts = [f[f["date"].isin(days[keep])] for f in frames(values, days)]
+    r = run(o, values, days=days, obs=obs, exts=exts)
+    f = r.folds.frame.set_index("fold")
+    assert f.loc["2022", "status"] == "declined" and f.loc["2022", "n_test_days"] == 31
+    assert "31 eligible held-out day(s) < min_test_days_per_fold 180" in f.loc["2022",
+                                                                              "status_detail"]
+    p = r.predictions.frame
+    assert not ((p["product"] == FITTED) & (p["date"].dt.year == 2022)).any()
+    r2 = run(o, values, espec(min_test_days_per_fold=30), days=days, obs=obs, exts=exts)
+    assert r2.folds.frame.set_index("fold").loc["2022", "status"] == "fitted"
+
+
+def test_min_test_days_is_mandatory_with_designs():
+    with pytest.raises(ContractError, match="min_test_days_per_fold not declared"):
+        cfg(min_test_days_per_fold=None)

@@ -279,7 +279,19 @@ def extract_rasters(
                                             station, half, report)
                 plan = plans[key]
                 if plan.window is None:
-                    ids = ([FOOTPRINT] if "footprint" in methods and fp_ok else []) + \
+                    # The cached grid is the previous raster's: check this raster's own grid
+                    # before declaring that it does not overlap (D-072).
+                    own = read_header(asset.path).grid
+                    if own.grid_id != known_grid.grid_id:
+                        known_grid = own
+                        key = (known_grid.grid_id, fkey)
+                        if key not in plans:
+                            plans[key] = _make_plan(known_grid,
+                                                    prepared.grid if fp_ok else None,  # type: ignore[union-attr]
+                                                    station, half, report)
+                        plan = plans[key]
+                if plan.window is None:
+                    ids =([FOOTPRINT] if "footprint" in methods and fp_ok else []) + \
                         ([FOOTPRINT_COMMON] if "footprint_common_support" in methods and fp_ok
                          else []) + \
                         ([NEAREST] if "nearest_tower_pixel" in methods else []) + \

@@ -64,22 +64,26 @@ def test_eligible_days_match_an_independent_count(result, independent):
     d = result.days.frame
     got = d[d["eligible"]].groupby("site_id").size().to_dict()
     assert got == {s: len(w) for s, (w, _) in independent.items()}
-    assert sum(got.values()) == 1798
+    assert sum(got.values()) == 1801
     p = result.predictions.frame
     for site, (w, _) in independent.items():
         mean = p[(p["product"] == MEAN) & (p["site_id"] == site)].set_index("date")["value_mm"]
         np.testing.assert_allclose(mean.sort_index(), w[MEMBERS].mean(axis=1), rtol=1e-12)
 
 
-def test_leave_one_site_out_is_held_out_and_small_stations_never_train(result):
+def test_leave_one_site_out_is_held_out_and_small_stations_are_declined(result):
     s = result.summary.frame.set_index(["scope", "subset"])
     assert s.loc[("leave_one_site_out", "all"), "status"] == "held_out"
-    assert s.loc[("leave_one_site_out", "all"), "n_folds_fitted"] == 7
+    assert s.loc[("leave_one_site_out", "all"), "n_folds_fitted"] == 6
+    f = result.folds.frame
+    f = f[f["design"] == "leave_one_site_out"].set_index("fold")
+    assert f.loc["US-UTG", "status"] == "declined"               # 41 held-out days < 180
+    assert "min_test_days_per_fold 180" in f.loc["US-UTG", "status_detail"]
     m = result.training_membership.frame
     m = m[m["design"] == "leave_one_site_out"]
     trained = set(m[m["in_training"]]["site_id"])
-    assert "US-UTE" not in trained and "US-UTG" not in trained   # < 180 eligible days
-    for site in ("US-UTD", "US-UTJ", "US-UTM", "US-UTV", "US-UTW"):
+    assert "US-UTG" not in trained and "US-UTE" in trained       # US-UTE has exactly 180
+    for site in ("US-UTD", "US-UTE", "US-UTJ", "US-UTM", "US-UTV", "US-UTW"):
         own = m[(m["design"] == "leave_one_site_out") & (m["fold"] == site)]
         assert not own[own["site_id"] == site]["in_training"].any()
     w = result.weights.frame
@@ -88,14 +92,16 @@ def test_leave_one_site_out_is_held_out_and_small_stations_never_train(result):
     assert (w["weight"] >= 0).all()
 
 
-def test_leave_one_year_out_has_no_supported_claim(result):
+def test_leave_one_year_out_is_declined(result):
     f = result.folds.frame
     f = f[f["design"] == "leave_one_year_out"].set_index("fold")
-    assert f.loc["2023", "status"] == "declined" and f.loc["2025", "status"] == "declined"
+    assert set(f["status"]) == {"declined"}
     assert f.loc["2024", "n_test_days"] == 5
-    imp = result.improvement.frame
-    imp = imp[imp["scope"] == "leave_one_year_out"]
-    assert set(imp["held_out_improvement"]) == {"not_assessed"}
+    assert "5 eligible held-out day(s) < min_test_days_per_fold 180" in f.loc["2024",
+                                                                             "status_detail"]
+    s = result.summary.frame.set_index(["scope", "subset"])
+    assert s.loc[("leave_one_year_out", "all"), "status"] == "declined"
+    assert result.improvement.frame.query("scope == 'leave_one_year_out'").empty
 
 
 def test_fitted_predictions_use_only_other_stations_weights(result, independent):
@@ -103,6 +109,8 @@ def test_fitted_predictions_use_only_other_stations_weights(result, independent)
     w = result.weights.frame
     w = w[w["design"] == "leave_one_site_out"]
     for site, (vals, _) in independent.items():
+        if site == "US-UTG":                                     # declined fold
+            continue
         weights = w[w["fold"] == site].set_index("member")["weight"].reindex(MEMBERS)
         fit = p[(p["product"] == FITTED) & (p["scope"] == "leave_one_site_out")
                 & (p["site_id"] == site)].set_index("date")["value_mm"].sort_index()
@@ -114,7 +122,15 @@ def test_april_october_subset_has_only_growing_season_days(result):
     c = result.comparisons["leave_one_site_out__apr_oct"].cohort.paired.frame
     assert set(c["date"].dt.month) <= set(range(4, 11))
     s = result.summary.frame.set_index(["scope", "subset"])
-    assert s.loc[("baseline", "apr_oct"), "n_days_compared"] == 1225
+    assert s.loc[("baseline", "apr_oct"), "n_days_compared"] == 1228
+
+
+def test_us_ute_wrong_region_rasters_are_no_overlap_not_hidden():
+    """J: keeps some US-UTE files of another region (D-072); only those models are affected."""
+    ex = pd.read_csv(OUT / "ute_nldas_clip_exclusions.csv")  # type: ignore[operator]
+    x = ex[ex["reason_code"] == "no_overlap"]
+    models = set(x["input_key"].str.extract(r"model=(\w+)")[0])
+    assert models <= {"geesebal", "ptjpl"}
 
 
 @pytest.mark.skipif(not OLD_UTJ.exists(), reason="earlier unclipped US-UTJ extraction absent")

@@ -716,6 +716,7 @@ ensembles:
     buffer_days: 28                              # residual autocorrelation lasts > 14 days (D-048)
     min_training_folds: 2                        # so inner validation is grouped by fold
     min_training_days_per_fold: 180
+    min_test_days_per_fold: 180                  # user, 2026-10-19: tiny held-out folds are declined
     method: simplex_least_squares                # weights >= 0, summing to 1
     regularisation: shrink_to_equal              # w = (1 - alpha) w_fit + alpha / 6
     shrinkage_grid: [0, 0.25, 0.5, 0.75, 1]      # alpha = 1 is the simple mean
