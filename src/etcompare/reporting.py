@@ -209,9 +209,9 @@ def _glob_frames(root: Path, pattern: str) -> list[tuple[Path, pd.DataFrame]]:
     return [(p, read_table(p).frame) for p in sorted(root.glob(pattern))]
 
 
-#: Status columns read into the skipped-analyses table:
-#: (glob under output_dir, analysis, status column, values that count as a result,
-#:  detail columns, reason-code column, reason column).
+#: Status columns read into the skipped-analyses table. Each entry is: glob under
+#: output_dir, analysis, status column, values that count as a result, detail columns,
+#: reason-code column, reason column.
 STATUS_SOURCES: tuple[tuple[str, str, str, tuple[str, ...], tuple[str, ...], str | None,
                             str | None], ...] = (
     ("cohorts/*_availability.parquet", "diagnostics", "status", ("available",),

@@ -49,3 +49,19 @@ intersphinx_mapping = {
 html_theme = "sphinx_rtd_theme"
 html_title = f"etcompare {release}"
 suppress_warnings = ["myst.header", "myst.xref_missing"]
+
+
+def _sections_to_rubrics(app, what, name, obj, options, lines):  # noqa: ARG001
+    """Render docstring section headings as rubrics: every module has its own "Rules" or
+    "Interpretation" section, and as section targets they would collide across pages."""
+    i = 0
+    while i < len(lines) - 1:
+        title, under = lines[i], lines[i + 1]
+        if (title.strip() and not title.startswith(" ") and under
+                and set(under) <= set("-=~^") and len(under) >= len(title.strip())):
+            lines[i:i + 2] = [f".. rubric:: {title.strip()}", ""]
+        i += 1
+
+
+def setup(app):
+    app.connect("autodoc-process-docstring", _sections_to_rubrics)

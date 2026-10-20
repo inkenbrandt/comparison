@@ -16,6 +16,7 @@ Nothing listed here is presented elsewhere as complete. Decision numbers (D-…)
 | **Monthly-raster extraction with monthly footprints** | Period totals are sums of daily extractions. | `aggregation` docs. |
 | **Staging of remote-mounted files to local storage** | Not built (user decision, 2026-10-20: work from a local drive). Reading directly from a network or cloud mount is supported but slower: about 23 ms per raster open on Google Drive for desktop against 5 ms on a USB SSD (D-079). | — |
 | **Concurrency** | Extraction is serial (user decision, 2026-10-20, after the D-079 benchmark: about 1.5 min per station; I/O-bound by file-open latency). | — |
+| **Reuse of a raster shared by several stations or extractions** | Each extraction opens its own rasters. A multi-station file (the unclipped Drive tree) is opened once per station, and once per footprint set of a station. Clipped single-station files (J:) are unaffected. | D-079 benchmark: 3,078 opens for 3,077 files in one extraction. |
 | **Population inference, formal causal designs for events, controlled event designs** | Event responses are uncontrolled before/after descriptions (D-061). | `event_responses` flags. |
 
 ## Partly implemented or conditional

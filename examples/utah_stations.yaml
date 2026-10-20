@@ -186,12 +186,23 @@ run:
 cache:
   raster_identity: stat       # size + mtime; sha256 reads ~26 GB on J: (about 11 min)
 
+# Resilient processing (guide step 18; D-079). Provisional example values; none changes a
+# result. keep_awake prevents the idle sleep that paused an extraction for 9 h (D-078).
+processing:
+  keep_awake: true
+  io_attempts: 3
+  io_backoff_s: [1, 4]
+  stall_warning_s: 120
+  checkpoint: month
+  max_unreadable_fraction: 0.01
+
 upstream:
   - {name: fluxfootprints, version: "0.5.1", commit: 6b7311d10ba228c5c463dfbcba58c53867dd9588, evidence: verified, source: sibling checkout ../footprints (D-056)}
   - {name: flux-data-qaqc, version: "0.2.1", evidence: code_inferred, note: the version that produced the daily exports is unconfirmed}
   - {name: OpenET API, version: api_default_unrecorded, evidence: unknown}
 
 decisions:
+  - {ref: D-079, status: provisional, summary: "retry count, backoff, stall warning and the 1 % unreadable-file threshold are example values chosen by the assistant", applies_to: [processing]}
   - {ref: D-048, status: open, summary: "no block length adopted; 7- and 14-day intervals are probably too narrow", applies_to: [bootstrap.utah_block_bootstrap, ensembles.utah_ensemble]}
   - {ref: D-049, status: open, summary: "no equivalence margins; every contrast exploratory", applies_to: [ensembles.utah_ensemble]}
   - {ref: D-073, status: open, summary: "US-UTM heights are constant; the corn station US-UTG is below the 180-day minimum; no interval across stations is implemented", applies_to: [ensembles.utah_ensemble, footprint_stacks]}

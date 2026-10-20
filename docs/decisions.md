@@ -1783,3 +1783,107 @@ Local and git-ignored (D-014). Real-station reports were authorized by the user 
   - leave-one-year-out declined;
   - `tests/integration/test_utah_ensemble.py` (8) passes on these outputs.
 - **Report:** ensemble section only (no comparisons are declared in that configuration).
+
+---
+
+**Revision 2026-10-20 (x):** Step 18 implemented: resilient processing, the full synthetic demonstration, documentation, notebooks, CI and the 0.1.0 release files. D-079 and D-080 added. The user made the choices on 2026-10-20, accepting the assistant's recommendations except where noted.
+
+### D-079 — Resilient processing (Adopted 2026-10-20, user decisions; example values Provisional)
+**Survey before building (2026-10-20):**
+- **Raster handles.** Every raster is opened in one `with` block, read in one bounded window, and closed. No handle outlives a read, and no dense stack of rasters exists.
+- **Repeated opens.**
+  - Within an extraction, only the first raster is opened twice.
+  - Footprint-only extractions open each raster's header on days without a usable footprint (54 opens for US-UTJ on J:).
+  - Across extractions, rasters are opened again for each footprint set, and on the unclipped Drive tree once per station of a multi-station file. The J: files are all single-station.
+- **Failures before step 18.**
+  - A non-strict extraction whose every raster was unreadable completed with zero rows.
+  - An unreadable raster left no row, so coverage showed only `extraction_missing`.
+  - CSV, text and figure writes were not atomic.
+  - An extraction lost all progress when interrupted.
+  - There was no stall detection.
+
+**Serial benchmark (measured 2026-10-20, instrumented `extract_rasters`, two runs each):**
+
+| | J: `utj_nldas_clip` (clipped, footprint) | M: `us_utj_set_b_etw` (unclipped Drive, 4 methods) |
+|---|---|---|
+| Rasters / rows | 2,549 / 2,549 | 2,603 / 9,912 |
+| Wall time | 22.1 s, 21.7 s | 94.1 s, 88.3 s |
+| I/O share | 86 % (opening files: 16.0 s, about 5 ms each) | 95 % (opening files: 71.4 s, about 23 ms each) |
+| Computation | 3.1 s | 4.5 s |
+| Opens / distinct files | 3,078 / 3,077 | 3,096 / 3,095 |
+| Memory | working set 174 → 198 MB | peak 119 → 167 MB |
+
+Both outputs equal the stored tables. The M: table differs only in `source_path`, because the folder moved.
+
+**The 9-hour pause of D-078** was idle sleep (Windows System log: Kernel-Power 42, reason *System Idle*, one second after the last progress record). It was not a drive stall.
+
+**Decisions (user, 2026-10-20):**
+- **Concurrency:** none. Extraction is I/O-bound by file-open latency and takes about 1.5 min per station.
+- **Keep-awake:** `processing.keep_awake: true` by default (Windows `SetThreadExecutionState`).
+- **Retries:**
+  - an `OSError` (including `RasterioIOError`) while the file still exists is retried: 3 attempts, 1 s and 4 s backoff, each attempt logged as `io_retry`;
+  - a vanished file is `raster_missing` (or `footprint_file_missing`) with no retry; in strict mode it raises `InputMissingError`, a `FileNotFoundError`, exit code 2;
+  - etcompare's own errors are never retried.
+- **Stall detection:**
+  - `io_stall` is logged after `stall_warning_s` (120 s) without a finished raster. Detection is armed only while rasters are being read.
+  - `system_suspended` is logged when the watchdog's clock jumps, and the jump is not counted as a stall.
+  - `stall_timeout_s` (off by default) fails the run.
+- **Staging:** not implemented. The user works from a local drive.
+- **Checkpoints:** `processing.checkpoint: month`.
+  - Progress is saved under `<output_dir>/.etcompare/checkpoints/<unit>/<cache_key>/` after each calendar month.
+  - It is reused only for the identical key, dates and spec, and only when the SHA-256 recorded after the state matches.
+  - Checkpoints of other keys are pruned. All of them are removed once the table is written.
+- **Unreadable rasters:**
+  - `strict` stays `false` by default.
+  - Unreadable or missing files keep null rows for every method of their model-day.
+  - They are counted in the exclusions and the manifest, and listed in the report's skipped-analyses table (`files_skipped`).
+- **Systematic failure:**
+  - The run fails (`SystematicFailureError`, exit code 2, manifest `failed`, extraction table not written) when every file of one model, every model raster, every footprint, or more than `max_unreadable_fraction` (0.01, Provisional) of the model rasters or of the footprints is unreadable or missing.
+  - The exclusions CSV is written before the error is raised.
+- **Atomic outputs:**
+  - Every CSV, text, JSON, figure, stamp and manifest is written through `etcompare.io.atomic`: a temporary file, then a rename.
+  - `write_footprint` keeps its read-back check (D-043) and now removes its `.part` file when a write fails.
+  - The run manifest is written with status `running` at the start.
+
+**No result changed.** Before and after the raster-path changes, every Parquet table was compared (frames, dtypes and the full `etcompare` metadata, attributes included):
+- US-UTJ (`examples/us_utj.yaml`, now extracting from the unclipped Drive folder): 197 tables;
+- the seven Utah stations (`examples/utah_stations.yaml`, all eight J: extractions): 58 tables.
+
+Both comparisons found no difference. The final runs are in D-080.
+
+### D-080 — First release 0.1.0 (Adopted 2026-10-20, user decisions; Information)
+- **Licence:** MIT, chosen by the assistant after the user asked for "an open licence". The copyright holder is "The etcompare contributors". fluxfootprints (GPL-3.0) stays an optional, separately installed dependency, which etcompare imports only when present (D-056).
+- **Version** 0.1.0. **Name** `etcompare`: unregistered on PyPI, TestPyPI and conda-forge on 2026-10-20. Nothing was published.
+- **Changelog:** `CHANGELOG.md`, Keep a Changelog format.
+- **Documentation:** Sphinx with MyST Markdown for Read the Docs (`docs/conf.py`, `.readthedocs.yaml`, `docs/requirements.txt`; theme `sphinx_rtd_theme`). The pages are getting started, configuration, method guide, limitations, public API (autodoc, one page per module), data dictionary, references, this log, the input contract and the changelog.
+  - The data dictionary is generated from `etcompare.schemas` (`tools/make_data_dictionary.py`), and a test keeps it current.
+  - The build passes with warnings as errors.
+  - No Read the Docs project was created.
+- **References:** every DOI was checked through the Crossref API (title, authors, year, journal, pages) on 2026-10-20. Huntington et al. (2022) and Kish (1965) have no DOI. The "Volk 2023" attribution in D-037 is listed as unverified: two 2023 papers fit, and the passage was not checked.
+- **CI:** `.github/workflows/ci.yml`, written but not pushed. It contains:
+  - tests on Ubuntu and Windows × Python 3.11 and 3.13;
+  - lint and mypy;
+  - the raster demonstration through the console script;
+  - a `lowest-direct` job on Python 3.11 (core; geo and plot tests skip);
+  - the pinned demonstration environment;
+  - a strict Sphinx build.
+
+  No private data is used.
+- **Demonstration environment:** `examples/demo/requirements-demo.txt` (`uv pip compile --universal`, Python ≥ 3.11) with exact pins for the demonstration only; the library keeps the lower bounds of D-018. On this machine, Application Control blocks DLLs freshly installed outside the project venv (pyarrow, matplotlib `_path`), so the pinned set could not be run locally. Its CI job is the check.
+- **Notebooks** (`notebooks/*.ipynb`, committed through a `.gitignore` exception, outputs stripped):
+  - `01_colab_quickstart` (user paths; the Drive mount is a commented cell the user runs);
+  - `02_pre_extracted_tables`;
+  - `03_raster_workflow`.
+
+  `tests/test_notebooks.py` checks that outputs are stripped and that no private path appears, then runs every code cell on the synthetic demonstration.
+- **Full synthetic demonstration:** `write_demo(rasters=True)` and `etcompare demo DIR --rasters` extend the tables-only demonstration, which stays byte-identical. The extension adds:
+  - fixed-seed model GeoTIFFs for 3 stations × 6 products, May to July 2022 (30 m, 21 × 21 cells, about 1 % nodata cells);
+  - daily footprints (10 m, 15 × 15, about 5 % of days missing);
+  - a land-cover map;
+  - station coordinates, three raster extractions, a footprint-versus-window comparison and representativeness at `XX-SY1`;
+  - an explicit `processing:` section.
+
+  In total: 1,853 files, 8.8 MB, written in 14 s. `etcompare run` completes offline in about 4.5 min with 48 units completed and 2 not declared.
+- **Smaller fixes:**
+  - invalid YAML is a configuration error (exit 2);
+  - `--log-level` filters stderr even when the run log file is attached.

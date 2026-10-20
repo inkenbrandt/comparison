@@ -746,6 +746,16 @@ run:
 cache:
   raster_identity: stat       # size + mtime; sha256 hashes every raster (slow on M:/J:)
 
+# Resilient processing (guide step 18; D-079). Provisional example values; none changes a
+# result. keep_awake prevents the idle sleep that paused an extraction for 9 h (D-078).
+processing:
+  keep_awake: true
+  io_attempts: 3
+  io_backoff_s: [1, 4]
+  stall_warning_s: 120
+  checkpoint: month
+  max_unreadable_fraction: 0.01
+
 # Upstream versions that produced the inputs (recorded in every run manifest next to the
 # detected installed versions).
 upstream:
@@ -767,6 +777,7 @@ upstream:
 
 # Open and provisional decisions the outputs depend on (listed in every report).
 decisions:
+  - {ref: D-079, status: provisional, summary: "retry count, backoff, stall warning and the 1 % unreadable-file threshold are example values chosen by the assistant", applies_to: [processing]}
   - {ref: D-048, status: open, summary: "no block length adopted; 7- and 14-day intervals are probably too narrow and 28-day blocks mostly lack support", applies_to: [bootstrap.utj_block_bootstrap, rankings.utj_model_ranking, diagnostics.utj_diagnostics, ensembles.utj_ensemble]}
   - {ref: D-049, status: open, summary: "no equivalence margins and no formal tests: equivalence not_assessed, every contrast exploratory", applies_to: [rankings.utj_model_ranking]}
   - {ref: D-008, status: open, summary: "no retained-weight quality threshold adopted (min_retained_frac unset)", applies_to: [comparisons]}

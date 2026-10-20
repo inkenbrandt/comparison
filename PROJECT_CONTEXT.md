@@ -260,7 +260,27 @@ Keep context stable. Update it when verified input semantics or scope changes, i
 
 Do not claim the source raster paths are accessible until checked in the user's runtime. Do not expose or package private station data publicly without permission. Use small synthetic fixtures for distributable tests and keep user-supplied examples as local integration inputs unless authorized otherwise.
 
-**Current handoff (updated 2026-10-19, after step 17):** Guide steps 1–17 are implemented, and step 18 (resilient processing and a first release) is next.
+**Current handoff (updated 2026-10-20, after step 18):** All 18 guide steps are implemented. Version 0.1.0 (MIT) is ready on branch `step18-release`. It is unpublished, unpushed, and has no Read the Docs project yet.
+- **Resilient processing (step 18; D-079):** a new `processing:` section.
+  - Keep-awake on Windows; the D-078 9-hour pause was idle sleep.
+  - Retries of transient read errors: 3 attempts, 1 s and 4 s backoff, logged as `io_retry`.
+  - `raster_missing` for files that vanished after indexing.
+  - Stall and suspend detection; `stall_timeout_s` is off by default.
+  - Monthly extraction checkpoints keyed by the unit's cache key.
+  - Unreadable files keep null rows, are counted in exclusions and the manifest, and are listed in the report.
+  - A systematic failure (every file of a model, every file, or more than `max_unreadable_fraction`) stops the run with exit 2.
+  - Atomic writes for every output; the manifest is written as `running` at the start.
+  - **No concurrency and no staging** (user decisions). The serial benchmark: J: 22 s and M: 90 s per US-UTJ extraction, 86–95 % file-open I/O.
+  - The real-station tables (US-UTJ 197, Utah 58) are bit-identical before and after.
+- **Release (D-080):**
+  - Sphinx/MyST documentation for Read the Docs: method guide, configuration, limitations, API, a generated data dictionary, references checked against Crossref.
+  - `CHANGELOG.md`, GitHub Actions CI (not pushed), and a pinned demonstration environment (`examples/demo/requirements-demo.txt`).
+  - Three committed notebooks, outputs stripped.
+  - `etcompare demo DIR --rasters`: a full offline raster demonstration.
+  - `examples/us_utj.yaml` now reads the `unclipped/` Drive folder (D-054 resolved).
+- **Open:** publishing (PyPI, Read the Docs, pushing CI) needs the user's authorization; every decision listed in `decisions:` of the example configs; the gaps in `docs/limitations.md`.
+
+**Previous handoff (2026-10-19, after step 17):** Guide steps 1–17 are implemented, and step 18 (resilient processing and a first release) is next.
 - **Workflow and CLI (step 17; D-074 to D-077):** `etcompare validate|index|extract|analyze|report|run config.yaml` (`python -m etcompare …` where the console script is blocked). The CLI and `tools/run_*.py` are thin layers over `etcompare.workflow.Workflow` units, which call the step 5–16 functions unchanged (177 US-UTJ tables reproduced bit for bit).
   - Everything is declared in the configuration. The former flags are `run.skip`, `crop_height_tables[].on_missing`, `raster_extractions[].strict`, `footprint_stacks` and `footprint_comparisons`.
   - Per-unit cache keyed on the code, the configuration entries read and the input identities. Rasters use size + mtime by default (`cache.raster_identity: sha256` opt-in; hashing J: takes about 11 min). Invalidation is exact and tested.

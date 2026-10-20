@@ -1,12 +1,12 @@
 """Station reference variants (decisions.md D-004).
 
-=========================  ==================  ===========================================
-variant                    value column        rows
-=========================  ==================  ===========================================
-``et_raw``                 ``et_raw_mm``       raw ET present, provenance not inconsistent
-``et_corrected_measured``  ``et_corrected_mm`` ``corrected_from_raw`` only
-``et_corrected_inclusive`` ``et_corrected_mm`` ``corrected_from_raw`` and ``corrected_filled``
-=========================  ==================  ===========================================
+==========================  ===================  ===============================================
+variant                     value column         rows
+==========================  ===================  ===============================================
+``et_raw``                  ``et_raw_mm``        raw ET present, provenance not inconsistent
+``et_corrected_measured``   ``et_corrected_mm``  ``corrected_from_raw`` only
+``et_corrected_inclusive``  ``et_corrected_mm``  ``corrected_from_raw`` and ``corrected_filled``
+==========================  ===================  ===============================================
 
 ``ET_fill`` is never a reference. Rows outside a variant, or with a null
 value, are not part of that variant; nothing is filled in.

@@ -62,7 +62,8 @@ def test_full_demo_runs_offline_end_to_end(demo):
     # A second run reuses every unit.
     assert main(["run", str(demo / "config.yaml"), "--log-level", "WARNING"]) == 0
     again = latest_status(out)
-    assert set(again.status) <= {"cached", "skipped"}
+    # validate always rereads the inputs (cheap); every other unit is reused.
+    assert set(again.loc[again.unit_id != "validate", "status"]) <= {"cached", "skipped"}
 
 
 def test_metrics_reproduce_from_paired_rows(demo):
