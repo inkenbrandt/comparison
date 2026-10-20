@@ -1557,7 +1557,7 @@ What this implies under the declared rule (calendar years, 28-day buffer, ≥ 2 
 - **Rasters from `J:/FLUX/OpenET_Daily_Tiffs`**, the user's de-duplicated copy. `J:/FLUX/database` and the footprint folders are byte-identical to the C: copies (checked by SHA-256), and the station tables now point at J:. The footprints are unchanged.
 - **Minimum held-out size:** `min_test_days_per_fold: 180`, a mandatory fitting field. A fold with fewer eligible held-out days is declined, with the count as the reason. Both example configs declare it.
 - **US-UTG keeps the default height filter.** ffp_xr with `rslayer=False` (production, D-037) drops half-hours with zm ≤ 27.5·z0, the roughness sublayer. That rule matches US-UTG's footprint mass on 99.8 % of 4,615 half-hours (922 predicted, 930 positive). `rslayer=True` (Kljun Eq. 27, zm > 20·z0) would recover March–May and part of July, but not August–October, when the corn is 2.4–2.8 m and zm/z0 is 7–8.
-- **Rebuild US-UTM** from its stack: **not done**. The UGS database timed out on two attempts ([database host removed]), so its parameters could not be fetched. US-UTM keeps `US-UTM_production_etw` until access returns.
+- **Rebuild US-UTM** from its stack: **not done**. The UGS database timed out on two attempts, so its parameters could not be fetched. US-UTM keeps `US-UTM_production_etw` until access returns.
 
 **What J: contains:**
 - **No duplicates**, and US-UTE gains geesebal and ptjpl for 2024. For the other six stations the extracted values equal the C: extractions exactly (same rows, zero difference).
