@@ -1647,3 +1647,116 @@ What this implies under the declared rule (calendar years, 28-day buffer, ≥ 2 
 - **Caveats** as in D-071 and D-072: exploratory and station level, with no network interval and shared weather across site folds; the 7- and 14-day intervals are probably too narrow; the corn station is not evaluated.
 - **Integration test** (`tests/integration/test_utah_ensemble.py`, 8 tests): the counts above; US-UTE has no `no_overlap`; the US-UTM rebuild agrees with production within 0.03 mm d⁻¹.
 
+
+---
+
+**Revision 2026-10-19 (w):** Step 17 implemented: workflow, CLI, run manifest, cache, figures, reports and a synthetic demo. D-074 to D-078 added. The choices in D-074 to D-077 were made by the user on 2026-10-19 (the assistant's recommendations, accepted).
+
+### D-074 — Workflow units, statuses and the cache (Adopted 2026-10-19, user decisions)
+- **CLI:** stdlib `argparse` (no new dependency); console script `etcompare`, plus `python -m etcompare`. The subcommands `validate`, `index`, `extract`, `analyze`, `report` and `run` are thin layers over `etcompare.runner.run_stages`, which drives `etcompare.workflow.Workflow`.
+  - The workflow implements no analysis. It calls the step 5–16 library functions exactly as `tools/run_*.py` did, and those scripts are now wrappers over the same units.
+  - On this machine Windows Application Control blocks the generated `etcompare.exe` launcher; `python -m etcompare` is the same CLI.
+- **Exit codes:**
+  - 0: success.
+  - 2: a configuration, contract or data-validation error (`ContractError`, `DataValidationError`, `SchemaError`, filename and duplicate-asset errors, a missing config file).
+  - 1: anything else.
+- **What runs:** an analysis runs when its configuration section is declared.
+  - `run.skip` switches off declared analyses.
+  - Undeclared analyses are recorded as `skipped` (`not_declared`).
+  - Former flags are configuration now:
+    - `--no-bootstrap` → `run.skip: [bootstrap]`;
+    - `--skip-missing-crop-height` → `crop_height_tables[].on_missing: skip_growing_season`;
+    - `--strict` → `raster_extractions[].strict`;
+    - footprint-set comparisons → `footprint_comparisons`;
+    - per-timestep stacks → `footprint_stacks`.
+- **Units and statuses:** a unit is one call that writes one group of tables (e.g. `metrics:<comparison>__<metric_set>`).
+  - The statuses are `completed`, `cached`, `skipped` (`run_skip`, `not_declared`, `dependency_skipped`), `not_available` (`input_missing`, `dependency_unavailable`, `optional_dependency_missing`, …), `failed`, `not_run` and `stale`.
+  - A failure is recorded in the stamp and the manifest, then stops the run (no retries; that is step 18).
+  - A unit whose optional input is missing is `not_available` with its reason; nothing is filled in.
+- **Cache (per unit):** stamps live in `<output_dir>/.etcompare/cache/<stage>/<unit>.json`. The key is a SHA-256 over three things:
+  - the package source, without the presentation modules (`plots`, `reporting`, `cli`, `runner`); the report unit includes them;
+  - the configuration entries the unit reads;
+  - the identities of its input files. Upstream outputs enter by content (SHA-256), so an analysis that reads a raster extraction depends on that file, not on whether the extraction can run now.
+
+  A stamp is reused only when its key matches and every listed output still has the same size and modification time.
+- **Invalidation is exact** (tested in `tests/test_workflow.py`). A change invalidates:
+  - for a station table, only the units of comparisons that contain that station;
+  - for a metric-set entry, only its metrics unit;
+  - for `min_retained_frac`, only that comparison's units;
+  - for a raster, only the extractions whose site and window include it (a raster outside the declared window does not count);
+  - for a modified output, only its own unit.
+
+  A unit that needs an in-memory result of a reused unit (rankings need bootstrap replicates) recomputes it, without rewriting the reused unit's outputs.
+- **Raster identity, measured 2026-10-19** (`stat` against SHA-256 of a 150-file sample, cold):
+
+  | Inputs | Files | Size | `stat` | SHA-256 (extrapolated) |
+  |---|---|---|---|---|
+  | J: tree | 69,957 | 26.3 GB | 14 s | about 11 min |
+  | One model on the M: Drive | 1,096 | 2.0 GB | 0.7 s | about 5.7 min (about 40 min for 7 models) |
+  | US-UTJ clipped | 4,747 | 0.07 GB | 0.6 s | seconds |
+
+  - **Adopted:** rasters (`.tif`, `.npz`, …) use path, size and modification time (`cache.raster_identity: stat`, the default), and `sha256` is opt-in.
+  - Every table and vector input is always hashed with SHA-256.
+  - Only the rasters an extraction reads (its site, window and models) enter its key.
+  - Whether Drive-streamed modification times are stable was not verified.
+- **Regression check (Information).** On 2026-10-19 the committed (pre-step-17) runners and the workflow were run on the same US-UTJ inputs into separate output directories. All 177 Parquet tables (cohorts, events, water balance, ensembles, representativeness) are identical, frames and attributes.
+
+### D-075 — Run manifest (Adopted 2026-10-19, user decisions)
+- **One JSON manifest per invocation** (`etcompare.runrecord.RunManifest`, `manifest_version` 1, round-trip tested) at `<output_dir>/runs/<run_id>/run_manifest.json`, copied to `<output_dir>/run_manifest.json`.
+  - Runs are never overwritten.
+  - `run_id` is the UTC timestamp plus the first 8 hex digits of the configuration hash.
+- **Contents:**
+  - the configuration path, its file SHA-256 and its canonical hash;
+  - the code identity, and the git revision with a dirty flag and the modified paths;
+  - package versions;
+  - declared upstream versions (`upstream:`, each with an evidence label) next to the detected ones. fluxfootprints' commit is read from its editable checkout. flux-data-qaqc is not installed, so only its declaration exists;
+  - every input identity used;
+  - per extraction: raster grid IDs, window grids and transfers, and masks (methods, footprint set, negative-weight tolerance, support kinds, nodata);
+  - bootstrap and scenario seeds;
+  - exclusion counts per stage and unit;
+  - every unit's status, reason and cache key; the outputs; the run status and any error.
+- The run directory also holds `analysis_status.{parquet,csv}` (schema `analysis_status` v1) and `log.jsonl` (structured JSON lines). Stderr is JSON lines by default.
+
+### D-076 — Figures and reports from saved tables (Adopted 2026-10-19, user decisions)
+- **Figures** (`etcompare.plots`) need the `plot` extra; matplotlib ≥ 3.8 is imported only when drawing.
+  - Each function takes saved tables and returns the figure plus the exact rows drawn, saved as `<name>_rows.csv` next to the figure. Nothing is recomputed.
+  - With no rows to draw it raises `NothingToDraw`, and the report lists the figure as `not_available` with its reason. An empty figure is never written.
+  - Formats are PNG and SVG (`report.figure_formats`).
+- **The figures:**
+  - scorecards, per site: point estimates, with `validity_reason` where a metric is undefined;
+  - scatter plots with the 1:1 line;
+  - cumulative ET and cumulative error, drawn per `segment` and never joined across a missing period. Missing spans are shaded and counted in the caption (user decision: break, shaded span and count);
+  - footprint-benefit and raw/corrected contrasts at every block length side by side. Rows without bounds show their status;
+  - conditional errors, with sparse and empty bins marked;
+  - coverage: every candidate day with its reason code;
+  - ranking-stability tables;
+  - ensembles: folds (held out, exploratory or declined); held-out contrasts labelled with `held_out_improvement`; member disagreement, never shown as an interval.
+- **Captions** name the units, reference variant, extraction method with footprint set, scale, cohort ID, `n_days` and `n_sites`, all read from the drawn rows (`caption_meta`).
+  - They are checked against the comparison's declaration; a disagreement raises `CaptionMismatch`.
+  - The coverage caption takes its variants from the same cohort's paired table, because the membership table has none.
+- **Reports** (`etcompare.reporting`): Markdown with linked figures, and a self-contained HTML page (figures embedded as PNG, or as SVG when no PNG is produced; light and dark themes). Each report lists:
+  - the analyses that ran;
+  - a skipped-analyses table (`skipped_analyses` v1): the workflow units, plus the analyses' own status rows (e.g. `not_available` variables, `insufficient_support` intervals, `declined` folds, `unknown` residuals);
+  - the open decisions: the declared `decisions:` (a new section; each entry carries a decision-log reference), plus decisions read from status columns: block lengths with none adopted, equivalence `not_assessed`, exploratory contrasts, `single_site` summaries, provisional variables, declined ensembles and unknown water-balance terms.
+- **Wording:**
+  - Verdicts are carried over as written (`no_unique_leader`, `includes_zero`, `not_supported`, `exploratory`, `single_site`).
+  - "network", "validated" and "significant" raise `LanguageError` unless a verdict column licenses them: `network_evidence` true, or a formal `reject_zero`. Nothing licenses "validated".
+  - `not_separated` is not a table value and is not used.
+- **Synthetic reports:** `report.synthetic: true` labels the title, a banner at the top and at the bottom, every caption and every figure.
+  - It also requires every station ID to start with `report.synthetic_site_prefix`.
+  - The default prefix is `XX-`, an ISO 3166 code assigned to no country. Site IDs must match the `AA-xxx` pattern, so `SYN-` is impossible.
+
+### D-077 — Synthetic demonstration (Adopted 2026-10-19, user decision: a minimal fixed-seed dataset now, the full demo in step 18)
+`etcompare.demo.write_demo(directory, seed=20261019)` writes:
+- three stations (`XX-SY1..3`, 2021–2022);
+- station tables in the flux-data-qaqc layout: raw, corrected, gap-filled and missing days, the closure factor and meteorology;
+- a pre-extracted table with five synthetic models and an official ensemble: footprint-weighted and source-region values, retained weight, days without a footprint, and `echo` missing until May 2021;
+- an event log;
+- `config.yaml`: every step 7–16 analysis that tables support, `report.synthetic: true` and two example decisions.
+
+Raster extraction and representativeness are not declared. The declared footprint set has no files, so its index is `not_available`.
+
+`etcompare run` on it completes in about 1.5 min, plus about 1 min for the report:
+- leave-one-site-out is held out, and leave-one-year-out is declined;
+- satellite support is `not_available`;
+- the water balance is unknown.
