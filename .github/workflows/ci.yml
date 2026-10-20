@@ -45,7 +45,8 @@ jobs:
         run: |
           uv run pytest -ra --color=no > pytest.txt 2>&1 && status=0 || status=$?
           tail -n 60 pytest.txt
-          grep -E "^(ERROR|FAILED) " pytest.txt | head -n 20 | sed 's/^/::error::/'
+          grep -E "^(ERROR|FAILED) " pytest.txt | head -n 20 | sed 's/^/::error::/' || true
+          tail -n 1 pytest.txt | sed 's/^/::notice::/'
           exit $status
       - name: Offline demonstration with rasters, through the console script
         shell: bash
@@ -69,7 +70,8 @@ jobs:
         run: |
           uv run pytest -ra --color=no > pytest.txt 2>&1 && status=0 || status=$?
           tail -n 60 pytest.txt
-          grep -E "^(ERROR|FAILED) |^E   " pytest.txt | head -n 20 | sed 's/^/::error::/'
+          grep -E "^(ERROR|FAILED) |^E   " pytest.txt | head -n 20 | sed 's/^/::error::/' || true
+          tail -n 1 pytest.txt | sed 's/^/::notice::/'
           exit $status
 
   pinned-demo:
