@@ -487,8 +487,12 @@ def conditional_errors(conditional: Any, *, variable: str, metric: str = "mae",
                         compose_caption(title, meta, notes, synthetic=synthetic), meta)
 
 
-def coverage(membership: Any, *, synthetic: bool = False) -> FigureResult:
-    """Every candidate site-day per model, coloured by inclusion or exclusion reason."""
+def coverage(membership: Any, paired: Any = None, *, synthetic: bool = False) -> FigureResult:
+    """Every candidate site-day per model, coloured by inclusion or exclusion reason.
+
+    The membership table has no variant or side columns; when the same cohort's
+    ``paired`` table is given, the caption takes them from it (cohort IDs must match).
+    """
     rows = _frame(membership).copy()
     if rows.empty:
         raise NothingToDraw("no_rows", "no membership rows")
@@ -512,10 +516,16 @@ def coverage(membership: Any, *, synthetic: bool = False) -> FigureResult:
                   fontsize=7)
     ax.legend(fontsize=7, frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
     included = rows[rows["state"] == "included"]
+    n_days = str(int(included[["site_id", "date"]].drop_duplicates().shape[0]))
     meta = caption_meta(included if len(included) else rows, units="site-days",
-                        scale="daily",
-                        n_days=str(int(included[["site_id", "date"]].drop_duplicates()
-                                       .shape[0])))
+                        scale="daily", n_days=n_days)
+    if paired is not None:
+        p = _frame(paired)
+        if set(p["cohort_id"]) - set(rows["cohort_id"]):
+            raise CaptionMismatch("coverage: paired rows belong to another cohort")
+        pm = caption_meta(p, units="site-days", scale="daily")
+        meta = CaptionMeta(meta.units, pm.reference_variants, pm.extraction, meta.scale,
+                           meta.cohort_ids, meta.comparison_ids, n_days, meta.n_sites)
     title = f"Coverage and exclusion reasons, {rows['comparison_id'].iloc[0]}"
     cap = compose_caption(title, meta, ["n_days counts included site-days; every candidate "
                                         "day is shown with its reason code"],
@@ -567,6 +577,9 @@ def ensemble_folds(folds: Any, summary: Any, *, synthetic: bool = False) -> Figu
         raise NothingToDraw("no_rows", "no ensemble folds (no fitted design declared)")
     status_color = {"fitted": PALETTE[0], "exploratory_in_sample": PALETTE[3],
                     "declined": MUTED}
+    status_label = {"fitted": "held out (fitted on other folds)",
+                    "exploratory_in_sample": "exploratory (in sample, no held-out claim)",
+                    "declined": "declined (not fitted)"}
     designs = sorted(rows["design"].unique())
     fig = _figure(max(5.0, 1.1 * rows.groupby("design").size().max() + 2.0),
                   1.0 * len(designs) + 1.4, synthetic=synthetic)
@@ -586,7 +599,7 @@ def ensemble_folds(folds: Any, summary: Any, *, synthetic: bool = False) -> Figu
     ax.set_xticks([])
     ax.set_ylim(len(designs) - 0.4, -0.9)
     for st, c in status_color.items():
-        ax.scatter([], [], marker="s", color=c, label=st)
+        ax.scatter([], [], marker="s", color=c, label=status_label[st])
     ax.legend(fontsize=7, frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
     meta = _ensemble_meta(rows, _frame(summary), _span(rows["n_test_days"].dropna()))
     title = f"Ensemble folds, {rows['ensemble_id'].iloc[0]}"
@@ -619,7 +632,9 @@ def ensemble_improvement(improvement: Any, summary: Any, *, metric: str = "rmse"
             if pd.notna(row["lower"]):
                 ax.plot([row["lower"], row["upper"]], [y, y], color=c, linewidth=2)
             ax.scatter([row["estimate"]], [y], color=c, marker=MARKERS[j], s=22, zorder=3)
-            ax.annotate(str(row["held_out_improvement"]), (row["estimate"], y), xytext=(6, 0),
+            right = max(float(row["estimate"]), float(row["upper"])
+                        if pd.notna(row["upper"]) else float(row["estimate"]))
+            ax.annotate(str(row["held_out_improvement"]), (right, y), xytext=(6, 0),
                         textcoords="offset points", fontsize=6, color=INK2, va="center")
         ax.plot([], [], color=c, marker=MARKERS[j], label=f"{int(b)}-day blocks")
     ax.set_yticks(range(len(keys)), keys, fontsize=7)
