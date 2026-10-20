@@ -607,9 +607,11 @@ def build_report(cfg: Config, records: list[UnitRecord], *, run_id: str,
     f = status.frame
     b.add("heading", "Analyses that ran", level=2)
     ran = f[f["status"].isin(["completed", "cached"])]
-    b.add("table", "Workflow units with results (cached = reused; no input changed)",
-          frame=ran.groupby(["stage", "analysis", "status"]).size().rename("units")
-          .reset_index())
+    b.add("table", "Workflow units with results (completed now, or reused because no input "
+                   "changed) and the runs that produced them",
+          frame=ran.groupby(["stage", "analysis"]).agg(
+              units=("unit_id", "size"),
+              runs=("run_id", lambda s: ", ".join(sorted(set(s.dropna()))))).reset_index())
 
     head_n = len(b.blocks)
     comps = cfg.report.comparisons or tuple(c.comparison_id for c in cfg.comparisons)
@@ -707,7 +709,10 @@ def report_unit(wf: Any) -> Any:
                                     "representativeness")
                         for p in (wf.out / d).glob("*.parquet"))
         return [to_plain(wf.cfg.report), [to_plain(c) for c in wf.cfg.decisions],
-                [[r.stage, r.unit_id, r.status, r.reason_code, r.cache_key] for r in records()],
+                # cached and completed outputs are the same outputs
+                [[r.stage, r.unit_id, "completed" if r.status == "cached" else r.status,
+                  None if r.status == "cached" else r.reason_code, r.cache_key]
+                 for r in records()],
                 [file_identity(p, "stat") for p in tables]]
 
     def run() -> Outcome:

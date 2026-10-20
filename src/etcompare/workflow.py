@@ -404,6 +404,12 @@ class Workflow:
         exclusions: list[pd.DataFrame] = []
         counts: list[dict[str, Any]] = []
 
+        for p in (*[t.path for t in self.cfg.station_tables],
+                  *[t.path for t in self.cfg.extracted_tables],
+                  *[t.path for t in self.cfg.crop_height_tables],
+                  *[t.path for t in self.cfg.event_tables]):
+            self.ident(p)                       # recorded in the run manifest
+
         def keep(result: Any, what: str) -> None:
             issues.append(result.report.to_frame().assign(input=what))
             ex = result.exclusions.to_frame()
