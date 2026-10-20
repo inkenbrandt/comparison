@@ -11,8 +11,8 @@ sys.path.insert(0, str(ROOT / "src"))
 import etcompare  # noqa: E402
 
 project = "etcompare"
-author = "The etcompare contributors"
-copyright = "2026, The etcompare contributors"
+author = "Paul Inkenbrandt"
+copyright = "2026, Paul Inkenbrandt"
 release = etcompare.__version__
 version = ".".join(release.split(".")[:2])
 

@@ -132,7 +132,7 @@ The pre-change baselines were run from a worktree at the step-17 commit. The fin
 
 ### Open
 - **Publishing needs authorization:** PyPI, a Read the Docs project, pushing the branch (which runs CI).
-- **Licence holder.** "The etcompare contributors" is a placeholder for the copyright line; the user may want a named holder.
+- **Licence holder:** Paul Inkenbrandt (user, 2026-10-20).
 - **Carried over:** every decision in `decisions:` of the example configs, and the gaps in `docs/limitations.md`.
 
 ## Step 17 — Plots, reports, configuration and CLI (2026-10-19)
