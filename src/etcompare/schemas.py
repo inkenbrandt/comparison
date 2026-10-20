@@ -174,6 +174,16 @@ FOLD_STATUSES: Final = ("fitted", "declined", "exploratory_in_sample")
 TRAINING_ROLES: Final = ("training", "held_out", "buffer_excluded", "training_fold_too_small",
                          "members_incomplete", "gap_filled_reference", "not_eligible")
 IMPROVEMENT_STATUSES: Final = ("supported", "not_supported", "not_assessed")
+#: Workflow units (``etcompare.workflow``). completed: ran now; cached: outputs of an earlier
+#: run reused because nothing it depends on changed; skipped: switched off (``run.skip``),
+#: not declared, or a dependency was skipped; not_available: a needed optional input or
+#: dependency is missing; failed: raised an error; not_run: declared but never run;
+#: stale: an earlier run's outputs exist but an input changed since.
+UNIT_STATUSES: Final = ("completed", "cached", "skipped", "not_available", "failed",
+                        "not_run", "stale")
+#: Where a skipped-analyses row comes from: a workflow unit, or a status/availability
+#: column of an analysis table.
+SKIP_SOURCES: Final = ("workflow", "table")
 
 
 @dataclass(frozen=True)
@@ -2004,6 +2014,43 @@ ENSEMBLE_IMPROVEMENT = TableSchema(
                  "block_unit", "block_length", "interval_method"),
 )
 
+ANALYSIS_STATUS = TableSchema(
+    "analysis_status", "1",
+    "One row per workflow unit: what ran, what was reused, skipped or unavailable, and why.",
+    (
+        _key("stage", "string", "Workflow stage"),
+        _key("unit_id", "string", "Unit identifier (analysis:ids)"),
+        _c("analysis", "string", "Analysis kind", nullable=False),
+        _c("status", "string", "Unit status", nullable=False, allowed=UNIT_STATUSES),
+        _c("reason_code", "string", "Stable reason identifier"),
+        _c("reason", "string", "Human-readable reason"),
+        _c("cache_key", "string", "SHA-256 of everything the outputs depend on"),
+        _c("run_id", "string", "Run that produced the outputs"),
+        _c("finished_utc", "string", "When the unit finished (ISO 8601, UTC)"),
+        _c("elapsed_s", "float", "Wall time", unit="s"),
+        _c("n_outputs", "int", "Output files"),
+    ),
+    primary_key=("stage", "unit_id"),
+)
+
+SKIPPED_ANALYSES = TableSchema(
+    "skipped_analyses", "1",
+    "Every analysis, or part of one, that produced no result, with its reason.",
+    (
+        _c("source", "string", "workflow unit or analysis table", nullable=False,
+           allowed=SKIP_SOURCES),
+        _c("stage", "string", "Workflow stage"),
+        _c("unit_id", "string", "Workflow unit"),
+        _c("analysis", "string", "Analysis", nullable=False),
+        _c("detail", "string", "Part of the analysis (variable, layer, design, ...)"),
+        _c("status", "string", "Status as written by the analysis", nullable=False),
+        _c("reason_code", "string", "Stable reason identifier"),
+        _c("reason", "string", "Reason"),
+        _c("table", "string", "Table the row was read from"),
+        _c("n_rows", "int", "Rows of that table with this status and reason"),
+    ),
+)
+
 EXCLUSIONS = TableSchema(
     "exclusions", "1", "Rows removed or flagged, with stage and reason.",
     (
@@ -2032,7 +2079,8 @@ SCHEMAS: Final[Mapping[str, TableSchema]] = MappingProxyType({
                         WATER_BALANCE_TERM_TOTALS, WATER_BALANCE_RESIDUALS, SCENARIO_RESULTS,
                         ENSEMBLE_DAYS, ENSEMBLE_PREDICTIONS, ENSEMBLE_FOLDS, ENSEMBLE_WEIGHTS,
                         ENSEMBLE_INNER_SCORES, ENSEMBLE_TRAINING_MEMBERSHIP, ENSEMBLE_SUMMARY,
-                        ENSEMBLE_IMPROVEMENT, EXCLUSIONS)
+                        ENSEMBLE_IMPROVEMENT, ANALYSIS_STATUS, SKIPPED_ANALYSES,
+                        EXCLUSIONS)
 })
 
 

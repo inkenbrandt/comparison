@@ -77,8 +77,21 @@ def configure_logging(level: int | str = logging.INFO, *, json_lines: bool = Tru
     for handler in list(logger.handlers):
         if getattr(handler, "_etcompare_owned", False):
             logger.removeHandler(handler)
+            handler.close()
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter() if json_lines else KeyValueFormatter())
     handler._etcompare_owned = True  # type: ignore[attr-defined]
     logger.addHandler(handler)
     logger.setLevel(level)
+
+
+def add_log_file(path: str, level: int = logging.INFO) -> logging.Handler:
+    """Also write JSON-lines records to ``path``; returns the handler (remove it when done)."""
+    logger = logging.getLogger(PACKAGE_LOGGER)
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(JsonFormatter())
+    handler.setLevel(level)
+    logger.addHandler(handler)
+    if logger.level == logging.NOTSET or logger.level > level:
+        logger.setLevel(level)
+    return handler

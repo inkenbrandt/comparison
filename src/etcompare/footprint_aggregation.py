@@ -422,3 +422,36 @@ def write_footprint_set(
         json.dumps({"aggregation": to_plain(spec), "footprint_set": to_plain(fs)}, indent=2),
         encoding="utf-8")
     return fs
+
+
+def common_window(a: Grid, b: Grid) -> tuple[slice, slice, slice, slice] | None:
+    """Index windows of the overlap of two north-up grids with equal cells and CRS.
+
+    Returns ``(rows_a, cols_a, rows_b, cols_b)``, or ``None`` when the grids are not
+    aligned or do not overlap.
+    """
+    if a.crs != b.crs or a.transform[0] != b.transform[0] or a.transform[4] != b.transform[4]:
+        return None
+    dc = (b.transform[2] - a.transform[2]) / a.transform[0]
+    dr = (b.transform[5] - a.transform[5]) / a.transform[4]
+    if abs(dc - round(dc)) > 1e-6 or abs(dr - round(dr)) > 1e-6:
+        return None
+    dc, dr = round(dc), round(dr)  # b's origin in a's cells
+    r0, c0 = max(0, dr), max(0, dc)
+    r1, c1 = min(a.height, dr + b.height), min(a.width, dc + b.width)
+    if r1 <= r0 or c1 <= c0:
+        return None
+    return (slice(r0, r1), slice(c0, c1), slice(r0 - dr, r1 - dr), slice(c0 - dc, c1 - dc))
+
+
+def tv_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Total-variation distance ``0.5 * sum |a - b|`` of two footprints, each renormalized.
+
+    Non-finite and non-positive cells count as zero. 0 = identical shape, 1 = disjoint;
+    NaN when either has no positive mass.
+    """
+    a = np.where(np.isfinite(a) & (a > 0), a, 0.0)
+    b = np.where(np.isfinite(b) & (b > 0), b, 0.0)
+    if a.sum() <= 0 or b.sum() <= 0:
+        return math.nan
+    return float(0.5 * np.abs(a / a.sum() - b / b.sum()).sum())

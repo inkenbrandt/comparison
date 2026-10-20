@@ -724,4 +724,62 @@ ensembles:
     preprocessing: none
     insufficient_data: decline
 
+
+# ---------------------------------------------------------------------------- step 17
+# Per-timestep footprint stacks (built upstream by tools/upstream/run_timestep_footprints.py;
+# D-037) and the step-6 footprint-set comparisons, formerly command-line arguments.
+footprint_stacks:
+  - site_id: US-UTJ
+    stack_dir: ../outputs/footprint_timesteps/US-UTJ
+    compare_sets: [US-UTJ_set_A_20261005, US-UTJ_set_B_etw_20261012]
+footprint_comparisons:
+  - comparison_id: us_utj_set_b_etw_vs_mean        # D-035
+    extractions: [us_utj_set_b_etw, us_utj_set_b_mean]
+  - comparison_id: us_utj_nldas_vs_measured_le     # D-038
+    extractions: [us_utj_nldas_eto, us_utj_measured_le]
+
+# The primary footprints were built and verified (D-043, D-054); a run never rewrites them
+# unless footprint_aggregation is removed from this list.
+run:
+  skip: [footprint_aggregation]
+
+cache:
+  raster_identity: stat       # size + mtime; sha256 hashes every raster (slow on M:/J:)
+
+# Upstream versions that produced the inputs (recorded in every run manifest next to the
+# detected installed versions).
+upstream:
+  - name: fluxfootprints
+    version: "0.5.1"
+    commit: 6b7311d10ba228c5c463dfbcba58c53867dd9588
+    evidence: verified
+    source: sibling checkout ../footprints (D-056)
+    note: per-timestep stacks and representativeness labels
+  - name: flux-data-qaqc
+    version: "0.2.1"
+    evidence: code_inferred
+    source: local copy (input contract section 1)
+    note: the version that produced the daily export is unconfirmed
+  - name: OpenET API
+    version: api_default_unrecorded
+    evidence: unknown
+    note: model versions and download dates not recorded (D-015 q4)
+
+# Open and provisional decisions the outputs depend on (listed in every report).
+decisions:
+  - {ref: D-048, status: open, summary: "no block length adopted; 7- and 14-day intervals are probably too narrow and 28-day blocks mostly lack support", applies_to: [bootstrap.utj_block_bootstrap, rankings.utj_model_ranking, diagnostics.utj_diagnostics, ensembles.utj_ensemble]}
+  - {ref: D-049, status: open, summary: "no equivalence margins and no formal tests: equivalence not_assessed, every contrast exploratory", applies_to: [rankings.utj_model_ranking]}
+  - {ref: D-008, status: open, summary: "no retained-weight quality threshold adopted (min_retained_frac unset)", applies_to: [comparisons]}
+  - {ref: D-002, status: provisional, summary: "OpenET day boundary unknown, so every row carries day_alignment=unverified; station interval label 'start' unconfirmed (D-015 q1)", applies_to: [products, stations.US-UTJ]}
+  - {ref: D-044, status: provisional, summary: "near-zero metric tolerances chosen before scoring", applies_to: [metric_sets.utj_metrics]}
+  - {ref: D-051, status: provisional, summary: "diagnostic bin edges and min_bin_days 20; closure window behind ebr unresolved", applies_to: [diagnostics.utj_diagnostics]}
+  - {ref: D-055, status: open, summary: "no layer matching policy adopted (nearest and previous_only reported); contour level 0.8 provisional; polygon vintage unknown", applies_to: [representativeness]}
+  - {ref: D-061, status: provisional, summary: "event-window and anomaly defaults chosen by the assistant; no control design", applies_to: [event_analyses, anomalies]}
+  - {ref: D-064, status: open, summary: "five water-balance terms have no input; gridMET units/day definition and the boundary vintage unconfirmed", applies_to: [water_balances]}
+  - {ref: D-067, status: open, summary: "the fitted ensemble is declined (one calendar-year fold, one station)", applies_to: [ensembles.utj_ensemble]}
+  - {ref: D-054, status: open, summary: "openet_rasters.root is stale (the Drive folder moved to unclipped/), so index and raster extraction are not available", applies_to: [openet_rasters]}
+
+report:
+  title: "US-UTJ station-level comparison"
+
 output_dir: ../outputs
