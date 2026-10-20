@@ -21,7 +21,119 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 15 — Water-balance checks and scenario uncertainty | **Done** 2026-10-17 (station level; US-UTJ declaration Provisional; **the US-UTJ residual is unknown**: five terms have no input; no scenario declared) |
 | 16 — Held-out ensemble experiments | **Done** 2026-10-18 (station level; post-extraction ensembles; US-UTJ choices made by the user; **the US-UTJ fitted ensemble is declined**: one calendar-year fold, one station) |
 | 17 — Plots, reports, configuration and CLI | **Done** 2026-10-19 (workflow units with exact cache invalidation, run manifests, reports from saved tables, synthetic demo; US-UTJ and the seven Utah stations rerun through the CLI) |
-| 18 | Not started |
+| 18 — Resilient processing and first release | **Done** 2026-10-20 (version 0.1.0, MIT, unpublished; retries, keep-awake, stall detection, checkpoints, systematic-failure rule, atomic outputs; full raster demo; Sphinx docs, notebooks, CI; US-UTJ and Utah tables bit-identical) |
+
+## Step 18 — Resilient processing and a usable first release (2026-10-20)
+
+**User decisions (2026-10-20; D-079, D-080):**
+- No concurrency.
+- Keep-awake on.
+- Retries as proposed.
+- No staging; the user works from a local drive.
+- Monthly checkpoints.
+- Strict off, with a 1 % systematic threshold.
+- An open licence: MIT, chosen by the assistant.
+- Version 0.1.0; the name stays `etcompare`; Keep a Changelog.
+- Plain Markdown docs, plus Sphinx for Read the Docs.
+- GitHub Actions.
+- A pinned demo requirements file.
+- Three committed notebooks, outputs stripped.
+- The full raster demo extends the tables demo.
+- Verification on US-UTJ and the seven Utah stations.
+
+**Run it**
+```bash
+python -m etcompare demo demo --rasters && python -m etcompare run demo/config.yaml   # ~4.5 min offline
+uv run --no-sync python -m pytest            # 867 passed, 3 skipped (opt-in Drive tests), ~16 min
+uv run --no-sync ruff check src tests tools/run_*.py tools/make_data_dictionary.py && uv run --no-sync mypy
+uv run --no-sync python -m sphinx -b html -W --keep-going docs docs/_build/html
+python tools/make_data_dictionary.py         # regenerate docs/data_dictionary.md
+```
+
+### Survey (before building; D-079)
+- **Raster path.** One open per raster, bounded windows, no dense stacks. Memory grows only with output rows and the index.
+- **Failure modes found:**
+  - a non-strict extraction with every raster unreadable completed with zero rows;
+  - an unreadable raster left no row in the extraction table;
+  - CSV, text and figure writes were not atomic;
+  - an interrupted extraction kept no progress;
+  - nothing detected a stall.
+- **Benchmark** (serial, instrumented):
+  - J: clipped US-UTJ: 22 s, 86 % I/O (file opens about 5 ms each), peak +24 MB working set.
+  - M: unclipped US-UTJ, 4 methods: 88–94 s, 95 % I/O (opens about 23 ms each).
+- **The 9-hour pause (D-078) was idle sleep.** The Windows System log shows Kernel-Power 42, *System Idle*, one second after the last progress record; the AC sleep timeout is 900 s.
+
+### API
+- **`etcompare.config.ProcessingSpec`** (`processing:`): `keep_awake`, `io_attempts`, `io_backoff_s`, `stall_warning_s`, `stall_timeout_s`, `checkpoint`, `max_unreadable_fraction`.
+- **`etcompare.resilience`:** `RetryPolicy`, `call_with_retries`, `keep_awake`, `StallWatchdog` (with `beat`/`rest`), `StallTimeoutError`, `Checkpoint`.
+- **`etcompare.io.atomic`:** `atomic_path`, `write_text_atomic`, `write_csv_atomic`, `write_json_atomic`.
+- **`etcompare.errors`:** `InputMissingError` (a `FileNotFoundError`), `SystematicFailureError` (a `DataValidationError`).
+- **`extract_rasters(..., retry=, max_unreadable_fraction=, checkpoint=)`**: new codes `raster_missing` and `footprint_file_missing`; unreadable model-days keep null rows.
+- **`etcompare.demo.write_demo(..., rasters=True)`** and **`etcompare demo DIR [--rasters] [--seed]`**.
+- **`etcompare.schemas.data_dictionary()`** and **`etcompare.reporting.skipped_file_rows`**.
+
+### Delivered
+- **Resilience.** Retries logged as `io_retry`/`io_failed`.
+  - Keep-awake.
+  - Stall and suspend detection, armed only while rasters are read.
+  - Monthly checkpoints under `.etcompare/checkpoints/<unit>/<key>/`, with a SHA-256-sealed record; pruned when the key changes, cleared after success.
+  - The systematic-failure rule: exit 2, manifest `failed`, exclusions written, the table not written.
+  - Atomic writes everywhere.
+  - The manifest is written as `running` at the start.
+- **Release files.**
+  - `LICENSE` (MIT), `CHANGELOG.md`, version 0.1.0.
+  - `pyproject` metadata and a `docs` dependency group.
+  - Sphinx docs: index, getting started, configuration, method guide, limitations, one API page per module, generated data dictionary, references, decisions, input contract, changelog.
+  - `.readthedocs.yaml`, `.github/workflows/ci.yml`, `examples/demo/requirements-demo.txt`, `notebooks/01–03`.
+- **Configuration.**
+  - Both example configs declare `processing:` (Provisional, D-079 in `decisions:`).
+  - `examples/us_utj.yaml` reads the `unclipped/` Drive folder (D-054 resolved), so its four extractions now run.
+- **Fixes.**
+  - Invalid YAML gives exit code 2.
+  - `--log-level` filters stderr.
+  - `write_footprint` removes its `.part` file on a failed write.
+
+### Checks
+- **`tests/test_resilience.py`** (18):
+  - atomic writes keep the old file and leave no temp file, and match the plain writers byte for byte;
+  - retries are finite and logged, and are never applied to contract errors or vanished files;
+  - the processing section is validated;
+  - keep-awake;
+  - stall warning, suspend detection, stall timeout, and disarming after extraction;
+  - checkpoint key and integrity;
+  - a corrupt raster is skipped, counted and kept null;
+  - a missing raster gets its own code;
+  - every raster of one model, every footprint, or the fraction above the threshold is systematic;
+  - an interrupted extraction resumes to an identical frame, attributes and report, without rereading checkpointed months.
+- **`tests/test_release.py`** (9), the final gate on the raster demo:
+  - offline end-to-end run; every unit completed or not declared; a rerun reuses everything;
+  - paired rows and exclusions inspectable;
+  - MAE, RMSE and MBE reproduced from the paired rows for every model, site and comparison (over 300 rows);
+  - a corrupt raster is skipped, counted in the manifest, retried in the log, and listed as `files_skipped` in the report;
+  - a systematic failure gives exit 2, a failed manifest and no table;
+  - an interrupted CLI extraction resumes to identical outputs;
+  - the tables demo is unchanged; invalid YAML exits 2; the data dictionary is current; the limitations list the gaps.
+- **`tests/test_notebooks.py`** (7): outputs stripped, no private paths, the Drive mount only as a commented cell, every code cell runs.
+- **Full suite:** 867 passed, 3 skipped (16 min). ruff and mypy are clean, and Sphinx builds with `-W`.
+- **Not run locally:** Application Control blocks DLLs freshly unpacked outside the project venv (pyarrow 14, matplotlib `_path`). So the lowest-direct stack on Python 3.11 and the pinned demo environment could not be run here. Both are CI jobs.
+
+### Real-file verification (local, git-ignored; D-014)
+The pre-change baselines were run from a worktree at the step-17 commit. The final code (0.1.0.dev0, before the version bump) was run with `--force`. Every Parquet table was compared: frames, dtypes and the full `etcompare` metadata, attributes included.
+
+| Configuration | Units | Wall time | Extractions (s) | Tables compared | Differences |
+|---|---|---|---|---|---|
+| `examples/us_utj.yaml` (M: unclipped Drive, footprints on M:) | 82 completed, 1 skipped (`run_skip`) | 11 min 32 s | set B `etw` 83, set B `mean` 81, NLDAS 73, measured LE 70 | 197 | **0** |
+| `examples/utah_stations.yaml` (J:) | 20 completed, 18 skipped (`run_skip`, `not_declared`) | 10 min 23 s | UTD 71, UTE 24, UTG 14, UTJ 25, UTM production 88, UTM NLDAS 86, UTV 35, UTW 140 | 58 | **0** |
+
+- **Run health.** Neither run had a read failure: no `io_retry`, `io_failed`, `io_stall` or `system_suspended` event, and no unreadable or missing file in any exclusions file.
+- **Keep-awake** was held in both runs. 64 and 220 monthly checkpoints were written and all were cleared afterwards.
+- **US-UTJ** extracts again for the first time since D-054. Its extracted values equal the stored tables except `source_path` (D-079 benchmark).
+- **Comparison series.** An intermediate comparison after the raster-path changes was also identical (US-UTJ 197 tables, Utah 58).
+
+### Open
+- **Publishing needs authorization:** PyPI, a Read the Docs project, pushing the branch (which runs CI).
+- **Licence holder.** "The etcompare contributors" is a placeholder for the copyright line; the user may want a named holder.
+- **Carried over:** every decision in `decisions:` of the example configs, and the gaps in `docs/limitations.md`.
 
 ## Step 17 — Plots, reports, configuration and CLI (2026-10-19)
 

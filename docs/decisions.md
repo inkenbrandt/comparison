@@ -1887,3 +1887,9 @@ Both comparisons found no difference. The final runs are in D-080.
 - **Smaller fixes:**
   - invalid YAML is a configuration error (exit 2);
   - `--log-level` filters stderr even when the run log file is attached.
+- **Real-file verification (final code, 2026-10-20):**
+  - `examples/us_utj.yaml`: 82 units completed, 11 min 32 s. Four extractions from the unclipped Drive folder, 70–83 s each.
+  - `examples/utah_stations.yaml`: 20 units completed, 10 min 23 s. Eight J: extractions, 14–140 s each.
+  - Compared with the pre-step-18 baselines: 197 and 58 Parquet tables, **0 differences** (frames, dtypes, metadata).
+  - No retry, read failure, stall or suspend event occurred; keep-awake was held; all checkpoints were cleared.
+  - The version was then bumped to 0.1.0, which changes only the `etcompare_version` written into new files.

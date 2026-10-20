@@ -70,6 +70,10 @@ path = "src/etcompare/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/etcompare"]
 
+[tool.hatch.build.targets.sdist]
+# Station-specific files tracked in the repository stay out of distributions (D-014).
+exclude = ["*.gpkg", "*.ini", "*.vrt", "*.tif", "*.parquet", "*.csv", "!examples/legends/*.csv"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
