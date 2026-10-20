@@ -95,6 +95,7 @@ class Block:
     frame: pd.DataFrame | None = None
     figure: dict[str, Path] = field(default_factory=dict)
     items: list[str] = field(default_factory=list)
+    alt: str = ""
 
 
 def _md_cell(v: Any) -> str:
@@ -140,7 +141,7 @@ def render_markdown(blocks: list[Block], base: Path) -> str:
         elif b.kind == "figure":
             img = b.figure.get("png") or b.figure.get("svg")
             rel = img.relative_to(base).as_posix() if img else ""
-            out.append(f"![{b.text.split('.')[0]}]({rel})\n\n*{b.text}*")
+            out.append(f"![{b.alt}]({rel})\n\n*{b.text}*")
     return "\n\n".join(out) + "\n"
 
 
@@ -184,7 +185,7 @@ def render_html(blocks: list[Block], title: str) -> str:
             png = b.figure.get("png")
             if png is not None:
                 data = base64.b64encode(png.read_bytes()).decode("ascii")
-                img = (f"<img alt='{html.escape(b.text.split('.')[0])}' "
+                img = (f"<img alt='{html.escape(b.alt)}' "
                        f"src='data:image/png;base64,{data}'>")
             else:
                 svg = b.figure["svg"].read_text(encoding="utf-8")
@@ -359,7 +360,7 @@ class _Builder:
         if fr.figure is not None:
             fr.figure.clear()
         self.n_figures += 1
-        self.add("figure", fr.caption, figure={p.suffix[1:]: p for p in paths})
+        self.add("figure", fr.caption, figure={p.suffix[1:]: p for p in paths}, alt=fr.title)
 
     def table(self, fr_make: Callable[[], FigureResult], section: str, name: str) -> None:
         try:
@@ -371,6 +372,14 @@ class _Builder:
         stem.parent.mkdir(parents=True, exist_ok=True)
         fr.rows.to_csv(stem.parent / f"{stem.name}_rows.csv", index=False)
         self.add("table", fr.caption, frame=fr.table)
+
+
+def _git_line(git: dict[str, Any]) -> str:
+    if not git.get("available"):
+        return "Git revision: not available (not a git checkout)"
+    dirty = git.get("dirty_paths") or []
+    return (f"Git revision {git['revision']}"
+            + (f", dirty ({len(dirty)} modified file(s))" if git.get("dirty") else ", clean"))
 
 
 def _safe(s: str) -> str:
@@ -406,7 +415,7 @@ def _comparison_section(b: _Builder, spec: Any) -> None:
                   "site-days.")
     mem = _read(co / f"{cid}_membership.parquet")
     if mem is not None:
-        b.figure(cid, "coverage", lambda: coverage(mem, synthetic=syn), check)
+        b.figure(cid, "coverage", lambda: coverage(mem, paired, synthetic=syn), check)
     for ms in [m for m in b.cfg.metric_sets if m.comparisons is None or cid in m.comparisons]:
         mt = _read(co / f"{cid}__{ms.metric_set_id}_metrics.parquet")
         if mt is None:
@@ -589,7 +598,7 @@ def build_report(cfg: Config, records: list[UnitRecord], *, run_id: str,
     b.add("list", items=[f"Run {run_id}; configuration {cfg.source_path}",
                          f"Configuration hash {info.get('config_hash', '')[:16]}; code "
                          f"{info.get('code_identity', '')[:16]}",
-                         f"Git: {info.get('git')}",
+                         _git_line(info.get("git") or {}),
                          f"Stations: {sorted(cfg.stations)}"])
 
     status = status_table(records)

@@ -106,7 +106,7 @@ def _git(args: list[str], cwd: Path) -> str | None:
                               timeout=20, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
-    return proc.stdout.strip() if proc.returncode == 0 else None
+    return proc.stdout.rstrip("\r\n") if proc.returncode == 0 else None
 
 
 def git_state(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
@@ -116,7 +116,8 @@ def git_state(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     """
     cwd = Path(path) if path is not None else Path(__file__).resolve().parent
     rev = _git(["rev-parse", "HEAD"], cwd)
-    if rev is None:
+    rev = rev.strip() if rev else rev
+    if not rev:
         return {"available": False}
     status = _git(["status", "--porcelain", "--untracked-files=no"], cwd) or ""
     return {"available": True, "revision": rev, "dirty": bool(status),
