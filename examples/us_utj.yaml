@@ -61,7 +61,7 @@ extracted_tables:
     source_path_column: openet_path
 
 openet_rasters:
-  - root: "M:/My Drive/OpenET_Daily_Tiffs/US-UTJ_US-CdM"
+  - root: "M:/My Drive/OpenET_Daily_Tiffs/unclipped/US-UTJ_US-CdM"   # the Drive folder moved here (D-054); updated in step 18
 
 footprint_sets:
   - set_id: US-UTJ_set_A_20261005
@@ -777,7 +777,6 @@ decisions:
   - {ref: D-061, status: provisional, summary: "event-window and anomaly defaults chosen by the assistant; no control design", applies_to: [event_analyses, anomalies]}
   - {ref: D-064, status: open, summary: "five water-balance terms have no input; gridMET units/day definition and the boundary vintage unconfirmed", applies_to: [water_balances]}
   - {ref: D-067, status: open, summary: "the fitted ensemble is declined (one calendar-year fold, one station)", applies_to: [ensembles.utj_ensemble]}
-  - {ref: D-054, status: open, summary: "openet_rasters.root is stale (the Drive folder moved to unclipped/), so index and raster extraction are not available", applies_to: [openet_rasters]}
 
 report:
   title: "US-UTJ station-level comparison"

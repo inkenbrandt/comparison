@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,7 +7,20 @@ name = "etcompare"  # working name; check availability before distributing
 dynamic = ["version"]
 description = "Compare OpenET model estimates against quality-controlled eddy covariance station ET."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+keywords = ["evapotranspiration", "OpenET", "eddy covariance", "flux footprint", "validation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Hydrology",
+]
 # Lower bounds, not pins: the oldest releases tested with `uv run --resolution lowest-direct`.
 dependencies = [
     "numpy>=1.26",
@@ -16,6 +29,9 @@ dependencies = [
     "scipy>=1.11",
     "pyyaml>=6.0.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/inkenbrandt/comparison"
 
 [project.scripts]
 etcompare = "etcompare.cli:main"
@@ -40,6 +56,12 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
     "mypy>=1.11",
+]
+# Sphinx documentation (docs/; Read the Docs installs docs/requirements.txt).
+docs = [
+    "sphinx>=7.2",
+    "myst-parser>=2.0",
+    "sphinx-rtd-theme>=2.0",
 ]
 
 [tool.hatch.version]

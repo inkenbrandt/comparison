@@ -31,6 +31,7 @@ import pandas as pd
 
 from etcompare._optional import require
 from etcompare.errors import EtcompareError
+from etcompare.io.atomic import atomic_path
 
 #: Categorical slots in fixed order (reference palette, light mode).
 PALETTE = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6",
@@ -211,8 +212,9 @@ def save_figure(result: FigureResult, stem: str | Path, formats: Sequence[str] =
     out = []
     for f in formats:
         p = stem.with_suffix(f".{f}")
-        result.figure.savefig(p, format=f, dpi=dpi, facecolor=SURFACE,
-                              metadata={"Date": None} if f == "svg" else None)
+        with atomic_path(p) as tmp:
+            result.figure.savefig(tmp, format=f, dpi=dpi, facecolor=SURFACE,
+                                  metadata={"Date": None} if f == "svg" else None)
         out.append(p)
     return out
 

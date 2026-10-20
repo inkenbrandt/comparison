@@ -1,0 +1,93 @@
+# Continuous integration (guide step 18). Synthetic data only: no station data, no rasters
+# from private drives, no credentials. Integration tests skip themselves when the local
+# user files are absent, as they are here.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install (geo and plot extras, dev tools)
+        run: uv sync --extra geo --extra plot
+      - name: Lint and type-check
+        run: |
+          uv run ruff check src tests tools/run_*.py tools/make_data_dictionary.py
+          uv run mypy
+      - name: Tests (synthetic only)
+        run: uv run pytest -ra
+      - name: Offline demonstration with rasters, through the console script
+        shell: bash
+        run: |
+          uv run etcompare demo "$RUNNER_TEMP/demo" --rasters
+          uv run etcompare run "$RUNNER_TEMP/demo/config.yaml" --log-format text --log-level WARNING
+          test -f "$RUNNER_TEMP/demo/outputs/report/report.html"
+
+  lowest-dependencies:
+    # The oldest declared versions (D-018), core only: geo and plot tests skip themselves.
+    name: core tests on the lowest declared dependencies (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Install with lowest-direct resolution
+        run: uv sync --resolution lowest-direct
+      - name: Tests
+        run: uv run pytest -ra
+
+  pinned-demo:
+    # The pinned demonstration environment (examples/demo/requirements-demo.txt).
+    name: demonstration in the pinned environment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned environment
+        run: |
+          python -m pip install -r examples/demo/requirements-demo.txt
+          python -m pip install --no-deps -e .
+      - name: Run the demonstration
+        run: |
+          etcompare demo "$RUNNER_TEMP/demo" --rasters
+          etcompare run "$RUNNER_TEMP/demo/config.yaml" --log-format text --log-level WARNING
+          test -f "$RUNNER_TEMP/demo/outputs/report/report.html"
+
+  docs:
+    name: documentation (Sphinx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install -r docs/requirements.txt
+          python -m pip install -e .
+      - name: Build (warnings are errors)
+        run: python -m sphinx -b html -W --keep-going docs docs/_build/html
