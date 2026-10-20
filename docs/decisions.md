@@ -1501,7 +1501,8 @@ What this implies under the declared rule (calendar years, 28-day buffer, ≥ 2 
 
   The total is 1,798 station-days (1,225 in April–October). US-UTE loses 41 days to the held-out geesebal/ptjpl conflicts (218 days have the other members).
 
-### D-071 — Seven-station ensemble results (Information)
+### D-071 — Seven-station ensemble results (Information; superseded by D-072 on 2026-10-19)
+*The figures below are from the C: rasters without a minimum held-out size. D-072 has the current run.*
 `utah_ensemble`, run by `tools/run_ensembles.py examples/utah_stations.yaml` (about 1 min; local `outputs/utah/ensembles/`). The settings are those of D-066 (members, reference, `require_all`, calendar-year folds, 28-day buffer, ≥ 2 training folds of ≥ 180 days, α grid) plus per-station footprint sets and the April–October subset.
 
 **Leave-one-year-out: no held-out claim.**
@@ -1546,4 +1547,63 @@ What this implies under the declared rule (calendar years, 28-day buffer, ≥ 2 
   - fitted predictions equal the member values times the fold's weights;
   - no station trains its own fold;
   - the April–October cohort holds only months 4–10.
+
+---
+
+**Revision 2026-10-19 (u):** User decisions on D-071's open items. D-072 added; D-071's figures are superseded.
+
+### D-072 — J:/FLUX rasters, a minimum held-out size, an extraction fix, US-UTG and US-UTM (Adopted 2026-10-19, user decisions; Information)
+**Decisions (user, 2026-10-19):**
+- **Rasters from `J:/FLUX/OpenET_Daily_Tiffs`**, the user's de-duplicated copy. `J:/FLUX/database` and the footprint folders are byte-identical to the C: copies (checked by SHA-256), and the station tables now point at J:. The footprints are unchanged.
+- **Minimum held-out size:** `min_test_days_per_fold: 180`, a mandatory fitting field. A fold with fewer eligible held-out days is declined, with the count as the reason. Both example configs declare it.
+- **US-UTG keeps the default height filter.** ffp_xr with `rslayer=False` (production, D-037) drops half-hours with zm ≤ 27.5·z0, the roughness sublayer. That rule matches US-UTG's footprint mass on 99.8 % of 4,615 half-hours (922 predicted, 930 positive). `rslayer=True` (Kljun Eq. 27, zm > 20·z0) would recover March–May and part of July, but not August–October, when the corn is 2.4–2.8 m and zm/z0 is 7–8.
+- **Rebuild US-UTM** from its stack: **not done**. The UGS database timed out on two attempts (34.106.159.40:5432), so its parameters could not be fetched. US-UTM keeps `US-UTM_production_etw` until access returns.
+
+**What J: contains:**
+- **No duplicates**, and US-UTE gains geesebal and ptjpl for 2024. For the other six stations the extracted values equal the C: extractions exactly (same rows, zero difference).
+- **Wrong-region US-UTE files.** In 171 of US-UTE's 188 former conflict groups, J: kept the file of **another region** and dropped the file that covers US-UTE (57 geesebal, 114 ptjpl):
+  - 2 files span about −114.07 to −113.67°E, 40.58–40.95°N, near US-UTB;
+  - the rest span −110.03 to −109.57°E, 40.06–40.26°N, near US-UTV/UTL.
+
+  In 15 groups J: kept the US-UTE file, and in 2 both files were on the US-UTE grid. The wrong-region files cannot be US-UTE data. Inside the station record they give 39 `no_overlap` model-days, which are missing values.
+- **US-UTE's J: rasters are unclipped** (862 × 688 cells). D-070 showed that clipping does not change extracted values.
+
+**Extraction bug fixed (`etcompare.extraction`).**
+- **The bug.** A raster was declared `no_overlap` from the previous raster's cached grid, without its own header being read. The grid was rechecked only when a window read failed, and no read was attempted once the cached window was empty. So the first wrong-region file made every later raster of every model `no_overlap`: 1,740 US-UTE model-days.
+- **The fix.** When the cached plan has no window, the raster's own header is read and the plan is rebuilt for its grid.
+- **Regression test:** a wrong-region raster for one model leaves the others' values exact (`tests/test_extraction.py`).
+- **Scope.** No earlier extraction was affected: every earlier exclusion file has zero `no_overlap` rows.
+
+**Current results** (`tools/run_ensembles.py examples/utah_stations.yaml`):
+- **Eligible station-days:** 1,801 (1,228 in April–October). US-UTE has 180 (2025 only); the others are as in D-070.
+- **Leave-one-year-out: declined.** 2023 and 2025 have one training year each; 2024 has 5 held-out days, below 180.
+- **Leave-one-site-out: held out, 6 of 7 station folds.**
+  - **US-UTG** (41 days) is declined as a held-out station and never trains.
+  - **US-UTE** (exactly 180) now trains and is tested.
+  - **Weights:** SIMS 0.55–0.71, SSEBop 0.19–0.29, geeSEBAL 0.08–0.16, PT-JPL 0–0.07, and DisALEXI and eeMETRIC 0–0.04. α = 0 at five folds and 0.25 at one.
+
+| Station | Days | Official | Mean | Fitted (RMSE, mm d⁻¹) | Fitted − mean |
+|---|---|---|---|---|---|
+| US-UTD | 315 | 1.050 | 1.029 | 0.963 | −0.065 |
+| US-UTE | 180 | 1.754 | 1.677 | 1.377 | −0.299 |
+| US-UTJ | 188 | 1.140 | 1.082 | 0.791 | −0.291 |
+| US-UTM | 267 | 1.311 | 1.171 | 1.184 | +0.013 |
+| US-UTV | 251 | 1.672 | 1.615 | 1.273 | −0.341 |
+| US-UTW | 559 | 1.318 | 1.309 | 1.285 | −0.023 |
+
+- **Point estimates.** The fitted ensemble is lower than the mean at 5 of 6 stations and lower than the official ensemble at 6 of 6. The equal-station mean differences are −0.168 (mean) and −0.229 (official); for April–October they are −0.224 and −0.297.
+- **The corn station is no longer evaluated.** With US-UTG declined by the minimum size, the one station where transfer failed (+0.53 in D-071) is out of the summary. The −0.168 is therefore not evidence of transfer to corn.
+- **Few improvements are supported.** RMSE against the mean is `supported` at US-UTE and US-UTV at 7-day blocks, and at US-UTV at 14-day blocks. US-UTJ is supported at 7-day blocks only; it was also supported at 14 days in D-071, which shows how sensitive these station-level verdicts are. 28-day blocks lack support.
+- **Caveats** as in D-071: exploratory, station level, no network interval, shared weather across site folds, and probably too-narrow 7- and 14-day intervals. US-UTM's footprints differ in method.
+- **Integration test** (`tests/integration/test_utah_ensemble.py`, 7 tests):
+  - the counts;
+  - the declined folds and their reasons;
+  - the weights times the members;
+  - April–October days only;
+  - the clipped-vs-unclipped US-UTJ match;
+  - the US-UTE wrong-region files, which are `no_overlap` for geesebal and ptjpl only.
+
+**Open:**
+- Whether the 171 US-UTE groups on J: should keep the US-UTE file. That would restore at most the 39 in-record days.
+- US-UTM's rebuild, once the database is reachable.
 

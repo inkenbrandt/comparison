@@ -219,3 +219,24 @@ def test_write_footprint_detects_corruption_after_write(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="read back differs"):
         rasters.write_footprint(path, values, grid)
     assert not path.exists()
+
+
+def test_a_raster_on_another_grid_does_not_hide_later_rasters(setup):
+    """A wrong-region raster (no overlap) must not make later rasters 'no_overlap' (D-072).
+
+    Regression: the cached grid of the previous raster was used to decide that a raster had
+    no window, without reading that raster's own header.
+    """
+    far = Affine(30, 0, X0 + 100_000, 0, -30, Y0 + 100_000)
+    write(setup["et_root"] / "eemetric" / "US-XXX_eemetric_et_2024_06_05_abc12.tif",
+          et_field("ssebop", 0), far, -9999)
+    setup["model_manifest"] = discover_openet_rasters(
+        setup["et_root"], models=MODELS, products=setup["products"]).manifest
+    r = run(setup)
+    f, ex = r.frame, r.exclusions.to_frame()
+    key = ex["input_key"].str.contains("model=eemetric")
+    assert set(ex.loc[key, "reason_code"]) == {"no_overlap"}
+    for model in ("ssebop", "sims"):
+        row = pick(f, model, "footprint_conservative", DAYS[0])
+        assert row.et_mm == pytest.approx(expected_fp(model, 0)[0], rel=1e-12)
+    assert np.isfinite(pick(f, "ssebop", "pixel_window_3x3", DAYS[2]).et_mm)

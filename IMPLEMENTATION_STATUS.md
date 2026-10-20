@@ -22,6 +22,33 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 | 16 — Held-out ensemble experiments | **Done** 2026-10-18 (station level; post-extraction ensembles; US-UTJ choices made by the user; **the US-UTJ fitted ensemble is declined**: one calendar-year fold, one station) |
 | 17–18 | Not started |
 
+## Step 16, part 3 — J: rasters, minimum held-out size, extraction fix (2026-10-19)
+
+**User decisions (D-072):** use `J:/FLUX` (de-duplicated rasters), `min_test_days_per_fold: 180`, keep the default ffp_xr height filter for US-UTG, and rebuild US-UTM (blocked: the UGS database timed out twice).
+
+### Delivered
+- **`min_test_days_per_fold`** (mandatory with designs): a held-out fold with fewer eligible days is declined, with the count as the reason.
+- **Fix in `etcompare.extraction`:** a raster on another grid than the previous one was declared `no_overlap` from the cached grid without its header being read. It hid 1,740 US-UTE model-days after a wrong-region file. No earlier run was affected (zero `no_overlap` rows in every earlier exclusion file).
+- **`examples/utah_stations.yaml`** points the rasters and station tables at J:. J:'s database and footprints are byte-identical to C:.
+
+### Checks
+- `tests/test_extraction.py` (+1 regression test).
+- `tests/test_ensemble.py` (+2: the declined fold and its reason; the mandatory field).
+- `tests/integration/test_utah_ensemble.py` (7): the new counts and statuses, and the wrong-region `no_overlap` rows (geesebal and ptjpl only).
+- J: extractions equal the C: ones at six stations (zero difference).
+
+### Results (D-072)
+- **1,801 eligible station-days.** Leave-one-year-out is declined.
+- **Leave-one-site-out:** 6 of 7 folds fitted; US-UTG (41 days) is declined, and US-UTE (180) now trains and is tested. SIMS is weighted 0.55–0.71.
+- **Held-out RMSE** is lower than the mean at 5 of 6 stations (equal-station mean −0.168 mm d⁻¹; April–October −0.224) and lower than the official ensemble at 6 of 6.
+- **The corn station** (worse in D-071) is no longer evaluated, so these figures say nothing about corn.
+- **Supported at 14-day blocks:** US-UTV only.
+
+### Open
+- **The 171 wrong-region US-UTE files on J:** keep the US-UTE file instead? That would restore at most 39 in-record model-days.
+- **US-UTM's rebuild,** when the database is reachable.
+- Carried over: block length (D-048), equivalence margins (D-049), and a network interval.
+
 ## Step 16, part 2 — Seven-station ensemble (2026-10-19)
 
 **Run it**

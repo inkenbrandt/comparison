@@ -40,8 +40,9 @@ Fitting (designs)
   reference days are excluded unless ``gap_filled_training`` (D-005). For temporal folds,
   training days within ``buffer_days`` of the held-out fold's calendar period are removed.
   Training folds with fewer than ``min_training_days_per_fold`` days are left out. A fold is
-  fitted only with at least ``min_training_folds`` training folds; otherwise it is
-  ``declined`` with the reason.
+  fitted only with at least ``min_training_folds`` training folds and at least
+  ``min_test_days_per_fold`` eligible held-out days; otherwise it is ``declined`` with the
+  reason.
 - **Weights** are simplex least squares (``w >= 0``, ``sum(w) = 1``), solved exactly by
   enumerating member supports (:func:`simplex_least_squares`). Preprocessing is ``none``:
   nothing is scaled or centred, so nothing can be learned from held-out rows.
@@ -461,6 +462,12 @@ def _fit_fold(label: str, design: str, spec: EnsembleSpec, metric_spec: MetricSp
     n_buffer = int((roles == "buffer_excluded").sum())
     keep, n_small = _qualifying(groups, roles, min_days)
     fold = _Fold(label, "declined", None, roles, keep, n_buffer=n_buffer, n_small=n_small)
+    n_test = int((roles == "held_out").sum())
+    min_test = int(spec.min_test_days_per_fold or 1)
+    if n_test < min_test:
+        fold.detail = (f"{n_test} eligible held-out day(s) < min_test_days_per_fold "
+                       f"{min_test}")
+        return fold
     if len(keep) < min_folds:
         fold.detail = (f"{len(keep)} training fold(s) with >= {min_days} training days after "
                        f"the {spec.buffer_days}-day buffer ({_join(keep) or 'none'}); "
