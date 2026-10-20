@@ -21,7 +21,7 @@ figure is drawn. Figures use the object-oriented API (no pyplot state).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -98,7 +98,7 @@ def _uniq(rows: pd.DataFrame, col: str) -> tuple[str, ...]:
     return tuple(sorted(str(v) for v in rows[col].dropna().unique()))
 
 
-def _span(values: Sequence[int]) -> str:
+def _span(values: Iterable[Any]) -> str:
     v = sorted({int(x) for x in values})
     if not v:
         return "0"
@@ -108,7 +108,7 @@ def _span(values: Sequence[int]) -> str:
 def caption_meta(rows: pd.DataFrame, *, units: str, scale: str,
                  n_days: str | None = None) -> CaptionMeta:
     """Caption fields from ``rows``: never from the configuration."""
-    ext = ()
+    ext: tuple[str, ...] = ()
     if "extraction_method" in rows.columns:
         fs = rows["footprint_set_id"] if "footprint_set_id" in rows.columns else "none"
         ext = tuple(sorted({f"{m}@{f}" for m, f in zip(
@@ -544,7 +544,8 @@ def ranking_stability(rankings: Any, *, metric_ids: Sequence[str] = ("mae", "rms
     rows = rows.sort_values(["scope", "reference_variant", "extraction_method", "metric",
                              "block_length", "rank"])
     table = pd.DataFrame({
-        "site": rows["scope"], "reference": rows["reference_variant"], "extraction": rows["extraction_method"],
+        "site": rows["scope"], "reference": rows["reference_variant"],
+        "extraction": rows["extraction_method"],
         "metric": rows["metric"], "block": rows["block_length"].astype("Int64"),
         "model": rows["model"], "value": rows["value"].round(3), "rank": rows["rank"],
         "mean rank": rows["mean_rank"].round(2),

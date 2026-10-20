@@ -3898,9 +3898,9 @@ class Config:
                                 f"{ids}", config_key="footprint_comparisons")
         for fc in self.footprint_comparisons:
             key = f"footprint_comparisons.{fc.comparison_id}"
-            unknown = [n for n in fc.extractions if n not in extractions]
-            if unknown:
-                raise ContractError(f"{key}: raster extractions {unknown} not declared",
+            missing = [n for n in fc.extractions if n not in extractions]
+            if missing:
+                raise ContractError(f"{key}: raster extractions {missing} not declared",
                                     config_key=f"{key}.extractions")
             specs = [extractions[n] for n in fc.extractions]
             if len({x.site_id for x in specs}) != 1:

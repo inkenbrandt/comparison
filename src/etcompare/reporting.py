@@ -124,7 +124,8 @@ def _html_table(frame: pd.DataFrame, max_rows: int = 200) -> str:
                    + "</tr>" for row in f.itertuples(index=False))
     more = (f"<p class='muted'>{len(frame) - max_rows} more rows in the CSV.</p>"
             if len(frame) > max_rows else "")
-    return f"<div class='tw'><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>{more}"
+    return (f"<div class='tw'><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody>"
+            f"</table></div>{more}")
 
 
 def render_markdown(blocks: list[Block], base: Path) -> str:
@@ -341,10 +342,11 @@ class _Builder:
     def add(self, kind: str, text: str = "", **kw: Any) -> None:
         self.blocks.append(Block(kind, text, **kw))
 
-    def figure(self, section: str, name: str, make: Callable[[], FigureResult],
-               check: Callable[[FigureResult], None] | None = None) -> None:
+    def figure(self, section: str, name: str, make: Callable[..., FigureResult],
+               *args: Any, check: Callable[[FigureResult], None] | None = None,
+               **kwargs: Any) -> None:
         try:
-            fr = make()
+            fr = make(*args, **kwargs)
         except NothingToDraw as exc:
             self.skips.append({"source": "workflow", "stage": "report",
                                "unit_id": f"report:{section}/{name}", "analysis": "report",
@@ -362,9 +364,10 @@ class _Builder:
         self.n_figures += 1
         self.add("figure", fr.caption, figure={p.suffix[1:]: p for p in paths}, alt=fr.title)
 
-    def table(self, fr_make: Callable[[], FigureResult], section: str, name: str) -> None:
+    def table(self, section: str, name: str, make: Callable[..., FigureResult],
+              *args: Any, **kwargs: Any) -> None:
         try:
-            fr = fr_make()
+            fr = make(*args, **kwargs)
         except NothingToDraw as exc:
             self.add("para", f"Table {name} not available: {exc.reason_code} ({exc}).")
             return
@@ -415,7 +418,7 @@ def _comparison_section(b: _Builder, spec: Any) -> None:
                   "site-days.")
     mem = _read(co / f"{cid}_membership.parquet")
     if mem is not None:
-        b.figure(cid, "coverage", lambda: coverage(mem, paired, synthetic=syn), check)
+        b.figure(cid, "coverage", coverage, mem, paired, synthetic=syn, check=check)
     for ms in [m for m in b.cfg.metric_sets if m.comparisons is None or cid in m.comparisons]:
         mt = _read(co / f"{cid}__{ms.metric_set_id}_metrics.parquet")
         if mt is None:
@@ -426,9 +429,8 @@ def _comparison_section(b: _Builder, spec: Any) -> None:
             sub = _pick(f, s)
             b.add("heading", f"{s[0]}, {s[1]} ({s[2]})", level=3)
             for site in sorted(sub["scope"].unique()):
-                b.figure(cid, f"scorecard_{tag}_{site}",
-                         lambda sub=sub, site=site: scorecard(sub[sub["scope"] == site],
-                                                              synthetic=syn), check)
+                b.figure(cid, f"scorecard_{tag}_{site}", scorecard,
+                         sub[sub["scope"] == site], synthetic=syn, check=check)
             d = sub[sub["product"] == "daily_pairs"]
             if len(d):
                 w = d.pivot_table(index=["scope", "model"], columns="metric", values="value",
@@ -438,15 +440,13 @@ def _comparison_section(b: _Builder, spec: Any) -> None:
                                f"); cohort {', '.join(sorted(d['cohort_id'].unique()))}",
                       frame=w.merge(n, on=["scope", "model"]).rename(columns={"scope": "site"}))
             ps = _pick(p, s)
-            b.figure(cid, f"scatter_{tag}", lambda ps=ps: scatter_1to1(ps, synthetic=syn),
-                     check)
+            b.figure(cid, f"scatter_{tag}", scatter_1to1, ps, synthetic=syn, check=check)
             ce = _read(co / f"{cid}__{ms.metric_set_id}_cumulative_error.parquet")
             if ce is not None:
                 cs = _pick(ce.frame, s)
                 for site in sorted(cs["site_id"].unique()):
-                    b.figure(cid, f"cumulative_{tag}_{site}",
-                             lambda cs=cs, site=site: cumulative(cs[cs["site_id"] == site],
-                                                                 synthetic=syn), check)
+                    b.figure(cid, f"cumulative_{tag}_{site}", cumulative,
+                             cs[cs["site_id"] == site], synthetic=syn, check=check)
         for bs in [x for x in b.cfg.bootstrap if x.metric_set == ms.metric_set_id
                    and (x.comparisons is None or cid in x.comparisons)]:
             iv = _read(co / f"{cid}__{bs.bootstrap_id}_intervals.parquet")
@@ -454,19 +454,17 @@ def _comparison_section(b: _Builder, spec: Any) -> None:
                 continue
             dims = set(iv.frame["contrast_dimension"])
             if "extraction_side" in dims:
-                b.figure(cid, f"footprint_benefit_{bs.bootstrap_id}",
-                         lambda iv=iv: contrast_intervals(iv, dimension="extraction_side",
-                                                          synthetic=syn), check)
+                b.figure(cid, f"footprint_benefit_{bs.bootstrap_id}", contrast_intervals,
+                         iv, dimension="extraction_side", synthetic=syn, check=check)
             if "reference_variant" in dims:
-                b.figure(cid, f"raw_corrected_{bs.bootstrap_id}",
-                         lambda iv=iv: contrast_intervals(iv, dimension="reference_variant",
-                                                          synthetic=syn), check)
+                b.figure(cid, f"raw_corrected_{bs.bootstrap_id}", contrast_intervals,
+                         iv, dimension="reference_variant", synthetic=syn, check=check)
             for rs in [r for r in b.cfg.rankings if r.bootstrap == bs.bootstrap_id]:
                 rk = _read(co / f"{cid}__{rs.ranking_id}_rankings.parquet")
                 if rk is None:
                     continue
-                b.table(lambda rk=rk: ranking_stability(rk, synthetic=syn), cid,
-                        f"ranking_stability_{rs.ranking_id}")
+                b.table(cid, f"ranking_stability_{rs.ranking_id}", ranking_stability, rk,
+                        synthetic=syn)
                 ct = _read(co / f"{cid}__{rs.ranking_id}_contrasts.parquet")
                 if ct is not None:
                     c = ct.frame
@@ -489,8 +487,8 @@ def _comparison_section(b: _Builder, spec: Any) -> None:
                     ss = sub[sub["site_id"] == site]
                     for v in sorted(ss["variable"].unique()):
                         b.figure(cid, f"conditional_{v}_{'__'.join(s)}_{site}",
-                                 lambda ss=ss, v=v: conditional_errors(ss, variable=v,
-                                                                       synthetic=syn), check)
+                                 conditional_errors, ss, variable=v, synthetic=syn,
+                                 check=check)
         cl = _read(co / f"{cid}__{ds.diagnostics_id}_closure.parquet")
         if cl is not None:
             c = cl.frame
@@ -526,16 +524,16 @@ def _ensemble_section(b: _Builder, spec: Any) -> None:
         "status_detail"]])
     folds = _read(e / f"{eid}_folds.parquet")
     if folds is not None:
-        b.figure(f"ensemble_{eid}", "folds", lambda: ensemble_folds(folds, s, synthetic=syn),
-                 check)
+        b.figure(f"ensemble_{eid}", "folds", ensemble_folds, folds, s, synthetic=syn,
+                 check=check)
     imp = _read(e / f"{eid}_improvement.parquet")
     if imp is not None:
-        b.figure(f"ensemble_{eid}", "improvement",
-                 lambda: ensemble_improvement(imp, s, synthetic=syn), check)
+        b.figure(f"ensemble_{eid}", "improvement", ensemble_improvement, imp, s,
+                 synthetic=syn, check=check)
     days = _read(e / f"{eid}_days.parquet")
     if days is not None:
-        b.figure(f"ensemble_{eid}", "disagreement",
-                 lambda: ensemble_disagreement(days, s, synthetic=syn), check)
+        b.figure(f"ensemble_{eid}", "disagreement", ensemble_disagreement, days, s,
+                 synthetic=syn, check=check)
 
 
 def _brief_sections(b: _Builder) -> None:
