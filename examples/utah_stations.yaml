@@ -167,4 +167,37 @@ ensembles:
     subsets:
       - {subset_id: apr_oct, months: [4, 5, 6, 7, 8, 9, 10]}
 
+
+# ---------------------------------------------------------------------------- step 17
+footprint_stacks:
+  - {site_id: US-UTD, stack_dir: ../outputs/footprint_timesteps/US-UTD}
+  - {site_id: US-UTE, stack_dir: ../outputs/footprint_timesteps/US-UTE}
+  - {site_id: US-UTG, stack_dir: ../outputs/footprint_timesteps/US-UTG}
+  - {site_id: US-UTJ, stack_dir: ../outputs/footprint_timesteps/US-UTJ}
+  - {site_id: US-UTM, stack_dir: ../outputs/footprint_timesteps/US-UTM}
+  - {site_id: US-UTV, stack_dir: ../outputs/footprint_timesteps/US-UTV}
+  - {site_id: US-UTW, stack_dir: ../outputs/footprint_timesteps/US-UTW}
+
+# The footprints were built and checked (D-070, D-073); a run never rewrites them unless
+# footprint_aggregation is removed from this list.
+run:
+  skip: [footprint_aggregation]
+
+cache:
+  raster_identity: stat       # size + mtime; sha256 reads ~26 GB on J: (about 11 min)
+
+upstream:
+  - {name: fluxfootprints, version: "0.5.1", commit: 6b7311d10ba228c5c463dfbcba58c53867dd9588, evidence: verified, source: sibling checkout ../footprints (D-056)}
+  - {name: flux-data-qaqc, version: "0.2.1", evidence: code_inferred, note: the version that produced the daily exports is unconfirmed}
+  - {name: OpenET API, version: api_default_unrecorded, evidence: unknown}
+
+decisions:
+  - {ref: D-048, status: open, summary: "no block length adopted; 7- and 14-day intervals are probably too narrow", applies_to: [bootstrap.utah_block_bootstrap, ensembles.utah_ensemble]}
+  - {ref: D-049, status: open, summary: "no equivalence margins; every contrast exploratory", applies_to: [ensembles.utah_ensemble]}
+  - {ref: D-073, status: open, summary: "US-UTM heights are constant; the corn station US-UTG is below the 180-day minimum; no interval across stations is implemented", applies_to: [ensembles.utah_ensemble, footprint_stacks]}
+  - {ref: D-002, status: provisional, summary: "OpenET day boundary unknown (day_alignment=unverified); station interval labels 'start' as US-UTJ", applies_to: [products, stations]}
+
+report:
+  title: "Seven Utah stations: station-level ensemble comparison"
+
 output_dir: ../outputs/utah

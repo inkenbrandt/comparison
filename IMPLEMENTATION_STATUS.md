@@ -32,7 +32,7 @@ Tracks progress against `openet_ec_library_ai_implementation_guide.md`. Newest e
 
 ### Checks
 - `tests/integration/test_utah_ensemble.py` (8): 1,839 days; no US-UTE `no_overlap`; the US-UTM rebuild within 0.03 mm d⁻¹ of production.
-- **Full suite:** see the run line of this entry's update (below).
+- **Full suite:** 775 passed, 3 skipped. ruff and mypy are clean. The oldest stack (ensemble, both ensemble integration, discovery, extraction, import-gate, schema and config tests) gives 186 passed and 1 skipped: extraction needs the geo extra.
 
 ### Results (D-073)
 - **1,839 eligible station-days** (US-UTE 218).

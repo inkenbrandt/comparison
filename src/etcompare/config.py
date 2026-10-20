@@ -191,6 +191,54 @@ INSUFFICIENT_DATA_POLICIES: Final = ("decline", "exploratory")
 #: Largest member count (the exact simplex solver enumerates member subsets).
 MAX_ENSEMBLE_MEMBERS: Final = 12
 
+#: Top-level configuration sections (``x-`` keys hold YAML anchors and are ignored).
+CONFIG_SECTIONS: Final = (
+    "stations", "products", "model_aliases", "site_aliases", "station_tables",
+    "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
+    "footprint_aggregations", "comparisons", "period_aggregations", "crop_height_tables",
+    "metric_sets", "bootstrap", "rankings", "diagnostics", "representativeness",
+    "satellite_support", "event_tables", "event_analyses", "anomalies", "water_balances",
+    "scenarios", "ensembles", "footprint_stacks", "footprint_comparisons", "run", "report",
+    "cache", "upstream", "decisions", "output_dir",
+)
+#: Field holding each entry's ID, per list section.
+_SECTION_ID_FIELDS: Final[Mapping[str, str]] = MappingProxyType({
+    "station_tables": "site_id", "extracted_tables": "name", "footprint_sets": "set_id",
+    "raster_extractions": "name", "footprint_aggregations": "method_id",
+    "comparisons": "comparison_id", "period_aggregations": "aggregation_id",
+    "crop_height_tables": "name", "metric_sets": "metric_set_id",
+    "bootstrap": "bootstrap_id", "rankings": "ranking_id", "diagnostics": "diagnostics_id",
+    "representativeness": "representativeness_id",
+    "satellite_support": "satellite_support_id", "event_tables": "name",
+    "event_analyses": "event_analysis_id", "anomalies": "anomaly_id",
+    "water_balances": "water_balance_id", "scenarios": "scenario_id",
+    "ensembles": "ensemble_id", "footprint_stacks": "site_id",
+    "footprint_comparisons": "comparison_id", "upstream": "name", "decisions": "ref",
+})
+#: Workflow stages of the command-line interface (guide step 17; ``etcompare.workflow``).
+WORKFLOW_STAGES: Final = ("validate", "index", "extract", "analyze", "report")
+#: Analyses that ``run.skip`` may switch off. A declared analysis runs unless listed; an
+#: undeclared one is recorded as ``skipped`` (``not_declared``), never silently absent.
+WORKFLOW_ANALYSES: Final = (
+    "footprint_aggregation", "raster_extraction", "footprint_comparison", "cohorts",
+    "periods", "metrics", "bootstrap", "rankings", "ranking_sensitivity", "diagnostics",
+    "satellite_support", "events", "anomalies", "water_balance", "ensembles",
+    "representativeness",
+)
+REPORT_FORMATS: Final = ("markdown", "html")
+FIGURE_FORMATS: Final = ("png", "svg")
+#: Identity of raster inputs in the cache key and run manifest: ``stat`` (path, size and
+#: modification time; cheap) or ``sha256`` (content; slow on network drives).
+RASTER_IDENTITIES: Final = ("stat", "sha256")
+#: ``open``: a user decision is pending; ``provisional``: a value is in use until the
+#: named evidence or decision arrives.
+DECISION_STATUSES: Final = ("open", "provisional")
+UPSTREAM_EVIDENCE: Final = ("verified", "user_provided", "code_inferred", "declared",
+                            "unknown")
+#: What a missing crop-height file does: stop the run, or leave out only the
+#: growing-season periods (recorded as skipped).
+CROP_HEIGHT_ON_MISSING: Final = ("error", "skip_growing_season")
+
 #: Water-balance terms (guide step 15; ``etcompare.water_balance``). Every term must be
 #: declared; a term without an input is ``unknown``, never zero.
 WATER_BALANCE_TERMS: Final = ("precipitation", "irrigation", "capillary_rise", "et", "runoff",
@@ -660,9 +708,14 @@ class RasterExtractionSpec:
     #: Inclusive date-label period to extract (ISO dates); ``None`` means unbounded.
     start: str | None = None
     end: str | None = None
+    #: Strict mode: an unreadable raster stops the extraction instead of being excluded.
+    strict: bool = False
 
     def __post_init__(self) -> None:
         key = f"raster_extractions.{self.name}"
+        if not isinstance(self.strict, bool):
+            raise ContractError(f"{key}: strict must be true or false",
+                                config_key=f"{key}.strict")
         object.__setattr__(self, "methods", tuple(self.methods))
         object.__setattr__(self, "window_sizes", tuple(self.window_sizes))
         if self.models is not None:
@@ -984,9 +1037,13 @@ class CropHeightTableSpec:
     site_column: str | None = None
     active_column: str | None = None
     date_format: str = "%Y-%m-%d"
+    #: ``error`` (default) or ``skip_growing_season`` when the file is absent.
+    on_missing: str = "error"
 
     def __post_init__(self) -> None:
         key = f"crop_height_tables.{self.name}"
+        _choice(self.on_missing, CROP_HEIGHT_ON_MISSING, input=key, field="on_missing",
+                config_key=f"{key}.on_missing")
         _require(self.name, input="crop height table", field="name",
                  config_key="crop_height_tables[].name")
         for f in ("date_column", "height_column", "season_start_column", "season_end_column"):
@@ -3520,6 +3577,199 @@ class EnsembleSpec:
         object.__setattr__(self, "shrinkage_grid", tuple(sorted(values)))
 
 
+def _str_tuple(value: object, *, key: str, field: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str) or not isinstance(value, list | tuple):
+        raise ContractError(f"{key}: {field} must be a list", config_key=f"{key}.{field}")
+    return tuple(str(v) for v in value)
+
+
+@dataclass(frozen=True)
+class FootprintStackSpec:
+    """Per-timestep footprint stacks of one station (guide step 6 input).
+
+    ``stack_dir`` holds ``<site>_*_timesteps.npz`` files written upstream
+    (``tools/upstream/run_timestep_footprints.py``). Every ``footprint_aggregations``
+    method whose target set (``weighting_method: etcompare_aggregation:<method_id>``,
+    ``set_id`` starting with ``<site>_``) is declared is aggregated from them.
+    ``compare_sets`` names existing sets compared day by day with each aggregate
+    (total-variation distance).
+    """
+
+    site_id: str
+    stack_dir: Path
+    compare_sets: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        key = f"footprint_stacks.{self.site_id}"
+        _require(self.site_id, input="footprint stack", field="site_id",
+                 config_key="footprint_stacks[].site_id")
+        _require(self.stack_dir, input=key, field="stack_dir", config_key=f"{key}.stack_dir")
+        object.__setattr__(self, "compare_sets",
+                           _str_tuple(self.compare_sets, key=key, field="compare_sets"))
+
+
+@dataclass(frozen=True)
+class FootprintComparisonSpec:
+    """Step-6 comparison of raster extractions that differ only in footprint set.
+
+    The first extraction is the baseline. ``min_retained_frac`` is declared
+    before any result is seen and applied identically to every set.
+    """
+
+    comparison_id: str
+    extractions: tuple[str, ...]
+    methods: tuple[str, ...] = ("footprint_conservative",
+                                "footprint_conservative_common_support")
+    min_retained_frac: float | None = None
+    common_models: bool = False
+
+    def __post_init__(self) -> None:
+        key = f"footprint_comparisons.{self.comparison_id}"
+        _require(self.comparison_id, input="footprint comparison", field="comparison_id",
+                 config_key="footprint_comparisons[].comparison_id")
+        object.__setattr__(self, "extractions",
+                           _str_tuple(self.extractions, key=key, field="extractions"))
+        object.__setattr__(self, "methods",
+                           _str_tuple(self.methods, key=key, field="methods"))
+        if len(self.extractions) < 2:
+            raise ContractError(f"{key}: at least two extractions are compared",
+                                config_key=f"{key}.extractions")
+        if not self.methods:
+            raise ContractError(f"{key}: no extraction methods", config_key=f"{key}.methods")
+        m = self.min_retained_frac
+        if m is not None and not 0 < float(m) <= 1:
+            raise ContractError(f"{key}: min_retained_frac must be in (0, 1]",
+                                config_key=f"{key}.min_retained_frac")
+        if not isinstance(self.common_models, bool):
+            raise ContractError(f"{key}: common_models must be true or false",
+                                config_key=f"{key}.common_models")
+
+
+@dataclass(frozen=True)
+class RunSpec:
+    """Workflow switches (``run:``). ``skip`` lists declared analyses not to run."""
+
+    skip: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "skip", _str_tuple(
+            self.skip, key="run", field="skip"))
+        bad = set(self.skip) - set(WORKFLOW_ANALYSES)
+        if bad:
+            raise ContractError(f"run.skip: unknown analyses {sorted(bad)}; expected "
+                                f"{list(WORKFLOW_ANALYSES)}", config_key="run.skip")
+
+
+@dataclass(frozen=True)
+class ReportSpec:
+    """Report settings (``report:``).
+
+    ``synthetic: true`` labels every page and caption as synthetic and requires
+    every station ID to start with ``synthetic_site_prefix`` (default ``XX-``, an ISO 3166
+    code assigned to no country), so a synthetic
+    report cannot carry a real station's name.
+    """
+
+    title: str = "etcompare report"
+    formats: tuple[str, ...] = REPORT_FORMATS
+    figure_formats: tuple[str, ...] = FIGURE_FORMATS
+    synthetic: bool = False
+    synthetic_site_prefix: str = "XX-"
+    #: Comparisons that get figures (default: all declared).
+    comparisons: tuple[str, ...] | None = None
+    #: Pixel density of PNG figures.
+    dpi: int = 120
+
+    def __post_init__(self) -> None:
+        for f, allowed in (("formats", REPORT_FORMATS), ("figure_formats", FIGURE_FORMATS)):
+            v = _str_tuple(getattr(self, f), key="report", field=f)
+            if not v:
+                raise ContractError(f"report.{f}: at least one of {list(allowed)}",
+                                    config_key=f"report.{f}")
+            bad = set(v) - set(allowed)
+            if bad:
+                raise ContractError(f"report.{f}: unknown {sorted(bad)}; expected "
+                                    f"{list(allowed)}", config_key=f"report.{f}")
+            object.__setattr__(self, f, v)
+        if self.comparisons is not None:
+            object.__setattr__(self, "comparisons", _str_tuple(
+                self.comparisons, key="report", field="comparisons"))
+        if not isinstance(self.synthetic, bool):
+            raise ContractError("report.synthetic must be true or false",
+                                config_key="report.synthetic")
+        if not isinstance(self.dpi, int) or self.dpi < 50:
+            raise ContractError("report.dpi must be an integer >= 50", config_key="report.dpi")
+
+
+@dataclass(frozen=True)
+class CacheSpec:
+    """Output cache (``cache:``). Raster identity is ``stat`` unless ``sha256`` is declared."""
+
+    enabled: bool = True
+    raster_identity: str = "stat"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ContractError("cache.enabled must be true or false",
+                                config_key="cache.enabled")
+        _choice(self.raster_identity, RASTER_IDENTITIES, input="cache",
+                field="raster_identity", config_key="cache.raster_identity")
+
+
+@dataclass(frozen=True)
+class UpstreamSpec:
+    """A declared upstream software version (``upstream:``) and its evidence.
+
+    Installed versions are detected and recorded separately in the run manifest;
+    a declaration records what produced the inputs, which may differ.
+    """
+
+    name: str
+    evidence: str
+    version: str | None = None
+    commit: str | None = None
+    source: str | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        _require(self.name, input="upstream", field="name", config_key="upstream[].name")
+        _choice(self.evidence, UPSTREAM_EVIDENCE, input=f"upstream {self.name}",
+                field="evidence", config_key=f"upstream.{self.name}.evidence")
+        if self.version is None and self.commit is None:
+            raise ContractError(f"upstream {self.name}: declare a version or a commit "
+                                "(use evidence: unknown with version: unknown otherwise)",
+                                config_key=f"upstream.{self.name}.version")
+
+
+@dataclass(frozen=True)
+class DecisionSpec:
+    """An open or provisional decision that outputs depend on (``decisions:``).
+
+    ``applies_to`` names config sections (``bootstrap``) or entries
+    (``bootstrap.utj_block_bootstrap``); the report lists the decision with every
+    analysis it applies to. ``ref`` points to the decision log (e.g. ``D-048``).
+    """
+
+    ref: str
+    status: str
+    summary: str
+    applies_to: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        key = f"decisions.{self.ref}"
+        _require(self.ref, input="decision", field="ref", config_key="decisions[].ref")
+        _choice(self.status, DECISION_STATUSES, input=key, field="status",
+                config_key=f"{key}.status")
+        _require(self.summary, input=key, field="summary", config_key=f"{key}.summary")
+        object.__setattr__(self, "applies_to", _str_tuple(
+            self.applies_to, key=key,
+            field="applies_to"))
+        if not self.applies_to:
+            raise ContractError(f"{key}: applies_to is empty", config_key=f"{key}.applies_to")
+
+
 @dataclass(frozen=True)
 class Config:
     """A complete analysis declaration."""
@@ -3549,6 +3799,13 @@ class Config:
     water_balances: tuple[WaterBalanceSpec, ...] = ()
     scenarios: tuple[ScenarioSpec, ...] = ()
     ensembles: tuple[EnsembleSpec, ...] = ()
+    footprint_stacks: tuple[FootprintStackSpec, ...] = ()
+    footprint_comparisons: tuple[FootprintComparisonSpec, ...] = ()
+    run: RunSpec = field(default_factory=RunSpec)
+    report: ReportSpec = field(default_factory=ReportSpec)
+    cache: CacheSpec = field(default_factory=CacheSpec)
+    upstream: tuple[UpstreamSpec, ...] = ()
+    decisions: tuple[DecisionSpec, ...] = ()
     output_dir: Path | None = None
     source_path: Path | None = None
 
@@ -3616,6 +3873,81 @@ class Config:
                                     config_key=f"anomalies.{an.anomaly_id}.metric_set")
         self._check_water_balances()
         self._check_ensembles()
+        self._check_workflow()
+
+    def _check_workflow(self) -> None:
+        """Step-17 sections: stacks, footprint comparisons, report, upstream, decisions."""
+        set_ids = {f.set_id for f in self.footprint_sets}
+        sites = [s.site_id for s in self.footprint_stacks]
+        if len(set(sites)) != len(sites):
+            raise ContractError(f"duplicate footprint_stacks site_id in {sites}",
+                                config_key="footprint_stacks")
+        for st in self.footprint_stacks:
+            key = f"footprint_stacks.{st.site_id}"
+            if st.site_id not in self.stations:
+                raise ContractError(f"{key}: station not declared",
+                                    config_key=f"stations.{st.site_id}")
+            unknown = set(st.compare_sets) - set_ids
+            if unknown:
+                raise ContractError(f"{key}: compare_sets {sorted(unknown)} not declared",
+                                    config_key=f"{key}.compare_sets")
+        extractions = {x.name: x for x in self.raster_extractions}
+        ids = [c.comparison_id for c in self.footprint_comparisons]
+        if len(set(ids)) != len(ids) or set(ids) & {c.comparison_id for c in self.comparisons}:
+            raise ContractError(f"footprint_comparisons: duplicate or reused comparison_id in "
+                                f"{ids}", config_key="footprint_comparisons")
+        for fc in self.footprint_comparisons:
+            key = f"footprint_comparisons.{fc.comparison_id}"
+            unknown = [n for n in fc.extractions if n not in extractions]
+            if unknown:
+                raise ContractError(f"{key}: raster extractions {unknown} not declared",
+                                    config_key=f"{key}.extractions")
+            specs = [extractions[n] for n in fc.extractions]
+            if len({x.site_id for x in specs}) != 1:
+                raise ContractError(f"{key}: extractions are for different sites",
+                                    config_key=f"{key}.extractions")
+            if any(not x.footprint_set_id for x in specs):
+                raise ContractError(f"{key}: every extraction needs a footprint set",
+                                    config_key=f"{key}.extractions")
+        names = [u.name for u in self.upstream]
+        if len(set(names)) != len(names):
+            raise ContractError(f"duplicate upstream name in {names}", config_key="upstream")
+        refs = [d.ref for d in self.decisions]
+        if len(set(refs)) != len(refs):
+            raise ContractError(f"duplicate decision ref in {refs}", config_key="decisions")
+        for d in self.decisions:
+            for target in d.applies_to:
+                section, _, entry = target.partition(".")
+                if section not in CONFIG_SECTIONS:
+                    raise ContractError(f"decisions.{d.ref}: applies_to {target!r} names no "
+                                        "configuration section",
+                                        config_key=f"decisions.{d.ref}.applies_to")
+                if entry and entry not in self.section_ids(section):
+                    raise ContractError(f"decisions.{d.ref}: applies_to {target!r}: no entry "
+                                        f"{entry!r} in {section}",
+                                        config_key=f"decisions.{d.ref}.applies_to")
+        r = self.report
+        if r.comparisons is not None:
+            unknown = set(r.comparisons) - {c.comparison_id for c in self.comparisons}
+            if unknown:
+                raise ContractError(f"report.comparisons: {sorted(unknown)} not declared",
+                                    config_key="report.comparisons")
+        if r.synthetic:
+            real = [s for s in self.stations if not s.startswith(r.synthetic_site_prefix)]
+            if real:
+                raise ContractError(
+                    f"report.synthetic: station(s) {real} do not start with "
+                    f"{r.synthetic_site_prefix!r}; a synthetic report never names a real "
+                    "station", config_key="report.synthetic")
+
+    def section_ids(self, section: str) -> tuple[str, ...]:
+        """Entry IDs of a configuration section (empty for sections without entries)."""
+        if section in ("stations", "products"):
+            return tuple(getattr(self, section))
+        f = _SECTION_ID_FIELDS.get(section)
+        if f is None:
+            return ()
+        return tuple(str(getattr(x, f)) for x in getattr(self, section))
 
     def _check_ensembles(self) -> None:
         eids = [e.ensemble_id for e in self.ensembles]
@@ -4095,12 +4427,7 @@ def _path(value: Any, base: Path | None) -> Path | None:
 
 def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -> Config:
     """Build a :class:`Config` from plain data (e.g. parsed YAML)."""
-    top = {"stations", "products", "model_aliases", "site_aliases", "station_tables",
-           "extracted_tables", "openet_rasters", "footprint_sets", "raster_extractions",
-           "footprint_aggregations", "comparisons", "period_aggregations",
-           "crop_height_tables", "metric_sets", "bootstrap", "rankings", "diagnostics",
-           "representativeness", "satellite_support", "event_tables", "event_analyses",
-           "anomalies", "water_balances", "scenarios", "ensembles", "output_dir"}
+    top = set(CONFIG_SECTIONS)
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
     _check_keys(data, top, "<root>")
@@ -4365,7 +4692,41 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         kw.update({k: v for k, v in body.items() if k not in kw})
         ensembles.append(EnsembleSpec(**kw))
 
+    def entries(section: str, cls: Any, required: tuple[str, ...]) -> list[dict[str, Any]]:
+        out = []
+        allowed = set(cls.__dataclass_fields__)
+        for i, body in enumerate(data.get(section) or []):
+            _check_keys(body, allowed, f"{section}[{i}]")
+            kw = {f: body.get(f) for f in required}
+            kw.update({k: v for k, v in body.items() if k not in kw})
+            out.append(kw)
+        return out
+
+    stacks = []
+    for kw in entries("footprint_stacks", FootprintStackSpec, ("site_id", "stack_dir")):
+        kw["stack_dir"] = _path(kw.get("stack_dir"), base_dir)
+        stacks.append(FootprintStackSpec(**kw))
+    footprint_comparisons = [FootprintComparisonSpec(**kw) for kw in entries(
+        "footprint_comparisons", FootprintComparisonSpec, ("comparison_id", "extractions"))]
+    upstream = [UpstreamSpec(**kw) for kw in entries("upstream", UpstreamSpec,
+                                                       ("name", "evidence"))]
+    decisions = [DecisionSpec(**kw) for kw in entries(
+        "decisions", DecisionSpec, ("ref", "status", "summary", "applies_to"))]
+    singles: dict[str, Any] = {}
+    for section, cls in (("run", RunSpec), ("report", ReportSpec), ("cache", CacheSpec)):
+        body = data.get(section)
+        if body is None:
+            singles[section] = cls()
+            continue
+        _check_keys(body, set(cls.__dataclass_fields__), section)
+        singles[section] = cls(**body)
+
     return Config(
+        footprint_stacks=tuple(stacks),
+        footprint_comparisons=tuple(footprint_comparisons),
+        upstream=tuple(upstream),
+        decisions=tuple(decisions),
+        **singles,
         stations=stations,
         products=products,
         model_aliases=dict(data.get("model_aliases") or {}),
