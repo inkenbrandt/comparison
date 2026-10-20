@@ -71,7 +71,7 @@ First usable release. Not published to PyPI.
 ### Changed
 - Invalid YAML is a configuration error (exit code 2), not exit code 1.
 - `--log-level` now filters stderr even when the run's log file is attached.
-- `examples/us_utj.yaml` reads rasters from the `unclipped/` Drive folder (D-054). The
+- The local real-station example configuration reads rasters from their new folder (D-054). The
   extracted values equal the earlier extraction except `source_path`.
 
 ### Known gaps

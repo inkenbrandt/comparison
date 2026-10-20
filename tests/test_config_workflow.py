@@ -4,15 +4,14 @@ footprint comparisons, and the former command-line flags that became fields."""
 from pathlib import Path
 
 import pytest
-import yaml
 
-from etcompare.config import WORKFLOW_ANALYSES, config_from_dict, load_config
+from etcompare.config import WORKFLOW_ANALYSES, config_from_dict
 from etcompare.errors import ContractError
 
 EXAMPLES = Path(__file__).parents[1] / "examples"
 
 BASE = {
-    "stations": {"US-UTJ": {"timezone": "UTC-07:00", "day_definition": "local_standard_time",
+    "stations": {"ZZ-UTJ": {"timezone": "UTC-07:00", "day_definition": "local_standard_time",
                             "interval_label": "start"}},
     "products": {"a": {"units": "mm/day", "day_definition": "unknown",
                        "temporal_support": "interpolated_daily"}},
@@ -22,9 +21,9 @@ BASE = {
         {"set_id": "B", "root": "b", "weighting_method": "w", "value_semantics":
          "normalized_cell_weight"}],
     "raster_extractions": [
-        {"name": "xa", "site_id": "US-UTJ", "methods": ["footprint"], "footprint_set_id": "A"},
-        {"name": "xb", "site_id": "US-UTJ", "methods": ["footprint"], "footprint_set_id": "B"},
-        {"name": "xw", "site_id": "US-UTJ", "methods": ["pixel_window"]}],
+        {"name": "xa", "site_id": "ZZ-UTJ", "methods": ["footprint"], "footprint_set_id": "A"},
+        {"name": "xb", "site_id": "ZZ-UTJ", "methods": ["footprint"], "footprint_set_id": "B"},
+        {"name": "xw", "site_id": "ZZ-UTJ", "methods": ["pixel_window"]}],
     "output_dir": "out",
 }
 
@@ -61,7 +60,7 @@ def test_report_section():
         cfg(report={"comparisons": ["nope"]})
     with pytest.raises(ContractError, match="never names a real station"):
         cfg(report={"synthetic": True})
-    syn = {**BASE["stations"]["US-UTJ"]}
+    syn = {**BASE["stations"]["ZZ-UTJ"]}
     c = config_from_dict({**BASE, "stations": {"XX-SY1": syn}, "raster_extractions": [],
                           "report": {"synthetic": True}})
     assert c.report.synthetic
@@ -112,12 +111,12 @@ def test_footprint_comparisons_replace_the_command_line():
 
 
 def test_footprint_stacks():
-    c = cfg(footprint_stacks=[{"site_id": "US-UTJ", "stack_dir": "s", "compare_sets": ["A"]}])
+    c = cfg(footprint_stacks=[{"site_id": "ZZ-UTJ", "stack_dir": "s", "compare_sets": ["A"]}])
     assert c.footprint_stacks[0].stack_dir == Path("s")
     with pytest.raises(ContractError, match="station not declared"):
-        cfg(footprint_stacks=[{"site_id": "US-UTX", "stack_dir": "s"}])
+        cfg(footprint_stacks=[{"site_id": "ZZ-UTX", "stack_dir": "s"}])
     with pytest.raises(ContractError, match="compare_sets"):
-        cfg(footprint_stacks=[{"site_id": "US-UTJ", "stack_dir": "s", "compare_sets": ["Z"]}])
+        cfg(footprint_stacks=[{"site_id": "ZZ-UTJ", "stack_dir": "s", "compare_sets": ["Z"]}])
 
 
 def test_former_flags_are_fields():
@@ -125,19 +124,9 @@ def test_former_flags_are_fields():
     assert cfg(raster_extractions=[x]).raster_extractions[0].strict
     with pytest.raises(ContractError, match="strict"):
         cfg(raster_extractions=[{**x, "strict": "yes"}])
-    crop = {"name": "c", "path": "c.csv", "site_id": "US-UTJ", "date_column": "date",
+    crop = {"name": "c", "path": "c.csv", "site_id": "ZZ-UTJ", "date_column": "date",
             "height_column": "h", "height_units": "cm", "season_start_column": "s",
             "season_end_column": "e"}
     assert cfg(crop_height_tables=[crop]).crop_height_tables[0].on_missing == "error"
     with pytest.raises(ContractError, match="on_missing"):
         cfg(crop_height_tables=[{**crop, "on_missing": "ignore"}])
-
-
-@pytest.mark.parametrize("name", ["us_utj.yaml", "utah_stations.yaml"])
-def test_examples_declare_the_step_17_sections(name):
-    c = load_config(EXAMPLES / name)
-    assert c.run.skip == ("footprint_aggregation",)       # built footprints are never rewritten
-    assert c.footprint_stacks and c.decisions and c.upstream
-    assert {u.name for u in c.upstream} >= {"fluxfootprints", "flux-data-qaqc"}
-    raw = yaml.safe_load((EXAMPLES / name).read_text(encoding="utf-8"))
-    assert all(d["ref"].startswith("D-") for d in raw["decisions"])

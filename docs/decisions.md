@@ -1893,3 +1893,13 @@ Both comparisons found no difference. The final runs are in D-080.
   - Compared with the pre-step-18 baselines: 197 and 58 Parquet tables, **0 differences** (frames, dtypes, metadata).
   - No retry, read failure, stall or suspend event occurred; keep-awake was held; all checkpoints were cleared.
   - The version was then bumped to 0.1.0, which changes only the `etcompare_version` written into new files.
+- **What is distributed (user, 2026-10-20).** A pre-upload scan of the 0.1.0 source distribution found real-station results, local drive paths and a database host in 36 files. Since then:
+  - The sdist is an allow-list: `src`, the unit tests, `docs` without this log or the input contract, `notebooks`, `examples/demo`, `tools/make_data_dictionary.py`, `LICENSE`, README, changelog.
+  - The two real-station example configurations, `tests/integration` (now including the four example-config tests moved there), the status and context files and the run tools stay in the repository.
+  - The published documentation excludes this log and the input contract.
+  - Real station IDs in unit tests and docstrings were replaced by synthetic `XX-`/`ZZ-` IDs.
+  - `.gitignore` uses generic root patterns, so it names no station file.
+  - `Bluff.gpkg`, `US-UTJ.ini` and `comparison.vrt` are no longer tracked; they remain in earlier history.
+  - The rescan of the sdist and wheel finds one remaining station ID: the `diagnostics` reason string "the US-UTJ daily table has no wind direction", which is written into output tables. Changing it would change results, so it is kept.
+- **Environment (2026-10-20, about 10:15).** Windows Code Integrity began blocking `pyarrow/lib.cp313-win_amd64.pyd` in the project venv (event 3077); the file is unchanged since 2026-10-15. Tests and the docs build that need Parquet cannot run locally until it loads again. The changes after that point (distribution trimming, test-ID renaming) were checked by ruff, mypy, 104 importable tests and the package scan; the CI jobs cover the rest.
+

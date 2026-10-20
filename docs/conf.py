@@ -25,7 +25,9 @@ extensions = [
 ]
 source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
 root_doc = "index"
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+# The decision log and input contract record real stations and local paths (D-014); they
+# stay in the repository and are not part of the published documentation.
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "decisions.md", "input_contract.md"]
 
 myst_enable_extensions = ["colon_fence", "deflist", "dollarmath"]
 myst_heading_anchors = 3

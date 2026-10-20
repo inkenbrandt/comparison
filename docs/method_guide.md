@@ -2,7 +2,7 @@
 
 This guide states what each analysis computes, what it does not, and which choices are
 declared rather than built in. The formulas live in the module documentation
-({doc}`api`). Decisions and their evidence are in {doc}`decisions` (D-numbers).
+({doc}`api`). Decisions and their evidence are in the project's decision log (D-numbers), which is kept with the source repository and not published.
 
 The comparison design draws on published OpenET evaluations (see {doc}`references`). Several
 parts are this package's own extensions, not reproductions of those studies, and each is
@@ -176,8 +176,8 @@ contrast, across its station-days (D-047). The scheme is a moving-block bootstra
 - **Support.** With fewer than `min_blocks` full blocks, the status is
   `insufficient_support` and no interval is given.
 - **Block lengths** are declared and reported side by side. None is adopted by default.
-  For US-UTJ the residual autocorrelation suggests that 7- and 14-day intervals are too
-  narrow (D-048).
+  In a real station record tested during development, strong residual autocorrelation
+  suggested that 7- and 14-day intervals were too narrow (D-048).
 - **Period metrics** resample whole periods.
 
 An interval excludes reference measurement error, footprint-model uncertainty and

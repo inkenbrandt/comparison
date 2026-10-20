@@ -109,7 +109,7 @@ def write_footprint(path: str | os.PathLike[str], values: np.ndarray, grid: Grid
 
     float64 keeps the weights exactly; zero cells are zero contribution. The file
     is read back and must be bit-identical to ``values``; otherwise it is removed
-    and :class:`OSError` is raised. (A US-UTJ run in a OneDrive-synced folder left
+    and :class:`OSError` is raised. (A real-station run in a OneDrive-synced folder left
     three footprints with garbage values although the arrays were correct.)
     """
     rasterio = require("rasterio", "Writing rasters")

@@ -70,7 +70,7 @@ def test_parquet_round_trip_every_schema(tmp_path, name):
 
 def test_round_trip_preserves_nulls_identifiers_and_extras(tmp_path):
     frame = pd.DataFrame({
-        "site_id": ["US-UTJ", "US-UTJ", "007"],
+        "site_id": ["XX-UTJ", "XX-UTJ", "007"],
         "date": pd.to_datetime(["2024-06-05", "2024-06-06", "2024-06-05"]),
         "et_raw_mm": [1.5, np.nan, -0.2],
         "et_corrected_mm": [1.8, 2.0, np.nan],
@@ -162,8 +162,8 @@ def test_extra_columns_rejected_when_not_allowed():
 def test_exclusion_log():
     log = ExclusionLog()
     assert len(log.to_frame()) == 0
-    key = format_key(site_id="US-UTJ", date=pd.Timestamp("2024-06-05"), model="sims")
-    assert key == "site_id=US-UTJ|date=2024-06-05|model=sims"
+    key = format_key(site_id="XX-UTJ", date=pd.Timestamp("2024-06-05"), model="sims")
+    assert key == "site_id=XX-UTJ|date=2024-06-05|model=sims"
     log.add("cohort", key, "reference_missing", severity="info")
     log.add_many("discovery", ["a.tif", "b.tif"], "unparseable_filename")
     df = log.to_frame()

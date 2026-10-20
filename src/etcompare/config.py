@@ -3725,8 +3725,8 @@ class ProcessingSpec:
     """Resilient processing (``processing:``, guide step 18). None of it changes a result.
 
     - ``keep_awake``: ask the operating system not to idle-sleep while a run is active
-      (Windows; elsewhere a no-op). A US-UTJ-network extraction once paused 9 h because
-      the machine slept (D-078).
+      (Windows; elsewhere a no-op). A long extraction once paused 9 h because the
+      machine slept (D-078).
     - ``io_attempts`` / ``io_backoff_s``: a raster or footprint read that raises an I/O
       error while the file still exists is tried ``io_attempts`` times in all, waiting
       ``io_backoff_s[i]`` seconds before retry ``i + 1`` (the last wait repeats). A file

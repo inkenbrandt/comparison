@@ -13,7 +13,7 @@ from etcompare.validation import Severity, ValidationReport
 
 
 def format_key(**parts: object) -> str:
-    """Stable text key for an input row or file: ``site_id=US-UTJ|date=2024-06-05``."""
+    """Stable text key for an input row or file: ``site_id=XX-UTJ|date=2024-06-05``."""
     out = []
     for k, v in parts.items():
         if isinstance(v, pd.Timestamp):
