@@ -19,6 +19,7 @@ from typing import Any
 
 from etcompare import __version__
 from etcompare.config import WORKFLOW_STAGES, Config, to_plain
+from etcompare.io.atomic import write_csv_atomic
 from etcompare.log import add_log_file, get_logger, log_event
 from etcompare.provenance import (
     canonical_hash,
@@ -28,6 +29,7 @@ from etcompare.provenance import (
     git_state,
     package_versions,
 )
+from etcompare.resilience import StallWatchdog, keep_awake
 from etcompare.runrecord import RunManifest, UnitRecord, new_run_id, status_table, utc_now
 
 _log = get_logger("runner")
@@ -95,19 +97,30 @@ def run_stages(cfg: Config, stages: Sequence[str], *, command: str, force: bool 
     handler = add_log_file(str(run_dir / "log.jsonl"))
     log_event(_log, "run_started", run_id=run_id, stages=list(stages), command=command,
               config=manifest.config_path, config_hash=manifest.config_hash)
-    try:
-        for stage in stages:
-            log_event(_log, "stage_started", stage=stage)
-            if stage == "validate":
-                wf.validate()
-            elif stage == "report":
-                from etcompare.reporting import report_unit
+    # Written now with status "running": a run killed outright leaves this record.
+    manifest.write(wf.out)
+    proc = cfg.processing
 
-                wf.execute([report_unit(wf)])
-            else:
-                wf.execute([u for u in wf.plan(stage) if select is None or select(u)])
+    def stalled(msg: str) -> None:
+        manifest.status, manifest.error = "failed", f"StallTimeoutError: {msg}"
+        manifest.finished_utc = utc_now()
+        manifest.write(wf.out)
+
+    try:
+        with keep_awake(proc.keep_awake), StallWatchdog(
+                proc.stall_warning_s, proc.stall_timeout_s, on_timeout=stalled):
+            for stage in stages:
+                log_event(_log, "stage_started", stage=stage)
+                if stage == "validate":
+                    wf.validate()
+                elif stage == "report":
+                    from etcompare.reporting import report_unit
+
+                    wf.execute([report_unit(wf)])
+                else:
+                    wf.execute([u for u in wf.plan(stage) if select is None or select(u)])
         manifest.status = "completed"
-    except Exception as exc:
+    except BaseException as exc:
         manifest.status = "failed"
         manifest.error = f"{type(exc).__name__}: {exc}"[:4000]
         log_event(_log, "run_failed", level=logging.ERROR, error=manifest.error)
@@ -121,7 +134,7 @@ def run_stages(cfg: Config, stages: Sequence[str], *, command: str, force: bool 
         from etcompare.io.tables import write_table
 
         write_table(status_table(records), run_dir / "analysis_status.parquet")
-        status_table(records).frame.to_csv(run_dir / "analysis_status.csv", index=False)
+        write_csv_atomic(status_table(records).frame, run_dir / "analysis_status.csv")
         manifest.write(wf.out)
         log_event(_log, "run_finished", run_id=run_id, status=manifest.status,
                   n_units=len(records))

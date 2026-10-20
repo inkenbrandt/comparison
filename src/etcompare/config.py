@@ -199,7 +199,7 @@ CONFIG_SECTIONS: Final = (
     "metric_sets", "bootstrap", "rankings", "diagnostics", "representativeness",
     "satellite_support", "event_tables", "event_analyses", "anomalies", "water_balances",
     "scenarios", "ensembles", "footprint_stacks", "footprint_comparisons", "run", "report",
-    "cache", "upstream", "decisions", "output_dir",
+    "cache", "processing", "upstream", "decisions", "output_dir",
 )
 #: Field holding each entry's ID, per list section.
 _SECTION_ID_FIELDS: Final[Mapping[str, str]] = MappingProxyType({
@@ -230,6 +230,8 @@ FIGURE_FORMATS: Final = ("png", "svg")
 #: Identity of raster inputs in the cache key and run manifest: ``stat`` (path, size and
 #: modification time; cheap) or ``sha256`` (content; slow on network drives).
 RASTER_IDENTITIES: Final = ("stat", "sha256")
+#: Extraction checkpoint granularity (``processing.checkpoint``).
+CHECKPOINT_GRANULARITIES: Final = ("month", "none")
 #: ``open``: a user decision is pending; ``provisional``: a value is in use until the
 #: named evidence or decision arrives.
 DECISION_STATUSES: Final = ("open", "provisional")
@@ -3719,6 +3721,75 @@ class CacheSpec:
 
 
 @dataclass(frozen=True)
+class ProcessingSpec:
+    """Resilient processing (``processing:``, guide step 18). None of it changes a result.
+
+    - ``keep_awake``: ask the operating system not to idle-sleep while a run is active
+      (Windows; elsewhere a no-op). A US-UTJ-network extraction once paused 9 h because
+      the machine slept (D-078).
+    - ``io_attempts`` / ``io_backoff_s``: a raster or footprint read that raises an I/O
+      error while the file still exists is tried ``io_attempts`` times in all, waiting
+      ``io_backoff_s[i]`` seconds before retry ``i + 1`` (the last wait repeats). A file
+      that no longer exists is ``raster_missing`` at once; configuration, contract and
+      grid errors are never retried.
+    - ``stall_warning_s``: log an ``io_stall`` warning when no raster has finished for
+      this long. ``stall_timeout_s`` (default off) then fails the run; checkpoints are
+      kept.
+    - ``checkpoint``: ``month`` saves extraction progress after each calendar month so an
+      interrupted extraction resumes under the identical cache key; ``none`` disables it.
+    - ``max_unreadable_fraction``: in non-strict extraction, unreadable or missing files
+      above this fraction of the files attempted (model rasters and footprints counted
+      separately) fail the run as systematic instead of being skipped. Every file of one
+      model, or every file, unreadable always fails.
+    """
+
+    keep_awake: bool = True
+    io_attempts: int = 3
+    io_backoff_s: tuple[float, ...] = (1.0, 4.0)
+    stall_warning_s: float = 120.0
+    stall_timeout_s: float | None = None
+    checkpoint: str = "month"
+    max_unreadable_fraction: float = 0.01
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.keep_awake, bool):
+            raise ContractError("processing.keep_awake must be true or false",
+                                config_key="processing.keep_awake")
+        if isinstance(self.io_attempts, bool) or not isinstance(self.io_attempts, int) \
+                or self.io_attempts < 1:
+            raise ContractError("processing.io_attempts must be an integer >= 1",
+                                config_key="processing.io_attempts")
+        try:
+            backoff = tuple(float(x) for x in (self.io_backoff_s or ()))
+        except (TypeError, ValueError) as exc:
+            raise ContractError("processing.io_backoff_s must be a list of seconds",
+                                config_key="processing.io_backoff_s") from exc
+        if any(not math.isfinite(x) or x < 0 for x in backoff) or (
+                self.io_attempts > 1 and not backoff):
+            raise ContractError("processing.io_backoff_s: non-negative seconds, at least one "
+                                "when io_attempts > 1", config_key="processing.io_backoff_s")
+        object.__setattr__(self, "io_backoff_s", backoff)
+        for f in ("stall_warning_s", "stall_timeout_s"):
+            v = getattr(self, f)
+            if v is None and f == "stall_timeout_s":
+                continue
+            if isinstance(v, bool) or not isinstance(v, int | float) or not v > 0:
+                raise ContractError(f"processing.{f} must be a positive number of seconds",
+                                    config_key=f"processing.{f}")
+            object.__setattr__(self, f, float(v))
+        if self.stall_timeout_s is not None and self.stall_timeout_s <= self.stall_warning_s:
+            raise ContractError("processing.stall_timeout_s must exceed stall_warning_s",
+                                config_key="processing.stall_timeout_s")
+        _choice(self.checkpoint, CHECKPOINT_GRANULARITIES, input="processing",
+                field="checkpoint", config_key="processing.checkpoint")
+        frac = self.max_unreadable_fraction
+        if isinstance(frac, bool) or not isinstance(frac, int | float) or not 0 <= frac <= 1:
+            raise ContractError("processing.max_unreadable_fraction must be in [0, 1]",
+                                config_key="processing.max_unreadable_fraction")
+        object.__setattr__(self, "max_unreadable_fraction", float(frac))
+
+
+@dataclass(frozen=True)
 class UpstreamSpec:
     """A declared upstream software version (``upstream:``) and its evidence.
 
@@ -3804,6 +3875,7 @@ class Config:
     run: RunSpec = field(default_factory=RunSpec)
     report: ReportSpec = field(default_factory=ReportSpec)
     cache: CacheSpec = field(default_factory=CacheSpec)
+    processing: ProcessingSpec = field(default_factory=ProcessingSpec)
     upstream: tuple[UpstreamSpec, ...] = ()
     decisions: tuple[DecisionSpec, ...] = ()
     output_dir: Path | None = None
@@ -4713,7 +4785,8 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
     decisions = [DecisionSpec(**kw) for kw in entries(
         "decisions", DecisionSpec, ("ref", "status", "summary", "applies_to"))]
     singles: dict[str, Any] = {}
-    for section, cls in (("run", RunSpec), ("report", ReportSpec), ("cache", CacheSpec)):
+    for section, cls in (("run", RunSpec), ("report", ReportSpec), ("cache", CacheSpec),
+                         ("processing", ProcessingSpec)):
         body = data.get(section)
         if body is None:
             singles[section] = cls()
@@ -4762,7 +4835,12 @@ def load_config(path: str | Path) -> Config:
 
     path = Path(path)
     with path.open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
+        try:
+            data = yaml.safe_load(fh) or {}
+        except yaml.YAMLError as exc:
+            raise ContractError(f"{path}: not valid YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ContractError(f"{path}: the configuration must be a YAML mapping")
     cfg = config_from_dict(data, base_dir=path.parent.resolve())
     object.__setattr__(cfg, "source_path", path.resolve())
     return cfg

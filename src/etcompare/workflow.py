@@ -52,6 +52,7 @@ from etcompare.config import (
     to_plain,
 )
 from etcompare.errors import ContractError, EtcompareError
+from etcompare.io.atomic import write_csv_atomic, write_text_atomic
 from etcompare.io.tables import read_table, write_table
 from etcompare.log import get_logger, log_event
 from etcompare.provenance import (
@@ -119,6 +120,9 @@ class Workflow:
         self.out: Path = Path(cfg.output_dir)
         self.run_id = run_id
         self.cache = Cache(self.out, enabled=cfg.cache.enabled and not force)
+        self.force = force
+        #: Cache key of the unit being run (names its checkpoints).
+        self.current_key: str | None = None
         self.records: dict[tuple[str, str], UnitRecord] = {}
         self.inputs: dict[str, dict[str, Any]] = {}
         self._outputs: list[str] = []
@@ -172,17 +176,15 @@ class Workflow:
         self._outputs.append(str(path))
         if csv:
             c = path.with_suffix(".csv")
-            table.frame.to_csv(c, index=False)
+            write_csv_atomic(table.frame, c)
             self._outputs.append(str(c))
 
     def save_csv(self, frame: pd.DataFrame, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        frame.to_csv(path, index=False)
+        write_csv_atomic(frame, path)
         self._outputs.append(str(path))
 
     def save_text(self, text: str, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text.rstrip() + "\n", encoding="utf-8")
+        write_text_atomic(text.rstrip() + "\n", path)
         self._outputs.append(str(path))
 
     def add_output(self, path: str | Path) -> None:
@@ -252,14 +254,18 @@ class Workflow:
                 return self._store(r, stamp=False)
         log_event(_log, "unit_started", stage=unit.stage, unit=unit.unit_id)
         self._outputs = []
+        self.current_key = key
         t0 = time.perf_counter()
         try:
             outcome = unit.run()
-        except Exception as exc:
+        except BaseException as exc:
             self._store(UnitRecord(unit.stage, unit.unit_id, unit.analysis, "failed",
                                    type(exc).__name__, str(exc)[:2000], key, self.run_id,
-                                   utc_now(), time.perf_counter() - t0, list(self._outputs)))
+                                   utc_now(), time.perf_counter() - t0, list(self._outputs),
+                                   dict(getattr(exc, "workflow_details", None) or {})))
             raise
+        finally:
+            self.current_key = None
         return self._store(UnitRecord(
             unit.stage, unit.unit_id, unit.analysis, outcome.status, outcome.reason_code,
             outcome.reason, key, self.run_id, utc_now(), round(time.perf_counter() - t0, 3),
@@ -712,23 +718,51 @@ class Workflow:
                         self.idents(rasters), self.idents(fps)]
 
             def run(spec: Any = spec) -> Outcome:
+                from etcompare.errors import SystematicFailureError
                 from etcompare.extraction import extract_rasters
+                from etcompare.resilience import Checkpoint, RetryPolicy
 
                 fs = (self.cfg.footprint_set(spec.footprint_set_id)
                       if spec.footprint_set_id else None)
                 d = self.discovery(0)
                 fd = self.footprint_discovery(spec.footprint_set_id) if fs else None
+                proc = self.cfg.processing
+                unit_id = f"raster_extraction:{spec.name}"
+                ckpt = None
+                if proc.checkpoint != "none" and self.current_key is not None:
+                    ckpt = Checkpoint(self.out / ".etcompare" / "checkpoints", unit_id,
+                                      self.current_key)
+                    if self.force:
+                        ckpt.clear()
+                    ckpt.prune()
                 t0 = time.time()
-                result = extract_rasters(spec, station=self.cfg.stations[spec.site_id],
-                                         model_manifest=d.manifest, products=self.cfg.products,
-                                         footprint_manifest=fd.manifest if fd else None,
-                                         footprint_set=fs, strict=spec.strict)
+                try:
+                    result = extract_rasters(
+                        spec, station=self.cfg.stations[spec.site_id],
+                        model_manifest=d.manifest, products=self.cfg.products,
+                        footprint_manifest=fd.manifest if fd else None, footprint_set=fs,
+                        strict=spec.strict, retry=RetryPolicy.from_spec(proc),
+                        max_unreadable_fraction=proc.max_unreadable_fraction,
+                        checkpoint=ckpt)
+                except SystematicFailureError as exc:
+                    # The table is not written; the exclusions say which files failed.
+                    excl = getattr(exc, "exclusions", None)
+                    if excl is not None:
+                        self.save_csv(excl.to_frame(), self.out / f"{spec.name}_exclusions.csv")
+                        exc.workflow_details = {  # type: ignore[attr-defined]
+                            "exclusions": _counts(excl, spec.name), "notes": exc.details}
+                    if exc.report is not None:
+                        self.save_text(exc.report.summary(),
+                                       self.out / f"{spec.name}_report.txt")
+                    raise
                 self.save(result.table, self.extraction_path(spec.name), csv=False)
                 self.save_csv(result.exclusions.to_frame(),
                               self.out / f"{spec.name}_exclusions.csv")
                 reports = [d.report.summary(), *([fd.report.summary()] if fd else []),
                            result.report.summary(), f"elapsed {time.time() - t0:.0f}s"]
                 self.save_text("\n\n".join(reports), self.out / f"{spec.name}_report.txt")
+                if ckpt is not None:
+                    ckpt.clear()
                 a = result.table.attributes
                 f = result.table.frame
                 return Outcome(details={
@@ -1016,7 +1050,7 @@ class Workflow:
                 if res.cumulative is not None:
                     self.save(res.cumulative, Path(f"{stem}_cumulative_error.parquet"))
                 # Shared by every metric unit; written, but no unit's cache depends on it.
-                definitions_frame().to_csv(out / "metric_definitions.csv", index=False)
+                write_csv_atomic(definitions_frame(), out / "metric_definitions.csv")
                 self.save_text(f"metrics {ms.metric_set_id}:\n{res.report.summary()}",
                                Path(f"{stem}_metrics_report.txt"))
                 return Outcome()

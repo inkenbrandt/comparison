@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +32,7 @@ from typing import Any
 import pandas as pd
 
 from etcompare.errors import SchemaError
+from etcompare.io.atomic import write_json_atomic
 from etcompare.schemas import ANALYSIS_STATUS, UNIT_STATUSES, CanonicalTable
 
 MANIFEST_VERSION = "1"
@@ -48,20 +48,6 @@ def new_run_id(config_hash: str) -> str:
     """``<UTC timestamp>_<first 8 hex of the config hash>``; sortable and unique per second."""
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     return f"{stamp}_{config_hash[:8]}"
-
-
-def write_json_atomic(obj: Any, path: str | os.PathLike[str]) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(obj, fh, indent=2, sort_keys=True, default=str)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-    return path
 
 
 # --------------------------------------------------------------------------- unit status

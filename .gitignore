@@ -26,3 +26,9 @@ outputs/
 /NLCD/*
 /2024_30m_cdls/*
 eddy_events_202610171141.csv
+
+# Notebooks are committed with outputs stripped (tests/test_notebooks.py checks)
+!notebooks/*.ipynb
+
+# Documentation build
+docs/_build/

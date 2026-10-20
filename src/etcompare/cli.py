@@ -6,6 +6,7 @@
     etcompare analyze  config.yaml   cohorts, periods, metrics, intervals, rankings, ...
     etcompare report   config.yaml   figures, Markdown/HTML report, skipped-analyses table
     etcompare run      config.yaml   all five; units whose cache is valid are reused
+    etcompare demo     DIRECTORY     write the fixed-seed synthetic demo (--rasters: GeoTIFFs too)
 
 Each subcommand is a thin layer over :func:`etcompare.runner.run_stages`. Everything an
 analysis needs is declared in the configuration; the only options are logging and
@@ -45,6 +46,7 @@ _HELP = {
     "analyze": "run every declared analysis (steps 7-16)",
     "report": "write figures, tables and the Markdown/HTML report",
     "run": "validate, index, extract, analyze and report; reuse valid cached outputs",
+    "demo": "write the synthetic demonstration inputs and config.yaml (offline, no credentials)",
 }
 
 
@@ -63,11 +65,24 @@ def build_parser() -> argparse.ArgumentParser:
                        help="stderr log format (the run log file is always JSON lines)")
         s.add_argument("--log-level", default="INFO",
                        choices=("DEBUG", "INFO", "WARNING", "ERROR"))
+    d = sub.add_parser("demo", help=_HELP["demo"], description=_HELP["demo"])
+    d.add_argument("directory", help="where to write data/ and config.yaml")
+    d.add_argument("--rasters", action="store_true",
+                   help="also write synthetic GeoTIFFs, footprints and a land-cover map "
+                        "(needs the geo extra), so index, extract and representativeness run")
+    d.add_argument("--seed", type=int, default=None, help="generator seed (default: fixed)")
     return p
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "demo":
+        from etcompare.demo import DEMO_SEED, write_demo
+
+        path = write_demo(args.directory, rasters=args.rasters,
+                          seed=DEMO_SEED if args.seed is None else args.seed)
+        print(f"synthetic demo written; run it with: etcompare run {path}")
+        return EXIT_OK
     from etcompare.config import load_config
     from etcompare.log import configure_logging, get_logger, log_event
     from etcompare.runner import run_stages
