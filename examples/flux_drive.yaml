@@ -35,13 +35,13 @@ stations:
 
 x-scaling: &scaling {raster_scaling: declared, scale_factor: 1.0, add_offset: 0.0, nodata: -9999.0}
 products:
-  disalexi: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
-  eemetric: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
-  ensemble: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling, is_ensemble: true}
-  geesebal: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
-  ptjpl:    {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
-  sims:     {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
-  ssebop:   {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  disalexi: {units: mm/day, day_definition: local_standard_time, temporal_support: interpolated_daily, version: v2.0, <<: *scaling}
+  eemetric: {units: mm/day, day_definition: local_standard_time, temporal_support: interpolated_daily, version: v2.0, <<: *scaling}
+  ensemble: {units: mm/day, day_definition: local_standard_time, temporal_support: interpolated_daily, version: v2.0, <<: *scaling, is_ensemble: true}
+  geesebal: {units: mm/day, day_definition: local_standard_time, temporal_support: interpolated_daily, version: v2.0, <<: *scaling}
+  ptjpl:    {units: mm/day, day_definition: local_standard_time, temporal_support: interpolated_daily, version: v2.0, <<: *scaling}
+  sims:     {units: mm/day, day_definition: local_standard_time, temporal_support: interpolated_daily, version: v2.0, <<: *scaling}
+  ssebop:   {units: mm/day, day_definition: local_standard_time, temporal_support: interpolated_daily, version: v2.0, <<: *scaling}
 
 x-table: &table
   date_column: date
@@ -59,6 +59,7 @@ station_tables:
   - {<<: *table, site_id: US-UTM, path: "${FLUX}/database/daily_output/US-UTM_daily.csv"}
   - {<<: *table, site_id: US-UTV, path: "${FLUX}/database/daily_output/US-UTV_daily.csv"}
   - {<<: *table, site_id: US-UTW, path: "${FLUX}/database/daily_output/US-UTW_daily.csv"}
+  - {<<: *table, site_id: US-CdM, path: "${FLUX}/database/daily_output/US-CdM_daily.csv"}
 
 # Clipped rasters (400 m buffer; D-069) except US-UTE, which is unclipped. The folder also
 # holds US-CdM, US-UTB and an empty US-UTL; their rasters are indexed but never extracted.
