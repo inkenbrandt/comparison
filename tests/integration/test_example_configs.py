@@ -119,3 +119,35 @@ def test_flux_drive_footprint_sets_discover():
     r = discover_footprints(xr, sites=SiteRegistry(cfg.site_aliases))
     assert len(r.manifest) and r.manifest.frame["asset_id"].str.startswith("ffp_xr_").all()
     assert "products_not_selected" in r.report.codes("info")
+
+
+NOTEBOOK = EXAMPLES / "flux_drive.ipynb"
+
+
+def test_flux_drive_notebook_outputs_stripped():
+    import json
+
+    nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    code = [c for c in nb["cells"] if c["cell_type"] == "code"]
+    assert code and all(c["outputs"] == [] and c["execution_count"] is None for c in code)
+
+
+@pytest.mark.skipif(not (FLUX / "footprints").is_dir(), reason="FLUX data folder not present")
+def test_flux_drive_notebook_runs(monkeypatch):
+    # Reads the folder; the last section needs the US-UTJ extraction in outputs/flux_drive.
+    import json
+
+    pytest.importorskip("matplotlib")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    cfg = load_config(EXAMPLES / "flux_drive.yaml")
+    x = next(x for x in cfg.raster_extractions if x.site_id == "US-UTJ")
+    if not (cfg.output_dir / f"{x.name}_extractions.parquet").exists():
+        pytest.skip("run examples/flux_drive.yaml first")
+    monkeypatch.chdir(EXAMPLES)
+    ns: dict = {"__name__": "__main__"}
+    for c in json.loads(NOTEBOOK.read_text(encoding="utf-8"))["cells"]:
+        if c["cell_type"] == "code":
+            exec(compile("".join(c["source"]), NOTEBOOK.name, "exec"), ns)  # noqa: S102
+    assert len(ns["pairs"]) and set(ns["pairs"]["model"]) == set(cfg.products)

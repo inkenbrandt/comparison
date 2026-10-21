@@ -30,6 +30,8 @@ outputs/
 
 # Notebooks are committed with outputs stripped (tests/test_notebooks.py checks)
 !notebooks/*.ipynb
+# The real-station example notebook stays beside its configuration (D-081)
+!examples/*.ipynb
 
 # Documentation build
 docs/_build/

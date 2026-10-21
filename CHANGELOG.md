@@ -13,6 +13,9 @@ All notable changes are recorded here. The format follows
 - Footprint filenames of every fluxfootprints model parse (`ffp_`, `ffp_xr_`, `km_`, `ls_`,
   `wang_`). Each footprint set declares its model (`filename_prefix`, default `ffp`), and
   discovery leaves out files of other models (D-081).
+- `examples/flux_drive.ipynb` reads the FLUX data folder with `examples/flux_drive.yaml`:
+  stations, footprint sets, OpenET rasters, the extraction run and a first look at its output.
+  Like the real-station configurations, it stays out of the source distribution.
 
 ## [0.1.0] - 2026-10-20
 
