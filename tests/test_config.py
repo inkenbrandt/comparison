@@ -104,6 +104,48 @@ def test_footprint_semantics_mandatory():
                          value_semantics="normalized_cell_weight")
 
 
+def test_footprint_set_filename_prefix():
+    assert FootprintSetSpec("A", Path("."), weighting_method="x",
+                            value_semantics="normalized_cell_weight").filename_prefix == "ffp"
+    with pytest.raises(ContractError, match="filename_prefix"):
+        FootprintSetSpec("A", Path("."), weighting_method="x",
+                         value_semantics="normalized_cell_weight", filename_prefix="fp")
+
+
+def _rooted(path, roots):
+    return config_from_dict({
+        "data_roots": roots,
+        "stations": {"XX-UTJ": {"timezone": "UTC-07:00", "day_definition": "local_standard_time",
+                                "interval_label": "start"}},
+        "station_tables": [{
+            "site_id": "XX-UTJ", "path": path, "date_column": "date",
+            "gap_flag_column": "ET_gap",
+            "reference_columns": {"et_raw": "ET", "et_corrected": "ET_corr"},
+            "units": {"ET": "mm/day", "ET_corr": "mm/day"}}],
+        "openet_rasters": [{"root": "${DATA}/OpenET_Daily_Tiffs"}],
+        "output_dir": "${OUT}"}, base_dir=Path("/cfg").resolve())
+
+
+def test_data_roots_expand_in_paths(tmp_path):
+    cfg = _rooted("${DATA}/daily/XX-UTJ_daily.csv", {"DATA": str(tmp_path), "OUT": "outputs"})
+    assert cfg.station_tables[0].path == tmp_path / "daily" / "XX-UTJ_daily.csv"
+    assert cfg.openet_rasters[0].root == tmp_path / "OpenET_Daily_Tiffs"
+    # A relative root resolves against the configuration's folder, as other paths do.
+    assert cfg.output_dir == Path("/cfg").resolve() / "outputs"
+    assert cfg.data_roots == {"DATA": tmp_path, "OUT": Path("/cfg").resolve() / "outputs"}
+
+
+def test_data_roots_errors(tmp_path):
+    with pytest.raises(ContractError, match="data root 'FLUX' is not declared"):
+        _rooted("${FLUX}/x.csv", {"DATA": str(tmp_path), "OUT": "o"})
+    with pytest.raises(ContractError, match="malformed"):
+        _rooted("${DATA/x.csv", {"DATA": str(tmp_path), "OUT": "o"})
+    with pytest.raises(ContractError, match="must be a letter"):
+        _rooted("x.csv", {"1DATA": str(tmp_path), "DATA": "d", "OUT": "o"})
+    with pytest.raises(ContractError, match="without"):
+        _rooted("x.csv", {"DATA": "${OUT}/d", "OUT": "o"})
+
+
 def test_unknown_keys_rejected():
     with pytest.raises(ContractError, match="unknown configuration key"):
         config_from_dict({"stationz": {}})

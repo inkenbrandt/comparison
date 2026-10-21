@@ -16,7 +16,10 @@ the suffix is still a parse error. The tag is recorded on the asset.
 
 Footprint names look like ``ffp_XX-UTJ_daily_etw_20240605.tif`` or
 ``ffp_XX-UTJ_monthly_etw_202406.tif``. The layer token (``etw``, ``mean``) is
-recorded as text; it does not establish a weighting method (D-009).
+recorded as text; it does not establish a weighting method (D-009). The leading
+token names the footprint model (``ffp``, ``ffp_xr``, ``km``, ``ls`` or ``wang``, e.g.
+``km_XX-UTW_daily_etw_20210705.tif``). Several can share a folder, site, day and
+layer, so a footprint set declares which one it holds.
 
 A filename date is a label, never evidence of temporal support.
 """
@@ -29,6 +32,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePath
 
+from etcompare.config import FOOTPRINT_FILENAME_PREFIXES
 from etcompare.errors import FilenameParseError
 from etcompare.registry import ModelRegistry, SiteRegistry
 
@@ -41,7 +45,8 @@ _GENERIC_OPENET = re.compile(
     r"(?P<d>\d{2})_(?P<suffix>[^_.]+)(?P<ext>\.[^_]+)$"
 )
 _FOOTPRINT = re.compile(
-    r"^ffp_(?P<site>.+)_(?P<agg>daily|monthly)_(?P<layer>[A-Za-z0-9]+)_(?P<stamp>\d+)"
+    rf"^(?P<product>{'|'.join(sorted(FOOTPRINT_FILENAME_PREFIXES, key=len, reverse=True))})_"
+    r"(?P<site>.+)_(?P<agg>daily|monthly)_(?P<layer>[A-Za-z0-9]+)_(?P<stamp>\d+)"
     r"(?P<ext>\.tiff?)?$"
 )
 
@@ -75,6 +80,7 @@ class FootprintAsset:
     date: dt.date  # period start
     site_alias_applied: tuple[str, str] | None = None
     path: Path | None = None
+    product: str = "ffp"  # leading filename token, one of FOOTPRINT_FILENAME_PREFIXES
 
 
 @lru_cache(maxsize=64)
@@ -207,7 +213,9 @@ def _diagnose_openet(
 def parse_footprint_filename(
     name: str | PurePath, *, sites: SiteRegistry | None = None
 ) -> FootprintAsset:
-    """Parse ``ffp_<site>_<daily|monthly>_<layer>_<YYYYMMDD|YYYYMM>[.tif]``.
+    """Parse ``<model>_<site>_<daily|monthly>_<layer>_<YYYYMMDD|YYYYMM>[.tif]``.
+
+    ``<model>`` is one of :data:`~etcompare.config.FOOTPRINT_FILENAME_PREFIXES`.
 
     The extension is optional so that extension-less identifiers stored in
     tables (e.g. ``footprint_file``) parse the same way.
@@ -217,7 +225,8 @@ def parse_footprint_filename(
     m = _FOOTPRINT.match(filename)
     if not m:
         raise FilenameParseError(
-            f"{filename}: does not match ffp_<site>_<daily|monthly>_<layer>_<date>.tif"
+            f"{filename}: does not match <model>_<site>_<daily|monthly>_<layer>_<date>.tif "
+            f"(model: {'|'.join(FOOTPRINT_FILENAME_PREFIXES)})"
         )
     stamp = m["stamp"]
     if m["agg"] == "daily":
@@ -242,4 +251,5 @@ def parse_footprint_filename(
         date=date,
         site_alias_applied=applied[0] if applied else None,
         path=path,
+        product=m["product"],
     )

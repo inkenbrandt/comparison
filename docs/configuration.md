@@ -45,8 +45,34 @@ Every undeclared analysis is reported as `skipped` (`not_declared`).
 | `upstream` | {class}`~etcompare.config.UpstreamSpec` | declared versions of upstream software and their evidence |
 | `decisions` | {class}`~etcompare.config.DecisionSpec` | open or provisional decisions outputs depend on |
 | `output_dir` | path | where every output goes |
+| `data_roots` | mapping | named data folders that paths may start with (below) |
 
 The class documentation (see {doc}`api`) lists every field, its default and its rules.
+
+## Data folders (`data_roots:`)
+
+A path may start with `${NAME}`, where `NAME` is declared under `data_roots`. When the data
+move to another drive, only that one line changes:
+
+```yaml
+data_roots:
+  FLUX: "/data/flux"          # a relative folder resolves against this file's folder
+station_tables:
+  - {site_id: XX-UTJ, path: "${FLUX}/database/daily_output/XX-UTJ_daily.csv", ...}
+openet_rasters:
+  - root: "${FLUX}/OpenET_Daily_Tiffs"
+```
+
+An undeclared name is refused. Environment variables are not read, so a configuration
+resolves the same way everywhere.
+
+## Footprint models (`filename_prefix`)
+
+Footprint files are named `<model>_<site>_<daily|monthly>_<layer>_<date>.tif`. The model is
+a short name from the fluxfootprints model registry: `ffp`, `ffp_xr`, `km`, `ls` or `wang`.
+Several models can sit in one folder with the same site, day and layer, so each footprint
+set holds one model: `filename_prefix: ffp` (the default) or another of these. Files of
+other models are left out and counted in the discovery report (`products_not_selected`).
 
 ## Resilient processing (`processing:`)
 

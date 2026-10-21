@@ -80,3 +80,42 @@ def test_example_us_utj_declarations():
     assert all(v.column.startswith("src_") for v in d.variables.values() if v.source == "station")
     assert d.variables["ebr_corr"].measured_days_only
     assert all(v.quantiles is None for v in d.variables.values())  # fixed edges only
+
+
+@pytest.mark.parametrize("name", ["utah_stations.yaml", "flux_drive.yaml"])
+def test_flux_examples_read_from_the_data_root(name):
+    # Every data path starts with ${FLUX} (D-081), so a moved drive is one line.
+    cfg = load_config(EXAMPLES / name)
+    root = cfg.data_roots["FLUX"]
+    assert all(t.path.is_relative_to(root) for t in cfg.station_tables)
+    assert all(r.root.is_relative_to(root) for r in cfg.openet_rasters)
+    raw = (EXAMPLES / name).read_text(encoding="utf-8")
+    assert "J:/FLUX/" not in raw and "C:/Users/Hutto/Documents/footprints" not in raw.replace(
+        "the C:/Users/Hutto/Documents copy", "")
+
+
+FLUX = load_config(EXAMPLES / "flux_drive.yaml").data_roots["FLUX"] \
+    if (EXAMPLES / "flux_drive.yaml").exists() else Path("/nonexistent")
+
+
+@pytest.mark.skipif(not (FLUX / "footprints").is_dir(), reason="FLUX data folder not present")
+def test_flux_drive_footprint_sets_discover():
+    from etcompare.io.manifest import discover_footprints
+    from etcompare.registry import SiteRegistry
+
+    cfg = load_config(EXAMPLES / "flux_drive.yaml")
+    for fs in cfg.footprint_sets:
+        r = discover_footprints(fs, sites=SiteRegistry(cfg.site_aliases))
+        f = r.manifest.frame
+        assert len(f) and set(f["layer_token"]) == set(fs.layers or ())
+        assert set(f["site_id"]) == {fs.set_id.split("_")[0]}
+    # The top level of US-UTW also holds ffp_xr, km, ls and wang footprints: other models,
+    # never mixed in.
+    from etcompare.config import FootprintSetSpec
+
+    xr = FootprintSetSpec("utw_xr", FLUX / "footprints" / "US-UTW", weighting_method="x",
+                          value_semantics="normalized_cell_weight", layers=("etw",),
+                          filename_prefix="ffp_xr")
+    r = discover_footprints(xr, sites=SiteRegistry(cfg.site_aliases))
+    assert len(r.manifest) and r.manifest.frame["asset_id"].str.startswith("ffp_xr_").all()
+    assert "products_not_selected" in r.report.codes("info")

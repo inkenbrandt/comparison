@@ -1,0 +1,129 @@
+# Seven Utah stations read entirely from the FLUX data folder (D-081). Unlike
+# utah_stations.yaml, which extracts the NLDAS-ETo footprints that etcompare rebuilt into
+# ../outputs, this file uses only what the folder holds:
+#   database/daily_output/<site>_daily.csv            station daily tables (flux-data-qaqc)
+#   OpenET_Daily_Tiffs/<site>/<model>/*.tif           OpenET daily rasters
+#   footprints/<site>/weighted/ffp_<site>_daily_etw_*  production ET-weighted footprints
+#   footprints/<site>/non_weighted/ffp_<site>_daily_mean_*  production time-mean footprints
+# US-UTM keeps its production footprints at the top level of footprints/US-UTM (its
+# weighted/ and non_weighted/ folders are empty). The top level of footprints/US-UTW also
+# holds July 2021 footprints of four other models (ffp_xr_, km_, ls_, wang_); they are not
+# declared here.
+#
+# Station, product and raster declarations are those of utah_stations.yaml (user decisions,
+# 2026-10-18/19). No comparison, metric or other analysis is declared: `etcompare run`
+# validates, indexes and extracts, and records every analysis as not declared.
+# Data paths are local inputs that are not distributed (D-014).
+
+# The FLUX data folder; every data path below starts with ${FLUX}.
+data_roots:
+  FLUX: "D:/FLUX"
+
+x-station: &station
+  timezone: "UTC-07:00"
+  day_definition: local_standard_time
+  interval_label: start
+stations:
+  # Coordinates: UGS station_attribute_view (read-only queries, 2026-10-18/19).
+  US-UTD: {<<: *station, latitude: 38.1038, longitude: -109.5952}
+  US-UTE: {<<: *station, latitude: 37.735287, longitude: -111.570816}
+  US-UTG: {<<: *station, latitude: 39.018806, longitude: -110.162766}
+  US-UTJ: {<<: *station, latitude: 37.281746, longitude: -109.53489, land_cover: CRO}
+  US-UTM: {<<: *station, latitude: 38.58785, longitude: -109.57749}
+  US-UTV: {<<: *station, latitude: 40.12641, longitude: -109.954735}
+  US-UTW: {<<: *station, latitude: 39.445362, longitude: -110.72905}
+
+x-scaling: &scaling {raster_scaling: declared, scale_factor: 1.0, add_offset: 0.0, nodata: -9999.0}
+products:
+  disalexi: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  eemetric: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  ensemble: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling, is_ensemble: true}
+  geesebal: {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  ptjpl:    {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  sims:     {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+  ssebop:   {units: mm/day, day_definition: unknown, temporal_support: interpolated_daily, version: api_default_unrecorded, <<: *scaling}
+
+x-table: &table
+  date_column: date
+  date_format: "%Y-%m-%d"
+  reference_columns: {et_raw: ET, et_corrected: ET_corr}
+  gap_flag_column: ET_gap
+  closure_factor_column: ebc_cf
+  reference_et_column: gridMET_ETr
+  units: {ET: mm/day, ET_corr: mm/day, gridMET_ETr: mm/day}   # as US-UTJ (user, 2026-10-18)
+station_tables:
+  - {<<: *table, site_id: US-UTD, path: "${FLUX}/database/daily_output/US-UTD_daily.csv"}
+  - {<<: *table, site_id: US-UTE, path: "${FLUX}/database/daily_output/US-UTE_daily.csv"}
+  - {<<: *table, site_id: US-UTG, path: "${FLUX}/database/daily_output/US-UTG_daily.csv"}
+  - {<<: *table, site_id: US-UTJ, path: "${FLUX}/database/daily_output/US-UTJ_daily.csv"}
+  - {<<: *table, site_id: US-UTM, path: "${FLUX}/database/daily_output/US-UTM_daily.csv"}
+  - {<<: *table, site_id: US-UTV, path: "${FLUX}/database/daily_output/US-UTV_daily.csv"}
+  - {<<: *table, site_id: US-UTW, path: "${FLUX}/database/daily_output/US-UTW_daily.csv"}
+
+# Clipped rasters (400 m buffer; D-069) except US-UTE, which is unclipped. The folder also
+# holds US-CdM, US-UTB and an empty US-UTL; their rasters are indexed but never extracted.
+openet_rasters:
+  - root: "${FLUX}/OpenET_Daily_Tiffs"
+    processing_tags: [buffer400m_clip]
+    on_conflict: collapse_identical
+
+# Production footprints (footprint_workflow_v2-1.ipynb). The ET-weighted layer weights by
+# NLDAS grass ETo per the notebook (code-inferred; reproduced for US-UTJ only, D-036).
+x-etw: &etw
+  layers: [etw]
+  weighting_method: production_nldas_eto_weighted_unverified
+  temporal_weighting: reference_et_weighted
+  value_semantics: normalized_cell_weight
+x-mean: &mean
+  layers: [mean]
+  weighting_method: time_mean_unverified
+  temporal_weighting: time_mean
+  value_semantics: normalized_cell_weight
+footprint_sets:
+  - {<<: *etw, set_id: US-UTD_production_etw, root: "${FLUX}/footprints/US-UTD/weighted"}
+  - {<<: *etw, set_id: US-UTE_production_etw, root: "${FLUX}/footprints/US-UTE/weighted"}
+  - {<<: *etw, set_id: US-UTG_production_etw, root: "${FLUX}/footprints/US-UTG/weighted"}
+  - {<<: *etw, set_id: US-UTJ_production_etw, root: "${FLUX}/footprints/US-UTJ/weighted"}
+  - {<<: *etw, set_id: US-UTM_production_etw, root: "${FLUX}/footprints/US-UTM", recursive: false}
+  - {<<: *etw, set_id: US-UTV_production_etw, root: "${FLUX}/footprints/US-UTV/weighted"}
+  - {<<: *etw, set_id: US-UTW_production_etw, root: "${FLUX}/footprints/US-UTW/weighted"}
+  - {<<: *mean, set_id: US-UTD_production_mean, root: "${FLUX}/footprints/US-UTD/non_weighted"}
+  - {<<: *mean, set_id: US-UTE_production_mean, root: "${FLUX}/footprints/US-UTE/non_weighted"}
+  - {<<: *mean, set_id: US-UTG_production_mean, root: "${FLUX}/footprints/US-UTG/non_weighted"}
+  - {<<: *mean, set_id: US-UTJ_production_mean, root: "${FLUX}/footprints/US-UTJ/non_weighted"}
+  - {<<: *mean, set_id: US-UTM_production_mean, root: "${FLUX}/footprints/US-UTM", recursive: false}
+  - {<<: *mean, set_id: US-UTV_production_mean, root: "${FLUX}/footprints/US-UTV/non_weighted"}
+  - {<<: *mean, set_id: US-UTW_production_mean, root: "${FLUX}/footprints/US-UTW/non_weighted"}
+
+# The ET-weighted sets over each station's daily record (dates as utah_stations.yaml).
+x-extraction: &extraction
+  methods: [footprint]
+  negative_weight_tolerance: 1.0e-9
+raster_extractions:
+  - {<<: *extraction, name: utd_production_etw, site_id: US-UTD, footprint_set_id: US-UTD_production_etw, start: "2023-05-24", end: "2025-10-22"}
+  - {<<: *extraction, name: ute_production_etw, site_id: US-UTE, footprint_set_id: US-UTE_production_etw, start: "2024-06-18", end: "2025-10-09"}
+  - {<<: *extraction, name: utg_production_etw, site_id: US-UTG, footprint_set_id: US-UTG_production_etw, start: "2025-03-24", end: "2025-10-10"}
+  - {<<: *extraction, name: utj_production_etw, site_id: US-UTJ, footprint_set_id: US-UTJ_production_etw, start: "2024-06-05", end: "2025-10-09"}
+  - {<<: *extraction, name: utm_production_etw, site_id: US-UTM, footprint_set_id: US-UTM_production_etw, start: "2022-10-19", end: "2025-10-09"}
+  - {<<: *extraction, name: utv_production_etw, site_id: US-UTV, footprint_set_id: US-UTV_production_etw, start: "2023-09-27", end: "2025-10-14"}
+  - {<<: *extraction, name: utw_production_etw, site_id: US-UTW, footprint_set_id: US-UTW_production_etw, start: "2021-03-10", end: "2025-10-10"}
+
+cache:
+  raster_identity: stat       # size + mtime; sha256 reads ~26 GB of rasters
+
+processing:
+  keep_awake: true
+  io_attempts: 3
+  io_backoff_s: [1, 4]
+  stall_warning_s: 120
+  checkpoint: month
+  max_unreadable_fraction: 0.01
+
+decisions:
+  - {ref: D-081, status: provisional, summary: "production footprint weighting is code-inferred, not reproduced (except US-UTJ); no analysis declared", applies_to: [footprint_sets, raster_extractions]}
+  - {ref: D-002, status: provisional, summary: "OpenET day boundary unknown (day_alignment=unverified); station interval labels 'start' as US-UTJ", applies_to: [products, stations]}
+
+report:
+  title: "Seven Utah stations: FLUX-folder inputs"
+
+output_dir: ../outputs/flux_drive

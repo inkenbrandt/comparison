@@ -129,6 +129,21 @@ def test_footprint_set_discovery(tmp_path):
         discover_footprints(recursive)
 
 
+def test_footprint_set_holds_one_product(tmp_path):
+    # Footprints of several models share a folder, site, day and layer; a set takes one.
+    touch(tmp_path, "ffp_XX-UTW_daily_etw_20210705.tif", "ffp_xr_XX-UTW_daily_etw_20210705.tif",
+          "ffp_xr_XX-UTW_daily_etw_20210706.tif", "km_XX-UTW_daily_etw_20210705.tif",
+          "XX-UTW_202107_daily_audit.csv")
+    plain = FootprintSetSpec("A", tmp_path, weighting_method="x",
+                             value_semantics="normalized_cell_weight")
+    r = discover_footprints(plain)
+    assert list(r.manifest.frame["asset_id"]) == ["ffp_XX-UTW_daily_etw_20210705"]
+    assert "products_not_selected" in r.report.codes("info")
+    xr = FootprintSetSpec("X", tmp_path, weighting_method="x",
+                          value_semantics="normalized_cell_weight", filename_prefix="ffp_xr")
+    assert len(discover_footprints(xr).manifest) == 2
+
+
 def test_site_alias_recorded_in_manifest(tmp_path):
     touch(tmp_path, "XX-UTD_US_UTM_eemetric_et_2021_01_01_9abcf.tif")
     r = discover_openet_rasters(tmp_path, models=MODELS, products=PRODUCTS,

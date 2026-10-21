@@ -3,11 +3,16 @@
 # was made by the user on 2026-10-18 unless marked otherwise:
 #   - footprints rebuilt as NLDAS-ETo weighted from per-timestep stacks, as for US-UTJ (D-037);
 #     US-UTM rebuilt with production's constant heights (D-073);
-#   - OpenET from J:/FLUX/OpenET_Daily_Tiffs (user, 2026-10-19; clipped except US-UTE);
+#   - OpenET from FLUX/OpenET_Daily_Tiffs (user, 2026-10-19; clipped except US-UTE);
 #   - byte-identical duplicate rasters collapse to one file; differing ones are held out;
 #   - every station: UTC-7, local standard time, interval start, mm/day (as US-UTJ);
 #   - US-UTB, US-CdM, US-UTL and US-UTZ are left out;
 #   - calendar-year folds (April-October growing season); April-October reported separately.
+
+# The FLUX data folder (J:/FLUX until 2026-10-19; D:/FLUX from 2026-10-21). Paths below start
+# with ${FLUX}, so a moved drive is this one line.
+data_roots:
+  FLUX: "D:/FLUX"
 
 x-station: &station
   timezone: "UTC-07:00"
@@ -42,21 +47,21 @@ x-table: &table
   reference_et_column: gridMET_ETr
   units: {ET: mm/day, ET_corr: mm/day, gridMET_ETr: mm/day}   # as US-UTJ (user, 2026-10-18)
 station_tables:
-  - {<<: *table, site_id: US-UTD, path: "J:/FLUX/database/daily_output/US-UTD_daily.csv"}
-  - {<<: *table, site_id: US-UTE, path: "J:/FLUX/database/daily_output/US-UTE_daily.csv"}
-  - {<<: *table, site_id: US-UTG, path: "J:/FLUX/database/daily_output/US-UTG_daily.csv"}
-  - {<<: *table, site_id: US-UTJ, path: "J:/FLUX/database/daily_output/US-UTJ_daily.csv"}
-  - {<<: *table, site_id: US-UTM, path: "J:/FLUX/database/daily_output/US-UTM_daily.csv"}
-  - {<<: *table, site_id: US-UTV, path: "J:/FLUX/database/daily_output/US-UTV_daily.csv"}
-  - {<<: *table, site_id: US-UTW, path: "J:/FLUX/database/daily_output/US-UTW_daily.csv"}
+  - {<<: *table, site_id: US-UTD, path: "${FLUX}/database/daily_output/US-UTD_daily.csv"}
+  - {<<: *table, site_id: US-UTE, path: "${FLUX}/database/daily_output/US-UTE_daily.csv"}
+  - {<<: *table, site_id: US-UTG, path: "${FLUX}/database/daily_output/US-UTG_daily.csv"}
+  - {<<: *table, site_id: US-UTJ, path: "${FLUX}/database/daily_output/US-UTJ_daily.csv"}
+  - {<<: *table, site_id: US-UTM, path: "${FLUX}/database/daily_output/US-UTM_daily.csv"}
+  - {<<: *table, site_id: US-UTV, path: "${FLUX}/database/daily_output/US-UTV_daily.csv"}
+  - {<<: *table, site_id: US-UTW, path: "${FLUX}/database/daily_output/US-UTW_daily.csv"}
 
 # Clipped rasters (400 m buffer around each station; D-069). The clip is a declared processing
 # tag; byte-identical repeat downloads collapse to one file, differing ones are held out.
-# J:/FLUX is the user's chosen copy (2026-10-19): duplicates removed by the user. Its
+# FLUX is the user's chosen copy (2026-10-19): duplicates removed by the user. Its
 # station exports, NLDAS and half-hourly files are byte-identical to the C: copies used to
 # build the footprints.
 openet_rasters:
-  - root: "J:/FLUX/OpenET_Daily_Tiffs"
+  - root: "${FLUX}/OpenET_Daily_Tiffs"
     processing_tags: [buffer400m_clip]
     on_conflict: collapse_identical
 
@@ -78,7 +83,7 @@ footprint_sets:
   # US-UTM production top-level footprints: kept for the record; superseded by the rebuild (D-073). footprint_workflow_v2-1
   # weights by NLDAS grass ETo (code-inferred; not verified by reproduction as US-UTJ was, D-036).
   - set_id: US-UTM_production_etw
-    root: "C:/Users/Hutto/Documents/footprints/US-UTM"
+    root: "${FLUX}/footprints/US-UTM"   # the C:/Users/Hutto/Documents copy until 2026-10-21
     recursive: false
     layers: [etw]
     weighting_method: production_nldas_eto_weighted_unverified
@@ -184,7 +189,7 @@ run:
   skip: [footprint_aggregation]
 
 cache:
-  raster_identity: stat       # size + mtime; sha256 reads ~26 GB on J: (about 11 min)
+  raster_identity: stat       # size + mtime; sha256 reads ~26 GB of rasters (about 11 min on J:)
 
 # Resilient processing (guide step 18; D-079). Provisional example values; none changes a
 # result. keep_awake prevents the idle sleep that paused an extraction for 9 h (D-078).

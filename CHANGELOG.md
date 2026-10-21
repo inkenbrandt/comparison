@@ -5,6 +5,15 @@ All notable changes are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Decision numbers (D-…) refer to
 `docs/decisions.md`.
 
+## [Unreleased]
+
+### Added
+- `data_roots:` names data folders that configuration paths may start with (`${NAME}`), so a
+  moved data drive is a one-line change (D-081).
+- Footprint filenames of every fluxfootprints model parse (`ffp_`, `ffp_xr_`, `km_`, `ls_`,
+  `wang_`). Each footprint set declares its model (`filename_prefix`, default `ffp`), and
+  discovery leaves out files of other models (D-081).
+
 ## [0.1.0] - 2026-10-20
 
 First usable release, published to PyPI on 2026-10-20.

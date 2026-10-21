@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -26,6 +27,11 @@ PRODUCT_DAY_DEFINITIONS: Final = ("local_standard_time", "civil_time", "utc", "u
 INTERVAL_LABELS: Final = ("start", "end")
 TEMPORAL_SUPPORTS: Final = ("interpolated_daily", "overpass_only", "unknown")
 FOOTPRINT_VALUE_SEMANTICS: Final = ("normalized_cell_weight", "cell_contribution", "density_per_m2")
+#: Footprint models, by the leading token of their filenames: the short names of the
+#: fluxfootprints model registry (``ffp`` and ``ffp_xr``, Kljun et al. 2015 and its xarray
+#: implementation; ``km``, Kormann and Meixner 2001; ``ls``, Lagrangian stochastic;
+#: ``wang``, Wang et al. 2006).
+FOOTPRINT_FILENAME_PREFIXES: Final = ("ffp", "ffp_xr", "km", "ls", "wang")
 REFERENCE_VARIANT_SOURCES: Final = ("et_raw", "et_corrected")
 #: Reference variants built from those sources (decisions.md D-004; :mod:`etcompare.references`).
 REFERENCE_VARIANTS: Final = ("et_raw", "et_corrected_measured", "et_corrected_inclusive")
@@ -199,7 +205,7 @@ CONFIG_SECTIONS: Final = (
     "metric_sets", "bootstrap", "rankings", "diagnostics", "representativeness",
     "satellite_support", "event_tables", "event_analyses", "anomalies", "water_balances",
     "scenarios", "ensembles", "footprint_stacks", "footprint_comparisons", "run", "report",
-    "cache", "processing", "upstream", "decisions", "output_dir",
+    "cache", "processing", "upstream", "decisions", "output_dir", "data_roots",
 )
 #: Field holding each entry's ID, per list section.
 _SECTION_ID_FIELDS: Final[Mapping[str, str]] = MappingProxyType({
@@ -651,6 +657,10 @@ class FootprintSetSpec:
     #: from the free-text ``weighting_method`` so that an unverified label never
     #: becomes a claim. ``unknown`` is the default.
     temporal_weighting: str = "unknown"
+    #: Footprint model held by the set, from the leading filename token
+    #: (:data:`FOOTPRINT_FILENAME_PREFIXES`). Files of other models in the same folder
+    #: are left out, so footprints of two models never mix in one set.
+    filename_prefix: str = "ffp"
 
     @property
     def target_dependence(self) -> str:
@@ -672,6 +682,8 @@ class FootprintSetSpec:
                 field="value_semantics", config_key=f"{key}.value_semantics")
         _require(self.weighting_method, input=who, field="weighting_method",
                  config_key=f"{key}.weighting_method")
+        _choice(self.filename_prefix, FOOTPRINT_FILENAME_PREFIXES, input=who,
+                field="filename_prefix", config_key=f"{key}.filename_prefix")
         if self.layers is not None:
             object.__setattr__(self, "layers", tuple(self.layers))
         if self.domain_capture_csv is not None:
@@ -3879,10 +3891,12 @@ class Config:
     upstream: tuple[UpstreamSpec, ...] = ()
     decisions: tuple[DecisionSpec, ...] = ()
     output_dir: Path | None = None
+    #: Named data folders that paths may start with as ``${NAME}`` (resolved on load).
+    data_roots: Mapping[str, Path] = field(default_factory=dict)
     source_path: Path | None = None
 
     def __post_init__(self) -> None:
-        for name in ("stations", "products", "model_aliases", "site_aliases"):
+        for name in ("stations", "products", "model_aliases", "site_aliases", "data_roots"):
             object.__setattr__(self, name, _frozen_map(getattr(self, name)))
         for t in self.station_tables:
             if t.site_id not in self.stations:
@@ -4490,15 +4504,76 @@ def _check_keys(d: Mapping[str, Any], allowed: set[str], where: str) -> None:
         raise ContractError(f"unknown configuration key(s) {sorted(extra)}", config_key=where)
 
 
+#: The ``data_roots`` of the configuration being loaded, for :func:`_path`.
+_DATA_ROOTS: ContextVar[Mapping[str, Path]] = ContextVar("etcompare_data_roots",
+                                                        default=MappingProxyType({}))
+_ROOT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ROOT_REF = re.compile(r"\$\{([^}]*)\}")
+
+
+def _expand_roots(text: str) -> str:
+    """Replace each ``${NAME}`` with the declared data root ``NAME``."""
+    roots = _DATA_ROOTS.get()
+
+    def sub(m: re.Match[str]) -> str:
+        name = m.group(1)
+        if name not in roots:
+            raise ContractError(f"path {text!r}: data root {name!r} is not declared; declared: "
+                                f"{sorted(roots)}", config_key=f"data_roots.{name}")
+        return str(roots[name])
+
+    out = _ROOT_REF.sub(sub, text)
+    if "${" in out:
+        raise ContractError(f"path {text!r}: malformed data-root reference",
+                            config_key="data_roots")
+    return out
+
+
 def _path(value: Any, base: Path | None) -> Path | None:
     if value is None:
         return None
-    p = Path(str(value)).expanduser()
+    p = Path(_expand_roots(str(value))).expanduser()
     return p if p.is_absolute() or base is None else base / p
 
 
+def _data_roots(body: Any, base: Path | None) -> dict[str, Path]:
+    """Parse ``data_roots``: ``{NAME: folder}``. Relative folders resolve against ``base``."""
+    if body is None:
+        return {}
+    if not isinstance(body, Mapping):
+        raise ContractError(f"data_roots must be a mapping, got {type(body).__name__}",
+                            config_key="data_roots")
+    roots = {}
+    for name, folder in body.items():
+        if not _ROOT_NAME.fullmatch(str(name)):
+            raise ContractError(f"data root name {name!r} must be a letter or underscore "
+                                "followed by letters, digits or underscores",
+                                config_key=f"data_roots.{name}")
+        if not isinstance(folder, str | Path) or not str(folder) or "${" in str(folder):
+            raise ContractError(f"data root {name!r} must be a folder path without ${{...}}",
+                                config_key=f"data_roots.{name}")
+        p = Path(str(folder)).expanduser()
+        roots[str(name)] = p if p.is_absolute() or base is None else base / p
+    return roots
+
+
 def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -> Config:
-    """Build a :class:`Config` from plain data (e.g. parsed YAML)."""
+    """Build a :class:`Config` from plain data (e.g. parsed YAML).
+
+    Paths may start with ``${NAME}``, a folder declared under ``data_roots``, so a moved
+    data drive is one change: ``data_roots: {FLUX: "D:/FLUX"}`` and
+    ``path: "${FLUX}/database/daily_output/XX-UTJ_daily.csv"``.
+    """
+    roots = _data_roots(data.get("data_roots"), base_dir)
+    token = _DATA_ROOTS.set(roots)
+    try:
+        return _config_from_dict(data, base_dir=base_dir, data_roots=roots)
+    finally:
+        _DATA_ROOTS.reset(token)
+
+
+def _config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None,
+                      data_roots: Mapping[str, Path]) -> Config:
     top = set(CONFIG_SECTIONS)
     # Top-level keys starting with "x-" only hold YAML anchors and are ignored.
     data = {k: v for k, v in data.items() if not str(k).startswith("x-")}
@@ -4826,6 +4901,7 @@ def config_from_dict(data: Mapping[str, Any], *, base_dir: Path | None = None) -
         scenarios=tuple(scenarios),
         ensembles=tuple(ensembles),
         output_dir=_path(data.get("output_dir"), base_dir),
+        data_roots=data_roots,
     )
 
 

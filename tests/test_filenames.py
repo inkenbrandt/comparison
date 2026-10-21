@@ -86,6 +86,16 @@ def test_footprint_names():
     assert (m.period, m.date, m.layer_token) == ("month", dt.date(2024, 6, 1), "mean")
     bare = parse_footprint_filename("ffp_XX-UTJ_daily_etw_20240605")
     assert bare.asset_id == d.asset_id
+    assert d.product == "ffp"
+
+
+@pytest.mark.parametrize("model", ["ffp_xr", "km", "ls", "wang"])
+def test_footprint_model_prefixes(model):
+    x = parse_footprint_filename(f"{model}_XX-UTW_daily_etw_20210705.tif")
+    assert (x.product, x.site_id, x.layer_token, x.date) == (model, "XX-UTW", "etw",
+                                                              dt.date(2021, 7, 5))
+    assert x.asset_id == f"{model}_XX-UTW_daily_etw_20210705"
+    assert parse_footprint_filename(f"{model}_XX-UTW_monthly_mean_202107").period == "month"
 
 
 @pytest.mark.parametrize("name", [

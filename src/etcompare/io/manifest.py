@@ -316,12 +316,15 @@ def discover_footprints(
     """Index one declared footprint set. Weighting and value semantics come from ``spec``."""
     report = ValidationReport(f"footprint set {spec.set_id}")
     exclusions = ExclusionLog()
-    rows, failures, other_layers = [], [], 0
+    rows, failures, other_layers, other_products = [], [], 0, 0
     for p in list_files(spec.root, recursive=spec.recursive, extensions=extensions):
         try:
             a = parse_footprint_filename(p, sites=sites)
         except FilenameParseError as exc:
             failures.append((p, str(exc)))
+            continue
+        if a.product != spec.filename_prefix:
+            other_products += 1
             continue
         if spec.layers is not None and a.layer_token not in spec.layers:
             other_layers += 1
@@ -341,6 +344,9 @@ def discover_footprints(
                        n_rows=len(failures))
         for p, m in failures:
             exclusions.add("discovery", str(p), "unparseable_filename", detail=m)
+    if other_products:
+        report.info("products_not_selected", f"{other_products} footprint file(s) of another "
+                    f"model than {spec.filename_prefix!r} ignored", n_rows=other_products)
     if other_layers:
         report.info("layers_not_selected", f"{other_layers} file(s) with layers outside "
                     f"{list(spec.layers or [])} ignored", n_rows=other_layers)
