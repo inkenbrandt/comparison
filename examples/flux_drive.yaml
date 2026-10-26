@@ -25,13 +25,14 @@ x-station: &station
   interval_label: start
 stations:
   # Coordinates: UGS station_attribute_view (read-only queries, 2026-10-18/19).
-  US-UTD: {<<: *station, latitude: 38.1038, longitude: -109.5952}
-  US-UTE: {<<: *station, latitude: 37.735287, longitude: -111.570816}
-  US-UTG: {<<: *station, latitude: 39.018806, longitude: -110.162766}
+  US-UTD: {<<: *station, latitude: 38.1038, longitude: -109.5952, land_cover: CRO}
+  US-UTE: {<<: *station, latitude: 37.735287, longitude: -111.570816, land_cover: CRO}
+  US-UTG: {<<: *station, latitude: 39.018806, longitude: -110.162766, land_cover: CRO}
   US-UTJ: {<<: *station, latitude: 37.281746, longitude: -109.53489, land_cover: CRO}
-  US-UTM: {<<: *station, latitude: 38.58785, longitude: -109.57749}
-  US-UTV: {<<: *station, latitude: 40.12641, longitude: -109.954735}
-  US-UTW: {<<: *station, latitude: 39.445362, longitude: -110.72905}
+  US-UTM: {<<: *station, latitude: 38.58785, longitude: -109.57749, land_cover: WET}
+  US-UTV: {<<: *station, latitude: 40.12641, longitude: -109.954735, land_cover: CRO}
+  US-UTW: {<<: *station, latitude: 39.445362, longitude: -110.72905, land_cover: CRO}
+  US-CdM: {<<: *station, latitude: 37.5241, longitude: -109.7471, land_cover: WSA}
 
 x-scaling: &scaling {raster_scaling: declared, scale_factor: 1.0, add_offset: 0.0, nodata: -9999.0}
 products:
@@ -85,14 +86,16 @@ footprint_sets:
   - {<<: *etw, set_id: US-UTE_production_etw, root: "${FLUX}/footprints/US-UTE/weighted"}
   - {<<: *etw, set_id: US-UTG_production_etw, root: "${FLUX}/footprints/US-UTG/weighted"}
   - {<<: *etw, set_id: US-UTJ_production_etw, root: "${FLUX}/footprints/US-UTJ/weighted"}
-  - {<<: *etw, set_id: US-UTM_production_etw, root: "${FLUX}/footprints/US-UTM", recursive: false}
+  - {<<: *etw, set_id: US-UTM_production_etw, root: "${FLUX}/footprints/US-UTM/weighted"}
   - {<<: *etw, set_id: US-UTV_production_etw, root: "${FLUX}/footprints/US-UTV/weighted"}
   - {<<: *etw, set_id: US-UTW_production_etw, root: "${FLUX}/footprints/US-UTW/weighted"}
+  - {<<: *etw, set_id: US-CdM_production_etw, root: "${FLUX}/footprints/US-CdM/weighted"}
   - {<<: *mean, set_id: US-UTD_production_mean, root: "${FLUX}/footprints/US-UTD/non_weighted"}
   - {<<: *mean, set_id: US-UTE_production_mean, root: "${FLUX}/footprints/US-UTE/non_weighted"}
   - {<<: *mean, set_id: US-UTG_production_mean, root: "${FLUX}/footprints/US-UTG/non_weighted"}
   - {<<: *mean, set_id: US-UTJ_production_mean, root: "${FLUX}/footprints/US-UTJ/non_weighted"}
-  - {<<: *mean, set_id: US-UTM_production_mean, root: "${FLUX}/footprints/US-UTM", recursive: false}
+  - {<<: *mean, set_id: US-CdM_production_mean, root: "${FLUX}/footprints/US-CdM/non_weighted"}
+  - {<<: *mean, set_id: US-UTM_production_mean, root: "${FLUX}/footprints/US-UTM/non_weighted"}
   - {<<: *mean, set_id: US-UTV_production_mean, root: "${FLUX}/footprints/US-UTV/non_weighted"}
   - {<<: *mean, set_id: US-UTW_production_mean, root: "${FLUX}/footprints/US-UTW/non_weighted"}
 
@@ -108,7 +111,7 @@ raster_extractions:
   - {<<: *extraction, name: utm_production_etw, site_id: US-UTM, footprint_set_id: US-UTM_production_etw, start: "2022-10-19", end: "2025-10-09"}
   - {<<: *extraction, name: utv_production_etw, site_id: US-UTV, footprint_set_id: US-UTV_production_etw, start: "2023-09-27", end: "2025-10-14"}
   - {<<: *extraction, name: utw_production_etw, site_id: US-UTW, footprint_set_id: US-UTW_production_etw, start: "2021-03-10", end: "2025-10-10"}
-
+  - {<<: *extraction, name: cdm_production_etw, site_id: US-CdM, footprint_set_id: US-CdM_production_etw, start: "2023-10-25", end: "2025-10-10"}
 cache:
   raster_identity: stat       # size + mtime; sha256 reads ~26 GB of rasters
 

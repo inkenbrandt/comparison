@@ -12,7 +12,7 @@
 # The FLUX data folder (J:/FLUX until 2026-10-19; D:/FLUX from 2026-10-21). Paths below start
 # with ${FLUX}, so a moved drive is this one line.
 data_roots:
-  FLUX: "D:/FLUX"
+  FLUX: "C:/Users/paulinkenbrandt/Documents/FLUX"
 
 x-station: &station
   timezone: "UTC-07:00"
@@ -20,13 +20,14 @@ x-station: &station
   interval_label: start
 stations:
   # Coordinates: UGS station_attribute_view (read-only queries, 2026-10-18/19).
-  US-UTD: {<<: *station, latitude: 38.1038, longitude: -109.5952}
-  US-UTE: {<<: *station, latitude: 37.735287, longitude: -111.570816}
-  US-UTG: {<<: *station, latitude: 39.018806, longitude: -110.162766}
+  US-UTD: {<<: *station, latitude: 38.1038, longitude: -109.5952, land_cover: CRO}
+  US-UTE: {<<: *station, latitude: 37.735287, longitude: -111.570816, land_cover: CRO}
+  US-UTG: {<<: *station, latitude: 39.018806, longitude: -110.162766, land_cover: CRO}
   US-UTJ: {<<: *station, latitude: 37.281746, longitude: -109.53489, land_cover: CRO}
-  US-UTM: {<<: *station, latitude: 38.58785, longitude: -109.57749}
-  US-UTV: {<<: *station, latitude: 40.12641, longitude: -109.954735}
-  US-UTW: {<<: *station, latitude: 39.445362, longitude: -110.72905}
+  US-UTM: {<<: *station, latitude: 38.58785, longitude: -109.57749, land_cover: WET}
+  US-UTV: {<<: *station, latitude: 40.12641, longitude: -109.954735, land_cover: CRO}
+  US-UTW: {<<: *station, latitude: 39.445362, longitude: -110.72905, land_cover: CRO}
+  US-CdM: {<<: *station, latitude: 37.5241, longitude: -109.7471, land_cover: WSA}   # US-CdM is a shrubland site in the FLUX database; its rasters are indexed but never extracted
 
 x-scaling: &scaling {raster_scaling: declared, scale_factor: 1.0, add_offset: 0.0, nodata: -9999.0}
 products:
@@ -54,6 +55,7 @@ station_tables:
   - {<<: *table, site_id: US-UTM, path: "${FLUX}/database/daily_output/US-UTM_daily.csv"}
   - {<<: *table, site_id: US-UTV, path: "${FLUX}/database/daily_output/US-UTV_daily.csv"}
   - {<<: *table, site_id: US-UTW, path: "${FLUX}/database/daily_output/US-UTW_daily.csv"}
+  - {<<: *table, site_id: US-CdM, path: "${FLUX}/database/daily_output/US-CdM_daily.csv"}
 
 # Clipped rasters (400 m buffer around each station; D-069). The clip is a declared processing
 # tag; byte-identical repeat downloads collapse to one file, differing ones are held out.
@@ -80,6 +82,7 @@ footprint_sets:
   # the UGS parameter table has no US-UTM rows). User decision 2026-10-19 (D-073).
   - {<<: *nldas_set, set_id: US-UTM_nldas_eto_20261019, root: ../outputs/footprints/US-UTM/nldas_eto_weighted}
   - {<<: *nldas_set, set_id: US-UTW_nldas_eto_20261018, root: ../outputs/footprints/US-UTW/nldas_eto_weighted}
+  - {<<: *nldas_set, set_id: US-CdM_nldas_eto_20261018, root: ../outputs/footprints/US-CdM/nldas_eto_weighted}
   # US-UTM production top-level footprints: kept for the record; superseded by the rebuild (D-073). footprint_workflow_v2-1
   # weights by NLDAS grass ETo (code-inferred; not verified by reproduction as US-UTJ was, D-036).
   - set_id: US-UTM_production_etw
@@ -149,9 +152,10 @@ ensembles:
       US-UTM: US-UTM_nldas_eto_20261019
       US-UTV: US-UTV_nldas_eto_20261018
       US-UTW: US-UTW_nldas_eto_20261018
+      US-CdM: US-CdM_nldas_eto_20261018
     sources: [utd_nldas_clip, ute_nldas_clip, utg_nldas_clip, utj_nldas_clip,
-              utm_nldas_clip, utv_nldas_clip, utw_nldas_clip]
-    sites: [US-UTD, US-UTE, US-UTG, US-UTJ, US-UTM, US-UTV, US-UTW]
+              utm_nldas_clip, utv_nldas_clip, utw_nldas_clip, cdm_nldas_clip]
+    sites: [US-UTD, US-UTE, US-UTG, US-UTJ, US-UTM, US-UTV, US-UTW, US-CdM]
     missing_member_policy: require_all
     combinations: [mean, median]
     metric_set: utah_metrics
